@@ -72,3 +72,5 @@ htmlcov/
 *.tar.xz
 *.tar.zst
 ```
+# Ignore RobustToolbox submodule for now
+vendor/
