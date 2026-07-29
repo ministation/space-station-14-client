@@ -123,6 +123,11 @@ public sealed class ConnectSession
                 Summary = "UDP join + content…";
                 Note("content sync: assemblies in parallel with UDP join");
                 NotifyDebug();
+                
+                // Pre-set AssembliesDirectory so serializer can find files as soon as they land.
+                Session.AssembliesDirectory = Path.Combine(ContentRoot, "Assemblies");
+                Note($"assemblies dir (pre) → {Session.AssembliesDirectory}");
+                
                 contentTask = Task.Run(async () =>
                 {
                     try
@@ -169,7 +174,7 @@ public sealed class ConnectSession
             if (contentTask is not null)
             {
                 // Don't fail the join if content is still finishing; wait briefly for assemblies path.
-                var finished = await Task.WhenAny(contentTask, Task.Delay(TimeSpan.FromSeconds(2), ct));
+                var finished = await Task.WhenAny(contentTask, Task.Delay(TimeSpan.FromSeconds(10), ct));
                 if (finished == contentTask)
                 {
                     try { await contentTask; }
@@ -184,6 +189,7 @@ public sealed class ConnectSession
                     && !string.IsNullOrWhiteSpace(Content.FilesRoot))
                 {
                     Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
+                    Note($"assemblies dir (post-content) → {Session.AssembliesDirectory}");
                 }
             }
 
