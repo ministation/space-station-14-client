@@ -5,8 +5,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_PATH="${SCRIPT_DIR}/probes/Probe.AndroidHost/Probe.AndroidHost.csproj"
-SOLUTION_PATH="${SCRIPT_DIR}/Robust.AndroidPort.sln"
+WORKSPACE_DIR="$(dirname "${SCRIPT_DIR}")"
+PROJECT_PATH="${WORKSPACE_DIR}/probes/Probe.AndroidHost/Probe.AndroidHost.csproj"
+SOLUTION_PATH="${WORKSPACE_DIR}/Robust.AndroidPort.sln"
+ARTIFACTS_DIR="${WORKSPACE_DIR}/artifacts/apk"
 
 # Default configuration
 CONFIGURATION="Debug"
@@ -90,7 +92,7 @@ fi
 dotnet publish "${PROJECT_PATH}" \
     -c "${CONFIGURATION}" \
     ${RID} \
-    -o "${SCRIPT_DIR}/artifacts/apk/${CONFIGURATION}" \
+    -o "${ARTIFACTS_DIR}/${CONFIGURATION}" \
     /p:AndroidPackageFormat=apk
 
 echo ""
@@ -98,7 +100,7 @@ echo "✅ Build completed successfully!"
 echo ""
 
 # Find the APK file
-APK_OUTPUT_DIR="${SCRIPT_DIR}/artifacts/apk/${CONFIGURATION}"
+APK_OUTPUT_DIR="${ARTIFACTS_DIR}/${CONFIGURATION}"
 APK_FILE=$(find "${APK_OUTPUT_DIR}" -name "*.apk" -type f | head -1)
 
 if [ -z "${APK_FILE}" ]; then

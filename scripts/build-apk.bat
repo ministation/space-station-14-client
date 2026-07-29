@@ -4,11 +4,17 @@ setlocal enabledelayedexpansion
 :: Build script for Android APK (Windows)
 :: Usage: build-apk.bat [--release] [--install] [--clean] [--arch arm64|x64]
 
+:: Get the script directory and workspace root
+set "SCRIPT_DIR=%~dp0"
+set "WORKSPACE_DIR=%SCRIPT_DIR%.."
+set "PROJECT_PATH=%WORKSPACE_DIR%\probes\Probe.AndroidHost\Probe.AndroidHost.csproj"
+set "SOLUTION_PATH=%WORKSPACE_DIR%\Robust.AndroidPort.sln"
+
 set "CONFIG=Debug"
 set "INSTALL=false"
 set "CLEAN=false"
 set "ARCH=arm64"
-set "APK_DIR=artifacts\apk"
+set "APK_DIR=%WORKSPACE_DIR%\artifacts\apk"
 
 :: Parse arguments
 :parse_args
@@ -57,15 +63,19 @@ echo ========================================
 if "%CLEAN%"=="true" (
     echo Cleaning previous builds...
     if exist "%APK_DIR%" rmdir /s /q "%APK_DIR%"
-    dotnet clean
+    dotnet clean "%SOLUTION_PATH%"
 )
+
+:: Restore packages
+echo Restoring NuGet packages...
+dotnet restore "%SOLUTION_PATH%"
 
 :: Create output directory
 if not exist "%APK_DIR%\%CONFIG%" mkdir "%APK_DIR%\%CONFIG%"
 
 :: Build APK
 echo Building APK for %ARCH%...
-dotnet publish -c %CONFIG% -f net10.0-android -p:RuntimeIdentifier=android-%ARCH% -o "%APK_DIR%\%CONFIG%\%ARCH%"
+dotnet publish "%PROJECT_PATH%" -c %CONFIG% -f net10.0-android -p:RuntimeIdentifier=android-%ARCH% -o "%APK_DIR%\%CONFIG%\%ARCH%"
 
 if errorlevel 1 (
     echo Build failed!
