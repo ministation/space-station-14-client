@@ -1,15 +1,26 @@
-```
+--- .gitignore (原始)
+bin/
+obj/
+vendor/
+.vs/
+*.user
+*.apk
+*.aab
+local.properties
+.idea/
+
++++ .gitignore (修改后)
 # Compiled and build artifacts
 *.pyc
 __pycache__/
 *.o
 *.obj
-*.class
-*.exe
 *.dll
 *.so
-*.a
+*.exe
+*.class
 *.out
+*.a
 
 # Dependencies
 .venv/
@@ -21,6 +32,7 @@ target/
 .gradle/
 .mypy_cache/
 .pytest_cache/
+.julia/
 
 # Logs and temp files
 *.log
@@ -31,9 +43,9 @@ target/
 # Environment
 .env
 .env.local
-*.env.*
+.env.*
 
-# Editors and IDEs
+# Editors
 .vscode/
 .idea/
 *.swp
@@ -71,6 +83,3 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```
-# Ignore RobustToolbox submodule for now
-vendor/
