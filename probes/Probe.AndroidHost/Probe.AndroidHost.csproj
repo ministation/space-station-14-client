@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationId>ru.ministation.robust.port</ApplicationId>
+    <ApplicationVersion>17</ApplicationVersion>
+    <ApplicationDisplayVersion>0.0.17-acz-parse</ApplicationDisplayVersion>
+    <ApplicationTitle>Мини-станция</ApplicationTitle>
+    <TrimMode>partial</TrimMode>
+    <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Probe.SharedOnAndroid\Probe.SharedOnAndroid.csproj" />
+    <ProjectReference Include="..\..\src\Port.Platform.Android\Port.Platform.Android.csproj" />
+    <ProjectReference Include="..\..\src\Port.Net\Port.Net.csproj" />
+    <ProjectReference Include="..\..\src\Port.Content\Port.Content.csproj" />
+  </ItemGroup>
+
+  <!-- Ship libsodium for CryptoBox / AEAD (NuGet android RIDs + explicit ABI pack). -->
+  <ItemGroup>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libsodium.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86_64\libsodium.so">
+      <Abi>x86_64</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\armeabi-v7a\libsodium.so">
+      <Abi>armeabi-v7a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86\libsodium.so">
+      <Abi>x86</Abi>
+    </AndroidNativeLibrary>
+  </ItemGroup>
+
+  <!-- Drop desktop linux/osx/win natives that Shared pulls transitively. -->
+  <Target Name="StripNonAndroidNatives" BeforeTargets="_CreateBaseApkWithArtProfile;_BuildApkFastDev;_CompileJava">
+    <ItemGroup>
+      <AndroidNativeLibrary Remove="@(AndroidNativeLibrary)" Condition="$([System.String]::Copy('%(Identity)').Contains('linux-x64')) Or $([System.String]::Copy('%(Identity)').Contains('linux-arm64')) Or $([System.String]::Copy('%(Identity)').Contains('osx-')) Or $([System.String]::Copy('%(Identity)').Contains('win-')) Or $([System.String]::Copy('%(Identity)').Contains('ios-')) Or $([System.String]::Copy('%(Identity)').Contains('maccatalyst')) Or $([System.String]::Copy('%(Identity)').Contains('tvos-'))" />
+      <NativeSystemLibrary Remove="@(NativeSystemLibrary)" Condition="$([System.String]::Copy('%(Identity)').Contains('linux-x64'))" />
+    </ItemGroup>
+  </Target>
+</Project>

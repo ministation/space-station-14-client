@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Port.Net</RootNamespace>
+    <AssemblyName>Port.Net</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SpaceWizards.Sodium" Version="0.3.0" />
+    <!-- 1.0.22+ ships android-arm64/android-x64 natives (1.0.20.1 did not → CryptoBox TypeInit crash). -->
+    <PackageReference Include="libsodium" Version="1.0.22" />
+    <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
+    <ProjectReference Include="..\..\vendor\RobustToolbox\Lidgren.Network\Lidgren.Network.csproj" />
+    <ProjectReference Include="..\..\vendor\RobustToolbox\Robust.Shared\Robust.Shared.csproj" />
+  </ItemGroup>
+</Project>

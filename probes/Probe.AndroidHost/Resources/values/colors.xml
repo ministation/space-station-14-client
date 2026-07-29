@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SS14 Hub — neutral slate / beige (launcher-like) -->
+<resources>
+    <color name="hub_bg">#2A2F38</color>
+    <color name="hub_bg_deep">#1E232A</color>
+    <color name="hub_panel">#3A414C</color>
+    <color name="hub_panel2">#454D5A</color>
+    <color name="hub_btn">#525A66</color>
+    <color name="hub_btn_pressed">#454C57</color>
+    <color name="hub_beige">#D4C5A9</color>
+    <color name="hub_beige_dim">#A89878</color>
+    <color name="hub_border">#C9B896</color>
+    <color name="hub_text">#F3F0E8</color>
+    <color name="hub_muted">#A8A295</color>
+    <color name="hub_danger">#C45C4A</color>
+    <color name="hub_ok">#6B9B6E</color>
+    <color name="hub_ss14_red">#C43C3C</color>
+
+    <!-- legacy aliases -->
+    <color name="ss_bg">#1E232A</color>
+    <color name="ss_bg_panel">#3A414C</color>
+    <color name="ss_bg_input">#454D5A</color>
+    <color name="ss_amber">#D4C5A9</color>
+    <color name="ss_cyan">#D4C5A9</color>
+    <color name="ss_text">#F3F0E8</color>
+    <color name="ss_muted">#A8A295</color>
+    <color name="ss_danger">#C45C4A</color>
+    <color name="ss_ok">#6B9B6E</color>
+    <color name="ss_line">#525A66</color>
+    <color name="ms_bg">#2A2F38</color>
+    <color name="ms_panel">#3A414C</color>
+    <color name="ms_ink">#F3F0E8</color>
+    <color name="ms_muted">#A8A295</color>
+    <color name="ms_accent">#D4C5A9</color>
+    <color name="ms_accent_deep">#A89878</color>
+    <color name="ms_ss14_btn">#525A66</color>
+    <color name="ms_ss14_btn_text">#F3F0E8</color>
+    <color name="ms_hero_text">#F3F0E8</color>
+    <color name="ms_link">#D4C5A9</color>
+    <color name="ms_success">#6B9B6E</color>
+    <color name="ms_danger">#C45C4A</color>
+    <color name="ms_dim">#8A8478</color>
+    <color name="ms_border">#C9B896</color>
+    <color name="ms_border_strong">#D4C5A9</color>
+    <color name="ms_topbar">#3A414C</color>
+    <color name="ms_debug_bg">#1E232A</color>
+    <color name="ms_debug_text">#D4C5A9</color>
+    <color name="ms_panel2">#454D5A</color>
+    <color name="ms_panel3">#525A66</color>
+</resources>

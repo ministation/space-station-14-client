@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2013/01/nuspec.xsd">
+  <metadata minClientVersion="4.0">
+    <id>libsodium</id>
+    <version>1.0.22</version>
+    <authors>Frank Denis</authors>
+    <requireLicenseAcceptance>true</requireLicenseAcceptance>
+    <license type="expression">ISC</license>
+    <licenseUrl>https://licenses.nuget.org/ISC</licenseUrl>
+    <projectUrl>https://libsodium.org/</projectUrl>
+    <description>Internal implementation package not meant for direct consumption. Please do not reference directly.</description>
+    <copyright>© 2026 Frank Denis</copyright>
+    <repository type="git" url="https://github.com/jedisct1/libsodium.git" />
+  </metadata>
+</package>

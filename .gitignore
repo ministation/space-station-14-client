@@ -1,0 +1,9 @@
+bin/
+obj/
+vendor/
+.vs/
+*.user
+*.apk
+*.aab
+local.properties
+.idea/

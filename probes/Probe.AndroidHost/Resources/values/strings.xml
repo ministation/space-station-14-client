@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SS14 Hub</string>
+    <string name="app_text">Space Station 14</string>
+    <string name="hub_title">SPACE STATION 14</string>
+    <string name="hub_subtitle">Mobile Hub · Public Beta</string>
+    <string name="servers_title">Серверы</string>
+    <string name="custom_server_hint">ss14://host:port</string>
+    <string name="btn_add_server">Добавить</string>
+    <string name="btn_refresh_servers">Обновить</string>
+    <string name="btn_login_ss14">Войти через SS14</string>
+    <string name="btn_logout_ss14">Выйти</string>
+    <string name="btn_connect">Подключиться</string>
+    <string name="btn_disconnect">Отключиться</string>
+    <string name="btn_ready">Готов</string>
+    <string name="btn_observe">Наблюдать</string>
+    <string name="auth_username_hint">Логин SS14</string>
+    <string name="auth_password_hint">Пароль</string>
+    <string name="auth_tfa_hint">2FA (если есть)</string>
+    <string name="char_name_hint">Имя персонажа</string>
+    <string name="lobby_title">Лобби</string>
+    <string name="players_title">Игроки</string>
+    <string name="debug_toggle">Журнал</string>
+    <string name="touch_hint">Перетащите для камеры · тач-зоны по краям</string>
+    <string name="beta_banner">PUBLIC BETA · open hub</string>
+</resources>
