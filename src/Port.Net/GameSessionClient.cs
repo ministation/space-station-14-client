@@ -832,6 +832,7 @@ public sealed class GameSessionClient : IDisposable
     {
         if (_serializer is not null)
             return;
+        
         _serializer = SerializerBootstrap.TryCreate(AssembliesDirectory, Note);
         SerializerStatus = _serializer?.Status ?? "serializer: unavailable (no Assemblies?)";
     }
