@@ -2,15 +2,14 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/ms_bg">
+    android:background="@color/hub_bg">
 
-    <!-- ===== HOME (site-like) ===== -->
+    <!-- ===== HUB ===== -->
     <ScrollView
         android:id="@+id/screen_home"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true"
-        android:clipToPadding="false">
+        android:fillViewport="true">
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -18,380 +17,305 @@
             android:orientation="vertical"
             android:paddingBottom="28dp">
 
-            <!-- Topbar -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:paddingLeft="16dp"
-                android:paddingRight="16dp"
-                android:paddingTop="12dp"
-                android:paddingBottom="12dp"
-                android:background="@color/ms_topbar"
-                android:elevation="4dp">
+                android:padding="14dp"
+                android:background="@color/hub_panel">
 
                 <ImageView
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:src="@drawable/ms_logo"
-                    android:contentDescription="@string/app_name"
-                    android:scaleType="fitCenter" />
+                    android:layout_width="48dp"
+                    android:layout_height="22dp"
+                    android:src="@drawable/ss14_logo_site"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="@string/app_name" />
 
-                <TextView
+                <LinearLayout
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:layout_marginStart="12dp"
-                    android:text="Мини-станция"
-                    android:textColor="@color/ms_ink"
-                    android:textSize="13sp"
-                    android:fontFamily="@font/pressstart2p"
-                    android:letterSpacing="0.02" />
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/hub_title"
+                        android:textColor="@color/hub_text"
+                        android:textSize="12sp"
+                        android:fontFamily="@font/pressstart2p" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/hub_subtitle"
+                        android:textColor="@color/hub_beige"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_regular" />
+                </LinearLayout>
             </LinearLayout>
 
-            <!-- accent strip under topbar -->
             <View
                 android:layout_width="match_parent"
-                android:layout_height="3dp"
-                android:background="@color/ms_accent" />
+                android:layout_height="2dp"
+                android:background="@color/hub_beige" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:paddingLeft="14dp"
-                android:paddingRight="14dp"
-                android:paddingTop="16dp">
+                android:padding="14dp">
 
-                <!-- Hero card -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/beta_banner"
+                    android:textColor="@color/hub_beige_dim"
+                    android:textSize="10sp"
+                    android:fontFamily="@font/pressstart2p"
+                    android:gravity="center"
+                    android:paddingBottom="12dp" />
+
+                <!-- Account -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="vertical"
-                    android:gravity="center_horizontal"
-                    android:background="@drawable/ms_grad_hero"
-                    android:paddingLeft="18dp"
-                    android:paddingRight="18dp"
-                    android:paddingTop="26dp"
-                    android:paddingBottom="26dp"
-                    android:elevation="6dp">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Мини-станция"
-                        android:textColor="@color/ms_hero_text"
-                        android:textSize="18sp"
-                        android:fontFamily="@font/pressstart2p"
-                        android:letterSpacing="0.04"
-                        android:shadowColor="#2E000000"
-                        android:shadowDy="3"
-                        android:shadowRadius="1" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:text="@string/hero_tagline"
-                        android:textColor="@color/ms_hero_sub"
-                        android:textSize="11sp"
-                        android:fontFamily="@font/pressstart2p"
-                        android:letterSpacing="0.03" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="14dp"
-                        android:gravity="center"
-                        android:text="@string/hero_desc"
-                        android:textColor="#F2FFFFFF"
-                        android:textSize="14sp"
-                        android:fontFamily="@font/exo2_regular"
-                        android:lineSpacingExtra="3dp" />
-                </LinearLayout>
-
-                <!-- Server widget -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:orientation="vertical"
-                    android:background="@drawable/ms_card"
-                    android:elevation="3dp"
-                    android:clipToPadding="false">
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical"
-                        android:padding="14dp"
-                        android:background="@drawable/ms_grad_hero">
-
-                        <LinearLayout
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:orientation="horizontal"
-                            android:gravity="center_vertical"
-                            android:background="@drawable/ms_badge"
-                            android:paddingLeft="12dp"
-                            android:paddingRight="12dp"
-                            android:paddingTop="5dp"
-                            android:paddingBottom="5dp">
-
-                            <View
-                                android:layout_width="8dp"
-                                android:layout_height="8dp"
-                                android:background="@drawable/ms_status_dot" />
-
-                            <TextView
-                                android:id="@+id/status_badge"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:layout_marginStart="8dp"
-                                android:text="Онлайн"
-                                android:textColor="@color/ms_hero_text"
-                                android:textSize="11sp"
-                                android:textStyle="bold"
-                                android:fontFamily="@font/exo2_regular"
-                                android:textAllCaps="true" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:gravity="end"
-                            android:text="Мини-станция"
-                            android:textColor="@color/ms_hero_text"
-                            android:textSize="11sp"
-                            android:fontFamily="@font/pressstart2p" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:padding="16dp">
-
-                        <TextView
-                            android:id="@+id/server_players_big"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:gravity="center"
-                            android:text="—/100"
-                            android:textColor="@color/ms_ink"
-                            android:textSize="28sp"
-                            android:textStyle="bold"
-                            android:fontFamily="@font/exo2_regular" />
-
-                        <TextView
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:gravity="center"
-                            android:layout_marginTop="2dp"
-                            android:text="@string/server_online_label"
-                            android:textColor="@color/ms_muted"
-                            android:textSize="12sp"
-                            android:fontFamily="@font/exo2_regular" />
-
-                        <TextView
-                            android:id="@+id/server_chip"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:text="ss14://ss14.ministation.ru:1214"
-                            android:textColor="@color/ms_link"
-                            android:textSize="12sp"
-                            android:fontFamily="monospace"
-                            android:gravity="center" />
-
-                        <TextView
-                            android:id="@+id/connect_status"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:gravity="center"
-                            android:textColor="@color/ms_muted"
-                            android:textSize="13sp"
-                            android:fontFamily="@font/exo2_regular"
-                            android:text="Готово к входу в лобби" />
-                    </LinearLayout>
-                </LinearLayout>
-
-                <!-- Login card -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:orientation="vertical"
-                    android:background="@drawable/ms_card"
-                    android:padding="16dp"
-                    android:elevation="3dp">
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Игровой аккаунт"
-                        android:textColor="@color/ms_ink"
-                        android:textSize="11sp"
-                        android:fontFamily="@font/pressstart2p"
-                        android:paddingBottom="10dp" />
-
-                    <View
-                        android:layout_width="64dp"
-                        android:layout_height="2dp"
-                        android:background="@color/ms_accent"
-                        android:layout_marginBottom="12dp" />
+                    android:background="@drawable/hub_card"
+                    android:padding="14dp">
 
                     <TextView
                         android:id="@+id/auth_status"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:textColor="@color/ms_muted"
+                        android:textColor="@color/hub_muted"
                         android:textSize="13sp"
                         android:fontFamily="@font/exo2_regular"
-                        android:text="Войдите через аккаунт Space Station 14" />
+                        android:text="Войдите через аккаунт SS14" />
 
                     <EditText
                         android:id="@+id/auth_username"
                         android:layout_width="match_parent"
-                        android:layout_height="50dp"
-                        android:layout_marginTop="12dp"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="10dp"
                         android:hint="@string/auth_username_hint"
                         android:inputType="text"
-                        android:textColor="@color/ms_ink"
-                        android:textColorHint="@color/ms_dim"
-                        android:background="@drawable/ms_input"
-                        android:paddingLeft="14dp"
-                        android:paddingRight="14dp"
-                        android:textSize="15sp"
+                        android:textColor="@color/hub_text"
+                        android:textColorHint="@color/hub_muted"
+                        android:background="@drawable/hub_input"
+                        android:paddingLeft="12dp"
+                        android:paddingRight="12dp"
+                        android:textSize="14sp"
                         android:fontFamily="@font/exo2_regular" />
 
                     <EditText
                         android:id="@+id/auth_password"
                         android:layout_width="match_parent"
-                        android:layout_height="50dp"
+                        android:layout_height="48dp"
                         android:layout_marginTop="8dp"
                         android:hint="@string/auth_password_hint"
                         android:inputType="textPassword"
-                        android:textColor="@color/ms_ink"
-                        android:textColorHint="@color/ms_dim"
-                        android:background="@drawable/ms_input"
-                        android:paddingLeft="14dp"
-                        android:paddingRight="14dp"
-                        android:textSize="15sp"
+                        android:textColor="@color/hub_text"
+                        android:textColorHint="@color/hub_muted"
+                        android:background="@drawable/hub_input"
+                        android:paddingLeft="12dp"
+                        android:paddingRight="12dp"
+                        android:textSize="14sp"
                         android:fontFamily="@font/exo2_regular" />
 
                     <EditText
                         android:id="@+id/auth_tfa"
                         android:layout_width="match_parent"
-                        android:layout_height="50dp"
+                        android:layout_height="48dp"
                         android:layout_marginTop="8dp"
                         android:hint="@string/auth_tfa_hint"
                         android:inputType="number"
-                        android:textColor="@color/ms_ink"
-                        android:textColorHint="@color/ms_dim"
-                        android:background="@drawable/ms_input"
-                        android:paddingLeft="14dp"
-                        android:paddingRight="14dp"
-                        android:textSize="15sp"
+                        android:textColor="@color/hub_text"
+                        android:textColorHint="@color/hub_muted"
+                        android:background="@drawable/hub_input"
+                        android:paddingLeft="12dp"
+                        android:paddingRight="12dp"
+                        android:textSize="14sp"
                         android:fontFamily="@font/exo2_regular" />
 
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
+                        android:layout_marginTop="10dp"
                         android:orientation="horizontal">
 
                         <Button
                             android:id="@+id/btn_login_ss14"
                             android:layout_width="0dp"
-                            android:layout_height="50dp"
+                            android:layout_height="48dp"
                             android:layout_weight="1"
-                            android:background="@drawable/ms_btn_ss14"
-                            android:textColor="@color/ms_ss14_btn_text"
+                            android:background="@drawable/hub_btn"
+                            android:textColor="@color/hub_text"
                             android:text="@string/btn_login_ss14"
                             android:textAllCaps="false"
-                            android:textStyle="bold"
-                            android:fontFamily="@font/exo2_regular"
+                            android:textSize="12sp"
+                            android:fontFamily="@font/pressstart2p"
                             android:stateListAnimator="@null" />
 
                         <Button
                             android:id="@+id/btn_logout_ss14"
                             android:layout_width="0dp"
-                            android:layout_height="50dp"
+                            android:layout_height="48dp"
                             android:layout_weight="1"
                             android:layout_marginStart="8dp"
-                            android:background="@drawable/ms_btn_ghost"
-                            android:textColor="@color/ms_ink"
+                            android:background="@drawable/hub_input"
+                            android:textColor="@color/hub_beige"
                             android:text="@string/btn_logout_ss14"
                             android:textAllCaps="false"
-                            android:fontFamily="@font/exo2_regular"
+                            android:fontFamily="@font/exo2_semibold"
                             android:stateListAnimator="@null" />
                     </LinearLayout>
+                </LinearLayout>
 
-                    <TextView
-                        android:id="@+id/download_label"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp"
-                        android:text="Загрузка контента"
-                        android:textColor="@color/ms_accent_deep"
-                        android:textSize="11sp"
-                        android:fontFamily="@font/pressstart2p"
-                        android:visibility="gone" />
+                <!-- Servers -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:text="@string/servers_title"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/pressstart2p" />
 
-                    <ProgressBar
-                        android:id="@+id/download_progress"
-                        style="?android:attr/progressBarStyleHorizontal"
-                        android:layout_width="match_parent"
-                        android:layout_height="10dp"
-                        android:layout_marginTop="6dp"
-                        android:max="100"
-                        android:progress="0"
-                        android:progressTint="@color/ms_accent"
-                        android:progressBackgroundTint="@color/ms_border"
-                        android:visibility="gone" />
+                <LinearLayout
+                    android:id="@+id/server_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical" />
 
-                    <TextView
-                        android:id="@+id/download_pct"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:textColor="@color/ms_link"
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <EditText
+                        android:id="@+id/custom_server"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:hint="@string/custom_server_hint"
+                        android:inputType="textUri"
+                        android:textColor="@color/hub_text"
+                        android:textColorHint="@color/hub_muted"
+                        android:background="@drawable/hub_input"
+                        android:paddingLeft="12dp"
+                        android:paddingRight="12dp"
                         android:textSize="12sp"
-                        android:fontFamily="monospace"
-                        android:visibility="gone"
-                        android:text="0%" />
+                        android:fontFamily="monospace" />
 
                     <Button
-                        android:id="@+id/btn_connect"
-                        android:layout_width="match_parent"
-                        android:layout_height="54dp"
-                        android:layout_marginTop="14dp"
-                        android:background="@drawable/ms_btn_accent"
-                        android:textColor="@color/ms_hero_text"
-                        android:text="@string/btn_connect"
+                        android:id="@+id/btn_add_server"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/hub_btn"
+                        android:textColor="@color/hub_text"
+                        android:text="@string/btn_add_server"
                         android:textAllCaps="false"
-                        android:textStyle="bold"
-                        android:textSize="16sp"
-                        android:fontFamily="@font/exo2_regular"
+                        android:fontFamily="@font/exo2_semibold"
                         android:stateListAnimator="@null" />
                 </LinearLayout>
 
-                <!-- Collapsible debug -->
+                <TextView
+                    android:id="@+id/server_chip"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:text="—" />
+
+                <TextView
+                    android:id="@+id/status_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/server_players_big"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/connect_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:textColor="@color/hub_muted"
+                    android:textSize="13sp"
+                    android:fontFamily="@font/exo2_regular"
+                    android:text="Выберите сервер" />
+
+                <TextView
+                    android:id="@+id/download_label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="Контент"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="10sp"
+                    android:fontFamily="@font/pressstart2p"
+                    android:visibility="gone" />
+
+                <ProgressBar
+                    android:id="@+id/download_progress"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="10dp"
+                    android:layout_marginTop="6dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:progressTint="@color/hub_beige"
+                    android:progressBackgroundTint="@color/hub_panel2"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/download_pct"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="11sp"
+                    android:fontFamily="monospace"
+                    android:visibility="gone"
+                    android:text="0%" />
+
+                <Button
+                    android:id="@+id/btn_connect"
+                    android:layout_width="match_parent"
+                    android:layout_height="54dp"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/hub_btn"
+                    android:textColor="@color/hub_text"
+                    android:text="@string/btn_connect"
+                    android:textAllCaps="false"
+                    android:textSize="13sp"
+                    android:fontFamily="@font/pressstart2p"
+                    android:stateListAnimator="@null" />
+
                 <TextView
                     android:id="@+id/debug_toggle"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
+                    android:layout_marginTop="14dp"
                     android:padding="12dp"
-                    android:background="@drawable/ms_card"
+                    android:background="@drawable/hub_card"
                     android:text="@string/debug_toggle"
-                    android:textColor="@color/ms_muted"
-                    android:textSize="11sp"
+                    android:textColor="@color/hub_muted"
+                    android:textSize="10sp"
                     android:fontFamily="@font/pressstart2p"
                     android:clickable="true"
                     android:focusable="true" />
@@ -402,12 +326,11 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:minHeight="80dp"
-                    android:background="@color/ms_debug_bg"
-                    android:padding="12dp"
+                    android:background="@color/hub_bg_deep"
+                    android:padding="10dp"
                     android:fontFamily="monospace"
-                    android:textColor="@color/ms_debug_text"
+                    android:textColor="@color/hub_beige"
                     android:textSize="10sp"
-                    android:lineSpacingExtra="2dp"
                     android:visibility="gone"
                     android:text="…" />
 
@@ -417,10 +340,10 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="14dp"
                     android:gravity="center"
-                    android:textColor="@color/ms_dim"
+                    android:textColor="@color/hub_muted"
                     android:textSize="11sp"
                     android:fontFamily="@font/exo2_regular"
-                    android:text="ministation.ru · клиент Android" />
+                    android:text="SS14 Hub · public beta" />
             </LinearLayout>
         </LinearLayout>
     </ScrollView>
@@ -432,29 +355,27 @@
         android:layout_height="match_parent"
         android:fillViewport="true"
         android:visibility="gone"
-        android:background="@color/ms_bg">
+        android:background="@color/hub_bg">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:paddingLeft="14dp"
-            android:paddingRight="14dp"
-            android:paddingTop="18dp"
-            android:paddingBottom="28dp">
+            android:padding="14dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:background="@drawable/ms_card"
-                android:padding="14dp">
+                android:background="@drawable/hub_card"
+                android:padding="12dp">
 
                 <ImageView
                     android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:src="@drawable/ms_logo"
+                    android:layout_height="18dp"
+                    android:src="@drawable/ss14_logo_site"
+                    android:scaleType="fitCenter"
                     android:contentDescription="@string/app_name" />
 
                 <LinearLayout
@@ -468,9 +389,9 @@
                         android:id="@+id/lobby_station"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Мини-станция"
-                        android:textColor="@color/ms_ink"
-                        android:textSize="13sp"
+                        android:text="Server"
+                        android:textColor="@color/hub_text"
+                        android:textSize="12sp"
                         android:fontFamily="@font/pressstart2p" />
 
                     <TextView
@@ -478,8 +399,8 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
-                        android:text="В лобби"
-                        android:textColor="@color/ms_success"
+                        android:text="Лобби"
+                        android:textColor="@color/hub_ok"
                         android:textSize="12sp"
                         android:fontFamily="@font/exo2_regular" />
                 </LinearLayout>
@@ -488,54 +409,37 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
+                android:layout_marginTop="12dp"
                 android:orientation="vertical"
-                android:background="@drawable/ms_card"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Персонаж"
-                    android:textColor="@color/ms_ink"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/pressstart2p" />
-
-                <View
-                    android:layout_width="64dp"
-                    android:layout_height="2dp"
-                    android:layout_marginTop="8dp"
-                    android:layout_marginBottom="12dp"
-                    android:background="@color/ms_accent" />
+                android:background="@drawable/hub_card"
+                android:padding="14dp">
 
                 <TextView
                     android:id="@+id/lobby_account"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Аккаунт"
-                    android:textColor="@color/ms_link"
-                    android:textSize="13sp"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="12sp"
                     android:fontFamily="monospace" />
 
                 <EditText
                     android:id="@+id/char_name"
                     android:layout_width="match_parent"
                     android:layout_height="48dp"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="10dp"
                     android:hint="@string/char_name_hint"
                     android:inputType="textPersonName"
-                    android:textColor="@color/ms_ink"
-                    android:textColorHint="@color/ms_dim"
-                    android:background="@drawable/ms_input"
+                    android:textColor="@color/hub_text"
+                    android:textColorHint="@color/hub_muted"
+                    android:background="@drawable/hub_input"
                     android:paddingLeft="12dp"
                     android:paddingRight="12dp"
-                    android:textSize="15sp"
                     android:fontFamily="@font/exo2_regular" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
+                    android:layout_marginTop="12dp"
                     android:orientation="horizontal">
 
                     <Button
@@ -543,12 +447,12 @@
                         android:layout_width="0dp"
                         android:layout_height="48dp"
                         android:layout_weight="1"
-                        android:background="@drawable/ms_btn_accent"
-                        android:textColor="@color/ms_hero_text"
+                        android:background="@drawable/hub_btn"
+                        android:textColor="@color/hub_text"
                         android:text="@string/btn_ready"
                         android:textAllCaps="false"
-                        android:textStyle="bold"
-                        android:fontFamily="@font/exo2_regular"
+                        android:fontFamily="@font/pressstart2p"
+                        android:textSize="11sp"
                         android:stateListAnimator="@null" />
 
                     <Button
@@ -557,11 +461,11 @@
                         android:layout_height="48dp"
                         android:layout_weight="1"
                         android:layout_marginStart="8dp"
-                        android:background="@drawable/ms_btn_ghost"
-                        android:textColor="@color/ms_ink"
+                        android:background="@drawable/hub_input"
+                        android:textColor="@color/hub_beige"
                         android:text="@string/btn_observe"
                         android:textAllCaps="false"
-                        android:fontFamily="@font/exo2_regular"
+                        android:fontFamily="@font/exo2_semibold"
                         android:stateListAnimator="@null" />
                 </LinearLayout>
             </LinearLayout>
@@ -569,10 +473,10 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="14dp"
                 android:text="@string/players_title"
-                android:textColor="@color/ms_ink"
-                android:textSize="11sp"
+                android:textColor="@color/hub_beige"
+                android:textSize="10sp"
                 android:fontFamily="@font/pressstart2p" />
 
             <TextView
@@ -580,108 +484,179 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:background="@drawable/ms_card"
-                android:padding="14dp"
+                android:background="@drawable/hub_card"
+                android:padding="12dp"
                 android:fontFamily="monospace"
-                android:textColor="@color/ms_ink"
+                android:textColor="@color/hub_text"
                 android:textSize="12sp"
-                android:lineSpacingExtra="5dp"
                 android:text="…" />
 
             <TextView
                 android:id="@+id/lobby_detail"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:textColor="@color/ms_muted"
+                android:layout_marginTop="10dp"
+                android:textColor="@color/hub_muted"
                 android:textSize="11sp"
-                android:fontFamily="monospace"
-                android:lineSpacingExtra="2dp" />
+                android:fontFamily="monospace" />
 
             <Button
                 android:id="@+id/btn_disconnect"
                 android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/ms_btn_ss14"
-                android:textColor="@color/ms_ss14_btn_text"
+                android:layout_height="50dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/hub_btn"
+                android:textColor="@color/hub_text"
                 android:text="@string/btn_disconnect"
                 android:textAllCaps="false"
-                android:textStyle="bold"
-                android:fontFamily="@font/exo2_regular"
+                android:fontFamily="@font/pressstart2p"
+                android:textSize="11sp"
                 android:stateListAnimator="@null" />
         </LinearLayout>
     </ScrollView>
 
-    <!-- ===== OBSERVE ===== -->
+    <!-- ===== OBSERVE / GAME (landscape) ===== -->
     <LinearLayout
         android:id="@+id/screen_observe"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
+        android:orientation="horizontal"
         android:visibility="gone"
-        android:background="@color/ss_bg">
+        android:background="@color/hub_bg_deep">
 
+        <!-- Left touch zone -->
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:padding="12dp"
-            android:gravity="center_vertical"
-            android:background="@color/ss_bg_panel">
-
-            <TextView
-                android:id="@+id/observe_title"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="НАБЛЮДЕНИЕ"
-                android:textColor="@color/ss_cyan"
-                android:textStyle="bold"
-                android:textSize="13sp"
-                android:fontFamily="@font/pressstart2p"
-                android:letterSpacing="0.08" />
+            android:id="@+id/touch_pad_left"
+            android:layout_width="72dp"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@color/hub_panel"
+            android:padding="6dp">
 
             <Button
-                android:id="@+id/btn_observe_leave"
+                android:id="@+id/btn_touch_up"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/hub_btn"
+                android:text="▲"
+                android:textColor="@color/hub_text"
+                android:textSize="18sp"
+                android:stateListAnimator="@null" />
+
+            <LinearLayout
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
-                android:background="@drawable/ms_btn_ss14"
-                android:textColor="@color/ms_ss14_btn_text"
-                android:text="@string/btn_disconnect"
-                android:textAllCaps="false"
-                android:textSize="12sp"
-                android:fontFamily="@font/exo2_regular"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="6dp">
+
+                <Button
+                    android:id="@+id/btn_touch_left"
+                    android:layout_width="56dp"
+                    android:layout_height="56dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="◀"
+                    android:textColor="@color/hub_text"
+                    android:textSize="18sp"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_touch_down"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/hub_btn"
+                android:text="▼"
+                android:textColor="@color/hub_text"
+                android:textSize="18sp"
                 android:stateListAnimator="@null" />
         </LinearLayout>
 
-        <FrameLayout
-            android:id="@+id/observe_gl"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
             android:layout_weight="1"
-            android:background="#000000">
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:padding="8dp"
+                android:gravity="center_vertical"
+                android:background="@color/hub_panel">
+
+                <TextView
+                    android:id="@+id/observe_title"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="VIEWPORT"
+                    android:textColor="@color/hub_beige"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/pressstart2p" />
+
+                <Button
+                    android:id="@+id/btn_observe_leave"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:background="@drawable/hub_btn"
+                    android:textColor="@color/hub_text"
+                    android:text="@string/btn_disconnect"
+                    android:textAllCaps="false"
+                    android:textSize="11sp"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+
+            <FrameLayout
+                android:id="@+id/observe_gl"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:background="#000000">
+
+    <TextView 
+                    android:id="@+id/observe_crosshair"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="+"
+                    android:textColor="#66FFFFFF"
+                    android:textSize="28sp" />
+            </FrameLayout>
 
             <TextView
-                android:id="@+id/observe_crosshair"
-                android:layout_width="wrap_content"
+                android:id="@+id/observe_hud"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:text="+"
-                android:textColor="#66FFFFFF"
-                android:textSize="28sp" />
-        </FrameLayout>
+                android:padding="8dp"
+                android:background="@color/hub_panel"
+                android:fontFamily="monospace"
+                android:textColor="@color/hub_text"
+                android:textSize="10sp"
+                android:text="@string/touch_hint" />
+        </LinearLayout>
 
-        <TextView
-            android:id="@+id/observe_hud"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:padding="12dp"
-            android:background="@color/ss_bg_panel"
-            android:fontFamily="monospace"
-            android:textColor="@color/ss_text"
-            android:textSize="11sp"
-            android:lineSpacingExtra="3dp"
-            android:text="Перетащите, чтобы сдвинуть камеру…" />
+        <!-- Right touch zone -->
+        <LinearLayout
+            android:layout_width="72dp"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@color/hub_panel"
+            android:padding="6dp">
+
+            <Button
+                android:id="@+id/btn_touch_right"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/hub_btn"
+                android:text="▶"
+                android:textColor="@color/hub_text"
+                android:textSize="18sp"
+                android:stateListAnimator="@null" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

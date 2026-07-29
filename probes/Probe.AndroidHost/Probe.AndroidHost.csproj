@@ -5,10 +5,10 @@
     <OutputType>Exe</OutputType>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <ApplicationId>ru.ministation.robust.port</ApplicationId>
-    <ApplicationVersion>17</ApplicationVersion>
-    <ApplicationDisplayVersion>0.0.17-acz-parse</ApplicationDisplayVersion>
-    <ApplicationTitle>Мини-станция</ApplicationTitle>
+    <ApplicationId>org.ss14.mobilehub</ApplicationId>
+    <ApplicationVersion>100</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.0-hub-beta</ApplicationDisplayVersion>
+    <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
   </PropertyGroup>

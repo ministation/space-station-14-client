@@ -1,4 +1,6 @@
 using Android.Content.PM;
+using Android.Graphics;
+using Android.Util;
 using Android.Views;
 using Android.Widget;
 using Port.Content;
@@ -35,14 +37,14 @@ public class MainActivity : Activity
     TextView? _debugToggle;
     TextView? _downloadLabel;
     TextView? _downloadPct;
-    TextView? _statusBadge;
-    TextView? _serverPlayersBig;
     ProgressBar? _downloadProgress;
     bool _debugOpen;
     EditText? _authUsername;
     EditText? _authPassword;
     EditText? _authTfa;
     EditText? _charName;
+    EditText? _customServer;
+    LinearLayout? _serverList;
     Button? _connectBtn;
     Button? _loginBtn;
     Button? _logoutBtn;
@@ -50,35 +52,70 @@ public class MainActivity : Activity
     Button? _observeLeaveBtn;
     Button? _readyBtn;
     Button? _observeBtn;
+    Button? _addServerBtn;
     FrameLayout? _observeGl;
     GlesClearSurfaceView? _glView;
 
     AndroidPlatformHost? _host;
     readonly ConnectSession _connect = new();
     readonly Ss14AuthClient _authClient = new();
+    HubServerCatalog? _hub;
+    HubServerEntry? _selected;
     CancellationTokenSource? _connectCts;
     CancellationTokenSource? _loginCts;
     Timer? _uiTimer;
-        string _authUiStatus = "Войдите через аккаунт Space Station 14";
+    string _authUiStatus = "Войдите через аккаунт SS14";
     bool _loginBusy;
     float _lastTouchX, _lastTouchY;
     bool _dragging;
+    bool _landscapeLocked;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         SodiumAndroidBootstrap.EnsureLoaded();
         base.OnCreate(savedInstanceState);
+        RequestedOrientation = ScreenOrientation.Portrait;
         SetContentView(Resource.Layout.activity_main);
 
         var paths = AndroidContentPaths.FromContext(this);
         _host = new AndroidPlatformHost(paths);
         _host.EnsureDirectories();
         _host.OnLifecycle(PlatformLifecycle.Created);
-        _connect.AuthConfigPath = Path.Combine(paths.FilesDir, "auth-session.json");
+        _connect.AuthConfigPath = System.IO.Path.Combine(paths.FilesDir, "auth-session.json");
         _connect.ContentRoot = paths.ContentDir;
+        _hub = new HubServerCatalog(System.IO.Path.Combine(paths.FilesDir, "hub-favorites.json"));
         _connect.ProgressChanged += p => RunOnUiThread(() => ApplyProgress(p));
         _connect.DebugChanged += () => RunOnUiThread(RenderStatus);
 
+        BindViews();
+        WireButtons();
+        SelectServer(_hub.All.FirstOrDefault());
+        RebuildServerList();
+
+        var existing = AuthSessionConfig.TryLoad(_connect.AuthConfigPath);
+        if (existing?.HasRequiredFields == true)
+        {
+            _authUiStatus = existing.StatusLine();
+            if (_authUsername != null && !string.IsNullOrWhiteSpace(existing.UserName))
+                _authUsername.Text = existing.UserName;
+            if (_charName != null && string.IsNullOrWhiteSpace(_charName.Text))
+                _charName.Text = existing.UserName;
+        }
+
+        _uiTimer = new Timer(250);
+        _uiTimer.Elapsed += (_, _) =>
+        {
+            _host?.Clock.Pulse();
+            RunOnUiThread(RenderStatus);
+        };
+        _uiTimer.AutoReset = true;
+
+        RenderStatus();
+        _ = RefreshHomeStatusAsync();
+    }
+
+    void BindViews()
+    {
         _screenHome = FindViewById(Resource.Id.screen_home);
         _screenLobby = FindViewById(Resource.Id.screen_lobby);
         _screenObserve = FindViewById(Resource.Id.screen_observe);
@@ -96,12 +133,12 @@ public class MainActivity : Activity
         _downloadLabel = FindViewById<TextView>(Resource.Id.download_label);
         _downloadPct = FindViewById<TextView>(Resource.Id.download_pct);
         _downloadProgress = FindViewById<ProgressBar>(Resource.Id.download_progress);
-        _statusBadge = FindViewById<TextView>(Resource.Id.status_badge);
-        _serverPlayersBig = FindViewById<TextView>(Resource.Id.server_players_big);
         _authUsername = FindViewById<EditText>(Resource.Id.auth_username);
         _authPassword = FindViewById<EditText>(Resource.Id.auth_password);
         _authTfa = FindViewById<EditText>(Resource.Id.auth_tfa);
         _charName = FindViewById<EditText>(Resource.Id.char_name);
+        _customServer = FindViewById<EditText>(Resource.Id.custom_server);
+        _serverList = FindViewById<LinearLayout>(Resource.Id.server_list);
         _connectBtn = FindViewById<Button>(Resource.Id.btn_connect);
         _loginBtn = FindViewById<Button>(Resource.Id.btn_login_ss14);
         _logoutBtn = FindViewById<Button>(Resource.Id.btn_logout_ss14);
@@ -109,29 +146,19 @@ public class MainActivity : Activity
         _observeLeaveBtn = FindViewById<Button>(Resource.Id.btn_observe_leave);
         _readyBtn = FindViewById<Button>(Resource.Id.btn_ready);
         _observeBtn = FindViewById<Button>(Resource.Id.btn_observe);
+        _addServerBtn = FindViewById<Button>(Resource.Id.btn_add_server);
         _observeGl = FindViewById<FrameLayout>(Resource.Id.observe_gl);
 
-        if (_serverChip != null)
-            _serverChip.Text = $"ss14://{_connect.Endpoint.Host}:{_connect.Endpoint.Port}";
+        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn })
+            ClearMaterialTint(b);
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_up));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_down));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_left));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_right));
+    }
 
-        ClearMaterialTint(_loginBtn);
-        ClearMaterialTint(_logoutBtn);
-        ClearMaterialTint(_connectBtn);
-        ClearMaterialTint(_disconnectBtn);
-        ClearMaterialTint(_observeLeaveBtn);
-        ClearMaterialTint(_readyBtn);
-        ClearMaterialTint(_observeBtn);
-
-        var existing = AuthSessionConfig.TryLoad(_connect.AuthConfigPath);
-        if (existing?.HasRequiredFields == true)
-        {
-            _authUiStatus = existing.StatusLine();
-            if (_authUsername != null && !string.IsNullOrWhiteSpace(existing.UserName))
-                _authUsername.Text = existing.UserName;
-            if (_charName != null && string.IsNullOrWhiteSpace(_charName.Text))
-                _charName.Text = existing.UserName;
-        }
-
+    void WireButtons()
+    {
         if (_debugToggle != null)
         {
             _debugToggle.Click += (_, _) =>
@@ -139,7 +166,7 @@ public class MainActivity : Activity
                 _debugOpen = !_debugOpen;
                 if (_joinDebug != null)
                     _joinDebug.Visibility = _debugOpen ? ViewStates.Visible : ViewStates.Gone;
-                _debugToggle.Text = _debugOpen ? "Скрыть журнал подключения" : GetString(Resource.String.debug_toggle);
+                _debugToggle.Text = _debugOpen ? "Скрыть журнал" : GetString(Resource.String.debug_toggle);
             };
         }
 
@@ -153,50 +180,157 @@ public class MainActivity : Activity
             _disconnectBtn.Click += (_, _) => LeaveServer();
         if (_observeLeaveBtn != null)
             _observeLeaveBtn.Click += (_, _) => LeaveServer();
+        if (_addServerBtn != null)
+            _addServerBtn.Click += (_, _) => AddCustomServer();
+
         if (_readyBtn != null)
             _readyBtn.Click += (_, _) =>
             {
                 var next = !_connect.Session.IsReady;
                 if (!_connect.SetReady(next))
                 {
-                    Toast.MakeText(this, "Not connected", ToastLength.Short)?.Show();
+                    Toast.MakeText(this, "Нет соединения", ToastLength.Short)?.Show();
                     return;
                 }
 
-                Toast.MakeText(this,
-                    next
-                        ? "Ready sent (toggleready True) — only works in pre-round lobby"
-                        : "Unready sent",
-                    ToastLength.Short)?.Show();
+                Toast.MakeText(this, next ? "Ready" : "Unready", ToastLength.Short)?.Show();
                 RenderStatus();
             };
+
         if (_observeBtn != null)
             _observeBtn.Click += (_, _) =>
             {
                 if (!_connect.Observe())
                 {
-                    Toast.MakeText(this, "Not connected", ToastLength.Short)?.Show();
+                    Toast.MakeText(this, "Нет соединения", ToastLength.Short)?.Show();
                     return;
                 }
 
                 EnsureGl();
                 _glView?.Renderer.SetGhostMode(true);
-                Toast.MakeText(this,
-                    "Observe sent — needs round in progress. Drag to pan.",
-                    ToastLength.Short)?.Show();
+                ApplyOrientation(forceLandscape: true);
+                Toast.MakeText(this, "Observe — тач для камеры", ToastLength.Short)?.Show();
                 RenderStatus();
             };
 
-        _uiTimer = new Timer(250);
-        _uiTimer.Elapsed += (_, _) =>
-        {
-            _host?.Clock.Pulse();
-            RunOnUiThread(RenderStatus);
-        };
-        _uiTimer.AutoReset = true;
+        WireNudge(Resource.Id.btn_touch_up, 0, -48);
+        WireNudge(Resource.Id.btn_touch_down, 0, 48);
+        WireNudge(Resource.Id.btn_touch_left, -48, 0);
+        WireNudge(Resource.Id.btn_touch_right, 48, 0);
+    }
 
-        RenderStatus();
-        _ = RefreshHomeStatusAsync();
+    void WireNudge(int id, float dx, float dy)
+    {
+        var btn = FindViewById<Button>(id);
+        if (btn is null) return;
+        btn.Touch += (_, e) =>
+        {
+            if (e.Event is null) return;
+            if (e.Event.ActionMasked is MotionEventActions.Down or MotionEventActions.Move)
+            {
+                _connect.PanCamera(dx * 0.35f, dy * 0.35f);
+                _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
+            }
+
+            e.Handled = true;
+        };
+    }
+
+    void RebuildServerList()
+    {
+        if (_serverList is null || _hub is null)
+            return;
+        _serverList.RemoveAllViews();
+        var pad = (int)TypedValue.ApplyDimension(ComplexUnitType.Dip, 12, Resources!.DisplayMetrics);
+        foreach (var server in _hub.All)
+        {
+            var row = new LinearLayout(this)
+            {
+                Orientation = Orientation.Vertical,
+                Clickable = true,
+                Focusable = true,
+            };
+            row.SetBackgroundResource(Resource.Drawable.hub_server_row);
+            row.SetPadding(pad, pad, pad, pad);
+            var lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent,
+                ViewGroup.LayoutParams.WrapContent);
+            lp.BottomMargin = pad / 2;
+            row.LayoutParameters = lp;
+
+            var title = new TextView(this)
+            {
+                Text = server.Name,
+                TextSize = 14,
+            };
+            title.SetTextColor(Color.ParseColor("#F3F0E8"));
+
+            var addr = new TextView(this)
+            {
+                Text = server.ConnectUri + (server.Region is null ? "" : $" · {server.Region}"),
+                TextSize = 11,
+            };
+            addr.SetTextColor(Color.ParseColor("#D4C5A9"));
+            addr.Typeface = Typeface.Monospace;
+
+            row.AddView(title);
+            row.AddView(addr);
+            var captured = server;
+            row.Click += (_, _) =>
+            {
+                SelectServer(captured);
+                RebuildServerList();
+                _ = RefreshHomeStatusAsync();
+            };
+
+            if (_selected?.Id == server.Id)
+                row.SetBackgroundColor(Color.ParseColor("#525A66"));
+
+            _serverList.AddView(row);
+        }
+    }
+
+    void SelectServer(HubServerEntry? server)
+    {
+        if (server is null) return;
+        _selected = server;
+        _connect.Endpoint = server.ToEndpoint();
+        if (_serverChip != null)
+            _serverChip.Text = $"выбран: {server.Name}\n{server.ConnectUri}";
+        if (_connectStatus != null)
+            _connectStatus.Text = $"Сервер: {server.Name}";
+    }
+
+    void AddCustomServer()
+    {
+        var raw = _customServer?.Text?.Trim() ?? "";
+        var entry = HubServerEntry.TryParse(raw);
+        if (entry is null || _hub is null)
+        {
+            Toast.MakeText(this, "Адрес: ss14://host:port", ToastLength.Short)?.Show();
+            return;
+        }
+
+        _hub.AddCustom(entry);
+        SelectServer(entry);
+        RebuildServerList();
+        if (_customServer != null) _customServer.Text = "";
+        Toast.MakeText(this, $"Добавлен {entry.Name}", ToastLength.Short)?.Show();
+    }
+
+    void ApplyOrientation(bool forceLandscape)
+    {
+        var want = forceLandscape || _connect.Observing || _connect.InLobby;
+        if (want == _landscapeLocked && want)
+        {
+            RequestedOrientation = ScreenOrientation.SensorLandscape;
+            return;
+        }
+
+        _landscapeLocked = want;
+        RequestedOrientation = want
+            ? ScreenOrientation.SensorLandscape
+            : ScreenOrientation.Portrait;
     }
 
     async Task RefreshHomeStatusAsync()
@@ -204,12 +338,14 @@ public class MainActivity : Activity
         try
         {
             await _connect.RefreshStatusAsync();
-            RunOnUiThread(RenderStatus);
+            RunOnUiThread(() =>
+            {
+                if (_connect.LastStatus is { Online: true } st && _connectStatus != null && !_connect.Busy)
+                    _connectStatus.Text = $"{st.Name} · {st.Players}/{st.MaxPlayers}";
+                RenderStatus();
+            });
         }
-        catch
-        {
-            /* ignore */
-        }
+        catch { /* ignore */ }
     }
 
     void EnsureGl()
@@ -229,6 +365,7 @@ public class MainActivity : Activity
     {
         _connect.Disconnect();
         _glView?.Renderer.SetGhostMode(false);
+        ApplyOrientation(forceLandscape: false);
         RenderStatus();
     }
 
@@ -246,11 +383,9 @@ public class MainActivity : Activity
             case MotionEventActions.Move when _dragging:
                 var x = ev.GetX();
                 var y = ev.GetY();
-                var dx = x - _lastTouchX;
-                var dy = y - _lastTouchY;
+                _connect.PanCamera(-(x - _lastTouchX), y - _lastTouchY);
                 _lastTouchX = x;
                 _lastTouchY = y;
-                _connect.PanCamera(-dx, dy);
                 _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
                 break;
             case MotionEventActions.Up:
@@ -273,7 +408,7 @@ public class MainActivity : Activity
         var user = _authUsername?.Text?.Trim() ?? "";
         var pass = _authPassword?.Text ?? "";
         var tfa = _authTfa?.Text?.Trim();
-        _authUiStatus = $"Signing in as {user}…";
+        _authUiStatus = $"Вход: {user}…";
         RenderStatus();
 
         try
@@ -281,7 +416,7 @@ public class MainActivity : Activity
             var result = await _authClient.AuthenticateAsync(user, pass, tfa, _loginCts.Token);
             if (!result.Ok)
             {
-                _authUiStatus = $"Sign-in failed [{result.ErrorCode}]: {result.Error}";
+                _authUiStatus = $"Ошибка [{result.ErrorCode}]: {result.Error}";
                 return;
             }
 
@@ -297,7 +432,7 @@ public class MainActivity : Activity
         }
         catch (Exception ex)
         {
-            _authUiStatus = $"Sign-in error: {ex.Message}";
+            _authUiStatus = $"Ошибка входа: {ex.Message}";
         }
         finally
         {
@@ -312,25 +447,37 @@ public class MainActivity : Activity
         if (!string.IsNullOrWhiteSpace(_connect.AuthConfigPath))
             AuthSessionConfig.Clear(_connect.AuthConfigPath);
         LeaveServer();
-        _authUiStatus = "Signed out";
+        _authUiStatus = "Вы вышли";
         RenderStatus();
     }
 
     async Task RunConnectAsync()
     {
         if (_connect.Busy) return;
+        if (_selected is null)
+        {
+            Toast.MakeText(this, "Выберите сервер", ToastLength.Short)?.Show();
+            return;
+        }
+
+        _connect.Endpoint = _selected.ToEndpoint();
         _connectCts?.Cancel();
         _connectCts = new CancellationTokenSource();
         if (_connectBtn != null) _connectBtn.Enabled = false;
+        ApplyOrientation(forceLandscape: true);
         RenderStatus();
         try
         {
             await _connect.RunAsync(_connectCts.Token);
             if (_connect.InLobby || _connect.Observing)
             {
-                _authUiStatus = $"Connected as {_connect.Session.UserName}";
+                _authUiStatus = $"В сети: {_connect.Session.UserName}";
                 if (_charName != null && string.IsNullOrWhiteSpace(_charName.Text))
                     _charName.Text = _connect.Session.UserName;
+            }
+            else
+            {
+                ApplyOrientation(forceLandscape: false);
             }
         }
         finally
@@ -393,40 +540,28 @@ public class MainActivity : Activity
         if (_screenObserve != null)
             _screenObserve.Visibility = observing ? ViewStates.Visible : ViewStates.Gone;
 
+        if (lobby || observing)
+            ApplyOrientation(forceLandscape: true);
+        else if (!_connect.Busy)
+            ApplyOrientation(forceLandscape: false);
+
         if (observing)
             EnsureGl();
 
         if (_authStatus != null)
             _authStatus.Text = _authUiStatus;
-        if (_connectStatus != null)
+        if (_connectStatus != null && string.IsNullOrWhiteSpace(_connectStatus.Text))
             _connectStatus.Text = _connect.Summary;
-
-        if (_serverPlayersBig != null || _statusBadge != null)
+        if (_connect.Busy || _connect.InLobby || _connect.Observing)
         {
-            var st = _connect.LastStatus;
-            if (st is { Online: true })
-            {
-                if (_serverPlayersBig != null)
-                    _serverPlayersBig.Text = $"{st.Players}/{st.MaxPlayers}";
-                if (_statusBadge != null)
-                    _statusBadge.Text = "Онлайн";
-            }
-            else if (_connect.Busy)
-            {
-                if (_statusBadge != null)
-                    _statusBadge.Text = "Загрузка…";
-            }
-            else if (!string.IsNullOrWhiteSpace(st?.Error))
-            {
-                if (_statusBadge != null)
-                    _statusBadge.Text = "Оффлайн";
-            }
+            if (_connectStatus != null)
+                _connectStatus.Text = _connect.Summary;
         }
 
         if (_lobbyStation != null)
         {
-            var name = _connect.LastStatus?.Name;
-            _lobbyStation.Text = string.IsNullOrWhiteSpace(name) ? "Мини-станция" : name;
+            var name = _connect.LastStatus?.Name ?? _selected?.Name;
+            _lobbyStation.Text = string.IsNullOrWhiteSpace(name) ? "Server" : name;
         }
 
         if (_lobbyRound != null)
@@ -436,32 +571,29 @@ public class MainActivity : Activity
                 var st = _connect.Session.LocalStatus;
                 var map = _connect.LastStatus?.Map;
                 var preset = _connect.LastStatus?.Preset;
-                var ready = _connect.Session.IsReady ? " · ГОТОВ" : "";
+                var ready = _connect.Session.IsReady ? " · READY" : "";
                 _lobbyRound.Text = string.IsNullOrWhiteSpace(map)
                     ? $"{st}{ready}"
                     : $"{st}{ready} · {map} · {preset}";
             }
             else
-            {
-                _lobbyRound.Text = "Отключено";
-            }
+                _lobbyRound.Text = "Offline";
         }
 
         if (_lobbyAccount != null)
-            _lobbyAccount.Text = $"Аккаунт: {_connect.Session.UserName ?? "—"}";
+            _lobbyAccount.Text = $"account: {_connect.Session.UserName ?? "—"}";
 
         if (_lobbyPlayers != null)
         {
             var players = _connect.Session.Players;
             if (players.Count == 0)
-                _lobbyPlayers.Text = lobby ? "Ждём список игроков…" : "—";
+                _lobbyPlayers.Text = lobby ? "…" : "—";
             else
             {
-                var lines = players
+                _lobbyPlayers.Text = string.Join('\n', players
                     .OrderBy(p => p.Status)
                     .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(p => $"[{StatusLabel(p.Status)}]  {p.Name}");
-                _lobbyPlayers.Text = string.Join('\n', lines);
+                    .Select(p => $"[{StatusLabel(p.Status)}]  {p.Name}"));
             }
         }
 
@@ -473,9 +605,7 @@ public class MainActivity : Activity
         }
 
         if (_joinDebug != null)
-            _joinDebug.Text = string.IsNullOrWhiteSpace(_connect.DebugLog)
-                ? _connect.Summary
-                : _connect.DebugLog;
+            _joinDebug.Text = string.IsNullOrWhiteSpace(_connect.DebugLog) ? _connect.Summary : _connect.DebugLog;
 
         if (_connect.LastProgress is { } prog && _connect.Busy)
             ApplyProgress(prog);
@@ -485,16 +615,14 @@ public class MainActivity : Activity
             var s = _connect.Session;
             _observeHud.Text =
                 $"{s.Detail}\n" +
-                $"status={s.LocalStatus}  MsgState={s.StatesReceived}  last={s.LastStateBytes}B\n" +
-                $"{s.SerializerStatus}\n" +
+                $"MsgState={s.StatesReceived}  {s.SerializerStatus}\n" +
                 $"eye: {s.LastEye?.Detail ?? s.LastEyeHint}\n" +
-                $"cam=({s.CamX:0},{s.CamY:0})\n" +
-                string.Join('\n', s.SnapshotLogPublic(10));
+                $"cam=({s.CamX:0},{s.CamY:0}) · drag / D-pad";
             _glView?.Renderer.SetCamera(s.CamX, s.CamY);
         }
 
         if (_readyBtn != null)
-            _readyBtn.Text = _connect.Session.IsReady ? "Не готов" : GetString(Resource.String.btn_ready);
+            _readyBtn.Text = _connect.Session.IsReady ? "Unready" : GetString(Resource.String.btn_ready);
     }
 
     static void ClearMaterialTint(Button? btn)

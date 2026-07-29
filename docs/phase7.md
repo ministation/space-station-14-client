@@ -1,15 +1,17 @@
-# Phase 7 — Mini Station UI + join fixes
+# SS14 Hub — public beta
 
 ## APK
 
-`artifacts/RobustAndroidPort-0.0.16-join-fix.apk` (`0.0.16-join-fix`)
+`artifacts/RobustAndroidPort-0.1.0-hub-beta.apk`
 
-## 0.0.16 fixes
+## Product
 
-- **Content `Java.RuntimeException`**: skip OPTIONS; use `SocketsHttpHandler` (not Android Java HTTP); richer inner-exception logs; batch retries; no `Progress<T>` UI re-entry.
-- **UDP timeout ~15s**: Lidgren handshake 25×1s; bind `IPAddress.Any`; join **in parallel** with content download.
-- Clearer fail text if UDP still blocked (VPN / Private DNS).
+Neutral **SS14 mobile hub** (not Mini-Station branded):
 
-## 0.0.15
+- Slate / beige UI matching SS14 launcher login button
+- Server list + custom `ss14://host:port`
+- Landscape on join / observe
+- Touch drag + D-pad for camera
+- Content **cache** (`assemblies.ok`) — no full re-download each join
 
-- OPTIONS Content-Type, libsodium Android natives, Mini Station UI.
+Package id: `org.ss14.mobilehub`

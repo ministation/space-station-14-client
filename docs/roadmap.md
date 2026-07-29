@@ -74,7 +74,10 @@
 - [x] RobustSerializer + Content.Shared from disk → GameState / Eye / MsgStateAck (`0.0.14-gamestate`)
 - [x] Fix ACZ OPTIONS Content-Type + libsodium Android natives (`0.0.15`)
 - [x] Mini Station website-style UI (`0.0.15-ministation-ui`)
+- [x] ACZ PreCompressed parse + zstd (`0.0.17`)
+- [x] Public **SS14 Hub** beta: gray/beige, server list, cache, landscape, touch (`0.1.0-hub-beta`)
 - [ ] Sprite draw from GameState (RSI / Clyde)
 - [ ] Touch camera against real world coords
+- [ ] Live public hub API sync (favorites are local for now)
 
 Каждая фаза должна заканчиваться **воспроизводимым артефактом** (build/log/screenshot), а не «почти готово».
