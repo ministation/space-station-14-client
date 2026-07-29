@@ -4,6 +4,7 @@
 __pycache__/
 *.o
 *.obj
+*.class
 *.exe
 *.dll
 *.so
@@ -18,6 +19,8 @@ dist/
 build/
 target/
 .gradle/
+.mypy_cache/
+.pytest_cache/
 
 # Logs and temp files
 *.log
@@ -30,7 +33,7 @@ target/
 .env.local
 *.env.*
 
-# Editors
+# Editors and IDEs
 .vscode/
 .idea/
 *.swp
@@ -41,15 +44,9 @@ target/
 Thumbs.db
 
 # Coverage
-.coverage
 coverage/
 htmlcov/
-
-# MyPy
-.mypy_cache/
-
-# PyTest
-.pytest_cache/
+.coverage
 
 # Compressed files
 *.zip
