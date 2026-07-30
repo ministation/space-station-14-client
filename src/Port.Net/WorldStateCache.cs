@@ -1213,21 +1213,6 @@ public sealed class WorldStateCache
                         continue;
                     ColorForTile(tile.TypeId, out var r, out var g, out var b);
                     var rsi = _tiles?.TryGetSprite((ushort)tile.TypeId);
-                    // Variant UV: prefer numeric state from tile variant when present.
-                    string? state = null;
-                    try
-                    {
-                        // Robust Tile may expose Variant / Flags — best-effort.
-                        var tt = tile.GetType();
-                        var variant = tt.GetProperty("Variant")?.GetValue(tile)
-                                      ?? tt.GetField("Variant")?.GetValue(tile);
-                        if (variant is byte vb)
-                            state = vb.ToString();
-                        else if (variant is int vi)
-                            state = vi.ToString();
-                    }
-                    catch { /* ignore */ }
-
                     // Textured floors: white modulate (pastel only for missing art).
                     if (!string.IsNullOrEmpty(rsi))
                     {
@@ -1237,8 +1222,10 @@ public sealed class WorldStateCache
                     }
 
                     list.Add(new WorldTileDraw(
-                        world.X, world.Y, r, g, b, rsi, state,
-                        tile.Variant, tile.RotationMirroring, (float)gridRot.Theta));
+                        world.X, world.Y, r, g, b, rsi, null,
+                        Variant: tile.Variant,
+                        RotationMirroring: tile.RotationMirroring,
+                        Rotation: (float)gridRot.Theta));
                 }
             }
         }
