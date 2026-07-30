@@ -145,7 +145,10 @@ public static class RsiMeta
         state ??= doc.States.FirstOrDefault(s =>
                       string.Equals(s.Name, "full", StringComparison.OrdinalIgnoreCase)
                       || string.Equals(s.Name, "icon", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(s.Name, "animated", StringComparison.OrdinalIgnoreCase))
+                      || string.Equals(s.Name, "animated", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(s.Name, "default", StringComparison.OrdinalIgnoreCase))
+                  ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name)
+                                                    && File.Exists(Path.Combine(rsiPathOrDirectory, s.Name + ".png")))
                   ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
                   ?? doc.States.FirstOrDefault();
         if (state is null)

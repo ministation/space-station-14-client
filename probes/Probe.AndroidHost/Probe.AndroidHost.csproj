@@ -14,6 +14,17 @@
     <RunAOTCompilation>false</RunAOTCompilation>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidEnableMarshalMethods>true</AndroidEnableMarshalMethods>
+    <AndroidLinkTool>r8</AndroidLinkTool>
+    <!-- Keep Java/IL trim conservative — content serializers need reflection. -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+  </PropertyGroup>
   <ItemGroup>
     <TrimmerRootAssembly Include="Robust.Shared" RootMode="All" />
     <TrimmerRootAssembly Include="Robust.Shared.Maths" RootMode="All" />

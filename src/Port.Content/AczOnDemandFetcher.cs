@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace Port.Content;
 
 /// <summary>
-/// On-demand ACZ downloads for packed textures (.rsic). Keeps a slim path→index map
-/// (Textures/*.rsic only) — never indexes the full multi-million manifest in RAM.
+/// On-demand ACZ downloads for textures (.rsic / tile png) and audio (.ogg).
+/// Slim path→index map — never indexes the full multi-million manifest in RAM.
 /// </summary>
 public sealed class AczOnDemandFetcher
 {
@@ -29,7 +29,7 @@ public sealed class AczOnDemandFetcher
 
     /// <summary>
     /// Build index from full manifest, then caller should drop the manifest to free RAM.
-    /// Only <c>Textures/**/*.rsic</c> paths are retained.
+    /// Keeps <c>Textures/**/*.rsic</c>, tile PNGs, and <c>Audio/**/*.ogg</c>.
     /// </summary>
     public void Configure(string statusBaseUrl, ContentManifest manifest, string filesRoot)
     {
@@ -37,6 +37,14 @@ public sealed class AczOnDemandFetcher
         for (var i = 0; i < manifest.Entries.Count; i++)
         {
             var p = manifest.Entries[i].Path.Replace('\\', '/');
+            var isAudio = p.StartsWith("Audio/", StringComparison.OrdinalIgnoreCase)
+                          && p.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase);
+            if (isAudio)
+            {
+                map[p] = i;
+                continue;
+            }
+
             if (!p.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
                 continue;
             var isRsic = p.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase);

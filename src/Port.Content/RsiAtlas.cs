@@ -203,11 +203,14 @@ public sealed class RsiAtlas
         string? stateName,
         float rotationRadians,
         double timeSeconds,
-        bool folderPerStateSheet = false)
+        bool folderPerStateSheet = false,
+        int dirOverride = -1)
     {
         StateInfo state;
         if (!string.IsNullOrWhiteSpace(stateName) && atlas.States.TryGetValue(stateName, out var hit))
             state = hit;
+        else if (!string.IsNullOrWhiteSpace(stateName) && TryFuzzyState(atlas, stateName, out var fuzzy))
+            state = fuzzy;
         else if (TryPreferredState(atlas, out var preferred))
             state = preferred;
         else if (atlas.StateOrder.Length > 0 && atlas.States.TryGetValue(atlas.StateOrder[0], out var first))
@@ -215,7 +218,9 @@ public sealed class RsiAtlas
         else
             return FullFrame(atlas);
 
-        var dir = DirectionIndex(rotationRadians, state.DirCount);
+        var dir = dirOverride >= 0
+            ? Math.Clamp(dirOverride, 0, Math.Max(0, state.DirCount - 1))
+            : DirectionIndex(rotationRadians, state.DirCount);
         var delays = state.Delays[Math.Clamp(dir, 0, state.Delays.Length - 1)];
         var frame = AnimatedFrame(delays, timeSeconds);
 
@@ -255,6 +260,32 @@ public sealed class RsiAtlas
         {
             if (atlas.States.TryGetValue(name, out state!))
                 return true;
+        }
+
+        state = null!;
+        return false;
+    }
+
+    static bool TryFuzzyState(Loaded atlas, string stateName, out StateInfo state)
+    {
+        // Exact already failed — try prefix/suffix matches from meta names.
+        foreach (var kv in atlas.States)
+        {
+            if (kv.Key.Equals(stateName, StringComparison.OrdinalIgnoreCase))
+            {
+                state = kv.Value;
+                return true;
+            }
+        }
+
+        foreach (var kv in atlas.States)
+        {
+            if (kv.Key.StartsWith(stateName, StringComparison.OrdinalIgnoreCase)
+                || stateName.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                state = kv.Value;
+                return true;
+            }
         }
 
         state = null!;

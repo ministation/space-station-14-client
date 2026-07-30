@@ -855,8 +855,9 @@
             android:id="@+id/observe_hud"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|center_horizontal"
+            android:layout_gravity="top|start"
             android:layout_marginTop="6dp"
+            android:layout_marginStart="8dp"
             android:paddingLeft="8dp"
             android:paddingRight="8dp"
             android:paddingTop="2dp"
@@ -868,10 +869,28 @@
             android:gravity="center"
             android:text="" />
 
+        <TextView
+            android:id="@+id/observe_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="6dp"
+            android:layout_marginEnd="56dp"
+            android:paddingLeft="6dp"
+            android:paddingRight="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:background="#44000000"
+            android:fontFamily="@font/exo2_regular"
+            android:textColor="#B0E8E4DA"
+            android:textSize="10sp"
+            android:gravity="center"
+            android:text="FPS" />
+
         <Button
             android:id="@+id/btn_observe_leave"
             android:layout_width="wrap_content"
-            android:layout_height="40dp"
+            android:layout_height="36dp"
             android:layout_gravity="top|end"
             android:layout_margin="10dp"
             android:background="@drawable/hub_btn_danger"
@@ -882,106 +901,198 @@
             android:fontFamily="@font/exo2_semibold"
             android:stateListAnimator="@null" />
 
-        <!-- Ghost actions (PC GhostGui) — left column -->
+        <!-- PC GhostSystem eye toggles -->
+        <LinearLayout
+            android:id="@+id/ghost_toggles"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="104dp"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <Button
+                android:id="@+id/btn_ghost_fov"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="FoV"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_light"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="Свет"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_vis"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:background="@drawable/hub_btn"
+                android:text="Духи"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+        </LinearLayout>
+
+        <!-- Ghost actions — bottom center, compact -->
         <LinearLayout
             android:id="@+id/ghost_actions"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center_vertical|start"
-            android:layout_marginStart="10dp"
-            android:orientation="vertical"
-            android:gravity="center_horizontal">
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="68dp"
+            android:orientation="horizontal"
+            android:gravity="center">
 
             <Button
                 android:id="@+id/btn_ghost_return"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/hub_btn"
                 android:text="В тело"
                 android:textColor="@color/hub_text"
                 android:textAllCaps="false"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_warps"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/hub_btn"
                 android:text="Варп"
                 android:textColor="@color/hub_text"
                 android:textAllCaps="false"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_ghost_follow"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/hub_btn"
                 android:text="Следить"
                 android:textColor="@color/hub_text"
                 android:textAllCaps="false"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
 
             <Button
                 android:id="@+id/btn_ghost_roles"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
                 android:background="@drawable/hub_btn"
                 android:text="Роли"
                 android:textColor="@color/hub_text"
                 android:textAllCaps="false"
-                android:textSize="11sp"
+                android:textSize="10sp"
                 android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
-
-            <Button
-                android:id="@+id/btn_ghost_fov"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/hub_btn"
-                android:text="FoV ✓"
-                android:textColor="@color/hub_text"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
-
-            <Button
-                android:id="@+id/btn_ghost_light"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/hub_btn"
-                android:text="Свет ✓"
-                android:textColor="@color/hub_text"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
-
-            <Button
-                android:id="@+id/btn_ghost_nado"
-                android:layout_width="120dp"
-                android:layout_height="40dp"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/hub_btn"
-                android:text="Nado"
-                android:textColor="@color/hub_text"
-                android:textAllCaps="false"
-                android:textSize="11sp"
-                android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null" />
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
         </LinearLayout>
+
+        <!-- Robust-style warp / follow picker (replaces AlertDialog) -->
+        <FrameLayout
+            android:id="@+id/observe_warp_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone"
+            android:background="#99000000"
+            android:clickable="true"
+            android:focusable="true">
+
+            <LinearLayout
+                android:layout_width="360dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:layout_marginTop="48dp"
+                android:layout_marginBottom="48dp"
+                android:orientation="vertical"
+                android:background="@drawable/chat_panel_bg"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/observe_warp_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:textColor="#F3F0E8"
+                    android:textSize="14sp"
+                    android:padding="8dp"
+                    android:text="Варп" />
+
+                <ListView
+                    android:id="@+id/observe_warp_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:divider="#332A3038"
+                    android:dividerHeight="1dp"
+                    android:cacheColorHint="@android:color/transparent" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="end"
+                    android:paddingTop="8dp">
+
+                    <Button
+                        android:id="@+id/btn_observe_warp_ghostnado"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/hub_btn"
+                        android:text="Ghostnado"
+                        android:textAllCaps="false"
+                        android:textColor="@color/hub_text"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/btn_observe_warp_close"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:background="@drawable/hub_btn_danger"
+                        android:text="Закрыть"
+                        android:textAllCaps="false"
+                        android:textColor="#F3F0E8"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
+            </LinearLayout>
+        </FrameLayout>
 
         <FrameLayout
             android:id="@+id/joystick_host"
@@ -989,6 +1100,107 @@
             android:layout_height="140dp"
             android:layout_gravity="bottom|start"
             android:layout_margin="16dp" />
+
+        <!-- PC-style chat (history + channel + input) — top right -->
+        <LinearLayout
+            android:id="@+id/observe_chat_panel"
+            android:layout_width="320dp"
+            android:layout_height="180dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="48dp"
+            android:layout_marginEnd="8dp"
+            android:orientation="vertical"
+            android:background="@drawable/chat_panel_bg"
+            android:padding="4dp">
+
+            <ScrollView
+                android:id="@+id/observe_chat_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="false"
+                android:fadeScrollbars="true"
+                android:scrollbarStyle="insideOverlay">
+
+                <TextView
+                    android:id="@+id/observe_chat_history"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textColor="#E8E4DC"
+                    android:textSize="11sp"
+                    android:lineSpacingExtra="2dp"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="6dp"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp"
+                    android:text="чат…" />
+            </ScrollView>
+
+            <LinearLayout
+                android:id="@+id/observe_chat_bar"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/chat_input_bg"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp">
+
+                <Button
+                    android:id="@+id/btn_observe_chat_channel"
+                    android:layout_width="72dp"
+                    android:layout_height="32dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="Рядом"
+                    android:textColor="@color/hub_text"
+                    android:textAllCaps="false"
+                    android:textSize="10sp"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+
+                <EditText
+                    android:id="@+id/observe_chat_input"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@android:color/transparent"
+                    android:fontFamily="@font/exo2_regular"
+                    android:hint="E чтобы говорить…"
+                    android:textColorHint="#66E8E4DA"
+                    android:textColor="#F3F0E8"
+                    android:textSize="12sp"
+                    android:imeOptions="actionSend"
+                    android:inputType="textCapSentences"
+                    android:maxLines="1"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp" />
+
+                <Button
+                    android:id="@+id/btn_observe_chat_filter"
+                    android:layout_width="36dp"
+                    android:layout_height="32dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="☰"
+                    android:textColor="@color/hub_text"
+                    android:textSize="12sp"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+
+                <Button
+                    android:id="@+id/btn_observe_chat_send"
+                    android:layout_width="40dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="2dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="▶"
+                    android:textColor="@color/hub_text"
+                    android:textSize="12sp"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+            </LinearLayout>
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
