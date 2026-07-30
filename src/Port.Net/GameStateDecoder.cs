@@ -319,12 +319,22 @@ public static class GameStateDecoder
         Dictionary<NetEntity, SpriteVisual> sprites)
     {
         var tn = state.GetType().Name;
-        // Avoid matching unrelated *Sprite* types / IconSmooth intermediate junk.
+        if (tn.Contains("IconSmooth", StringComparison.OrdinalIgnoreCase))
+        {
+            // PC derives the connected state client-side. Keep prototype art and use
+            // the RSI's complete icon until the mobile adjacency pass supplies a mask.
+            sprites.TryGetValue(ent, out var smooth);
+            smooth ??= new SpriteVisual { FromNetwork = false };
+            smooth.State = "full";
+            sprites[ent] = smooth;
+            return;
+        }
+
+        // Avoid matching unrelated *Sprite* state types.
         if (!tn.Contains("SpriteComponent", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(tn, "SpriteComponentState", StringComparison.OrdinalIgnoreCase)
             && !(tn.Contains("Sprite", StringComparison.OrdinalIgnoreCase)
-                 && tn.Contains("State", StringComparison.OrdinalIgnoreCase)
-                 && !tn.Contains("IconSmooth", StringComparison.OrdinalIgnoreCase)))
+                 && tn.Contains("State", StringComparison.OrdinalIgnoreCase)))
             return;
 
         sprites.TryGetValue(ent, out var prev);
@@ -538,7 +548,7 @@ public static class GameStateDecoder
             path = path.TrimStart('/');
 
         if (!path.Contains('/') && !path.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
-            return null;
+            path += ".rsi";
         return path;
     }
 

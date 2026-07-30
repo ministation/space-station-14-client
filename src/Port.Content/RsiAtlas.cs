@@ -65,6 +65,17 @@ public sealed class RsiAtlas
     static readonly Dictionary<string, Loaded?> Cache = new(StringComparer.OrdinalIgnoreCase);
     static readonly object Gate = new();
 
+    public static void Invalidate(string? sourcePath = null)
+    {
+        lock (Gate)
+        {
+            if (string.IsNullOrEmpty(sourcePath))
+                Cache.Clear();
+            else
+                Cache.Remove(sourcePath);
+        }
+    }
+
     public static Loaded? TryLoad(string rsiPathOrDirectory)
     {
         lock (Gate)

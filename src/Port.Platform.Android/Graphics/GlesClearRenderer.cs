@@ -100,6 +100,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     readonly Queue<string> _pendingTexLoad = new();
     readonly HashSet<string> _queuedTex = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, long> _texRetryAtFrame = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _texNeeded = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, long> _texLastUsed = new(StringComparer.OrdinalIgnoreCase);
+    readonly List<string> _texSweep = new();
+    bool _textureResetRequested;
 
     FloatBuffer? _posBuf;
     FloatBuffer? _colBuf;
@@ -109,8 +113,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     float[] _uvScratch = new float[6 * 2];
     float[] _texPosScratch = new float[6 * 2];
 
-    const int MaxEntities = 3500;
+    const int MaxEntities = 4000;
     const int MaxVerts = MaxEntities * 6; // 2 tris per quad
+    const int MaxTexCache = 768;
     const float PixelsPerTile = 32f;
 
     public long FrameCount
@@ -185,7 +190,12 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     public void SetContentFilesRoot(string? root)
     {
-        lock (_gate) _contentFilesRoot = root;
+        lock (_gate)
+        {
+            if (!string.Equals(_contentFilesRoot, root, StringComparison.OrdinalIgnoreCase))
+                _textureResetRequested = true;
+            _contentFilesRoot = root;
+        }
     }
 
     public void SetTextureFetcher(Port.Content.AczOnDemandFetcher? fetcher)
@@ -247,6 +257,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     {
         try
         {
+            // Android may recreate the EGL context while this renderer instance survives.
+            // Every old texture/program id is invalid in the new context.
+            ResetTextureCaches(deleteGlTextures: false);
             GLES20.GlClearColor(0.02f, 0.03f, 0.06f, 1f);
             GLES20.GlEnable(GLES20.GlBlend);
             GLES20.GlBlendFunc(GLES20.GlSrcAlpha, GLES20.GlOneMinusSrcAlpha);
@@ -303,6 +316,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             bubbles = _bubbles;
             contentRoot = _contentFilesRoot;
             texFetcher = _texFetcher;
+            if (_textureResetRequested)
+            {
+                ResetTextureCaches(deleteGlTextures: true);
+                _textureResetRequested = false;
+            }
             _frames++;
             if (pulse && !ghost)
             {
@@ -329,6 +347,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             return;
         }
 
+        _texNeeded.Clear();
         var cosR = MathF.Cos(-camRot);
         var sinR = MathF.Sin(-camRot);
 
@@ -339,6 +358,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             DrawEntities(ents, count, camX, camY, zoom, cosR, sinR, camRot, contentRoot, texFetcher);
 
         DrawSpeechBubbles(bubbles, bubbleCount, camX, camY, zoom, cosR, sinR);
+        SweepTextureCache();
     }
 
     void DrawEntities(
@@ -351,6 +371,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var halfW = _width * 0.5f;
         var halfH = _height * 0.5f;
         var vert = 0;
+        var markers = 0;
         var textured = 0;
         var rsiPaths = 0;
         var texDrawBudget = 2800;
@@ -373,6 +394,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             if (!string.IsNullOrEmpty(e.RsiPath))
             {
                 rsiPaths++;
+                MarkTextureNeeded(e.RsiPath!);
                 if (contentRoot is not null)
                     QueueTexture(e.RsiPath!);
             }
@@ -387,6 +409,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             var drawRot = e.NoRotation ? 0f : (e.Rotation - camRot);
             if (hasTex && texDrawBudget > 0)
             {
+                FlushSolidQuads(ref vert);
                 var uv = ResolveUv(tex, e.StateName, eyeRelRot, animTime);
                 var sizeX = Math.Max(8f, uv.FrameW) * zoom;
                 var sizeY = Math.Max(8f, uv.FrameH) * zoom;
@@ -429,32 +452,14 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             }
             Put(x0, y0); Put(x1, y0); Put(x1, y1);
             Put(x0, y0); Put(x1, y1); Put(x0, y1);
+            markers++;
         }
 
-        if (vert > 0)
-        {
-            EnsureBuffers(vert);
-            _posBuf!.Position(0);
-            _posBuf.Put(_posScratch, 0, vert * 2);
-            _posBuf.Position(0);
-            _colBuf!.Position(0);
-            _colBuf.Put(_colScratch, 0, vert * 4);
-            _colBuf.Position(0);
-
-            GLES20.GlUseProgram(_program);
-            GLES20.GlUniform2f(_uScreen, _width, _height);
-            GLES20.GlEnableVertexAttribArray(_aPos);
-            GLES20.GlEnableVertexAttribArray(_aColor);
-            GLES20.GlVertexAttribPointer(_aPos, 2, GLES20.GlFloat, false, 0, _posBuf);
-            GLES20.GlVertexAttribPointer(_aColor, 4, GLES20.GlFloat, false, 0, _colBuf);
-            GLES20.GlDrawArrays(GLES20.GlTriangles, 0, vert);
-            GLES20.GlDisableVertexAttribArray(_aPos);
-            GLES20.GlDisableVertexAttribArray(_aColor);
-        }
+        FlushSolidQuads(ref vert);
 
         lock (_gate)
         {
-            _drawnLast = vert / 6 + textured;
+            _drawnLast = markers + textured;
             _texturedLast = textured;
             _rsiPathLast = rsiPaths;
             _texCached = _texCache.Count;
@@ -713,14 +718,19 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             if (MathF.Abs(sx) > halfW + pad || MathF.Abs(sy) > halfH + pad)
                 continue;
 
-            if (!string.IsNullOrEmpty(t.RsiPath) && contentRoot is not null)
-                QueueTexture(t.RsiPath!);
+            if (!string.IsNullOrEmpty(t.RsiPath))
+            {
+                MarkTextureNeeded(t.RsiPath!);
+                if (contentRoot is not null)
+                    QueueTexture(t.RsiPath!);
+            }
 
             if (!string.IsNullOrEmpty(t.RsiPath)
                 && _texCache.TryGetValue(t.RsiPath!, out var tex)
                 && tex.Id != 0
                 && texBudget > 0)
             {
+                FlushSolidQuads(ref vert);
                 var uv = ResolveUv(tex, t.StateName, 0, animTime);
                 DrawTexturedQuad(sx, sy, size, size, tex.Id, uv, tileRot,
                     t.R / 255f, t.G / 255f, t.B / 255f, 1f);
@@ -759,30 +769,36 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             drawn++;
         }
 
-        if (vert > 0 && _program != 0)
-        {
-            EnsureBuffers(vert);
-            _posBuf!.Position(0);
-            _posBuf.Put(_posScratch, 0, vert * 2);
-            _posBuf.Position(0);
-            _colBuf!.Position(0);
-            _colBuf.Put(_colScratch, 0, vert * 4);
-            _colBuf.Position(0);
-
-            GLES20.GlUseProgram(_program);
-            GLES20.GlEnable(GLES20.GlBlend);
-            GLES20.GlBlendFunc(GLES20.GlSrcAlpha, GLES20.GlOneMinusSrcAlpha);
-            GLES20.GlUniform2f(_uScreen, _width, _height);
-            GLES20.GlEnableVertexAttribArray(_aPos);
-            GLES20.GlEnableVertexAttribArray(_aColor);
-            GLES20.GlVertexAttribPointer(_aPos, 2, GLES20.GlFloat, false, 0, _posBuf);
-            GLES20.GlVertexAttribPointer(_aColor, 4, GLES20.GlFloat, false, 0, _colBuf);
-            GLES20.GlDrawArrays(GLES20.GlTriangles, 0, vert);
-            GLES20.GlDisableVertexAttribArray(_aPos);
-            GLES20.GlDisableVertexAttribArray(_aColor);
-        }
+        FlushSolidQuads(ref vert);
 
         lock (_gate) _tilesDrawnLast = drawn;
+    }
+
+    void FlushSolidQuads(ref int vert)
+    {
+        if (vert <= 0 || _program == 0)
+            return;
+
+        EnsureBuffers(vert);
+        _posBuf!.Position(0);
+        _posBuf.Put(_posScratch, 0, vert * 2);
+        _posBuf.Position(0);
+        _colBuf!.Position(0);
+        _colBuf.Put(_colScratch, 0, vert * 4);
+        _colBuf.Position(0);
+
+        GLES20.GlUseProgram(_program);
+        GLES20.GlEnable(GLES20.GlBlend);
+        GLES20.GlBlendFunc(GLES20.GlSrcAlpha, GLES20.GlOneMinusSrcAlpha);
+        GLES20.GlUniform2f(_uScreen, _width, _height);
+        GLES20.GlEnableVertexAttribArray(_aPos);
+        GLES20.GlEnableVertexAttribArray(_aColor);
+        GLES20.GlVertexAttribPointer(_aPos, 2, GLES20.GlFloat, false, 0, _posBuf);
+        GLES20.GlVertexAttribPointer(_aColor, 4, GLES20.GlFloat, false, 0, _colBuf);
+        GLES20.GlDrawArrays(GLES20.GlTriangles, 0, vert);
+        GLES20.GlDisableVertexAttribArray(_aPos);
+        GLES20.GlDisableVertexAttribArray(_aColor);
+        vert = 0;
     }
 
     void DrawWorldGrid(float camX, float camY, float zoom, float cosR, float sinR)
@@ -949,13 +965,116 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         GLES20.GlDisableVertexAttribArray(_texAUv);
     }
 
+    void MarkTextureNeeded(string path)
+    {
+        _texNeeded.Add(path);
+        _texLastUsed[path] = _frames;
+    }
+
+    bool EnsureTextureCapacity(string loadingPath)
+    {
+        if (_texCache.ContainsKey(loadingPath) || _texCache.Count < MaxTexCache)
+            return true;
+
+        SweepTextureCache(forceOne: true);
+        // If every resident texture is visible or pinned, keep the current frame
+        // complete and retry this load later instead of cache-thrashing.
+        return _texCache.Count < MaxTexCache;
+    }
+
+    void SweepTextureCache(bool forceOne = false)
+    {
+        if (!forceOne && _texCache.Count <= MaxTexCache)
+            return;
+
+        _texSweep.Clear();
+        foreach (var path in _texCache.Keys)
+        {
+            if (_texNeeded.Contains(path) || IsPinnedTexture(path))
+                continue;
+            _texSweep.Add(path);
+        }
+
+        _texSweep.Sort((a, b) =>
+            _texLastUsed.GetValueOrDefault(a).CompareTo(_texLastUsed.GetValueOrDefault(b)));
+        var removeCount = forceOne
+            ? Math.Min(1, _texSweep.Count)
+            : Math.Min(_texCache.Count - MaxTexCache, _texSweep.Count);
+        for (var i = 0; i < removeCount; i++)
+            RemoveTexture(_texSweep[i], deleteGlTexture: true);
+
+        if (_texRetryAtFrame.Count > 2048)
+        {
+            _texSweep.Clear();
+            foreach (var (path, retryAt) in _texRetryAtFrame)
+            {
+                if (!_texNeeded.Contains(path) && retryAt + 600 < _frames)
+                    _texSweep.Add(path);
+            }
+            foreach (var path in _texSweep)
+                _texRetryAtFrame.Remove(path);
+        }
+    }
+
+    static bool IsPinnedTexture(string path)
+    {
+        return path.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("wall", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("window", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("door", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("airlock", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("ghost", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("observer", StringComparison.OrdinalIgnoreCase)
+               || path.Contains("/Mobs/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    void RemoveTexture(string path, bool deleteGlTexture)
+    {
+        if (_texCache.Remove(path, out var entry) && deleteGlTexture && entry.Id != 0)
+        {
+            var ids = new[] { entry.Id };
+            GLES20.GlDeleteTextures(1, ids, 0);
+        }
+        _texLastUsed.Remove(path);
+    }
+
+    void ResetTextureCaches(bool deleteGlTextures)
+    {
+        if (deleteGlTextures)
+        {
+            foreach (var entry in _texCache.Values)
+            {
+                if (entry.Id == 0) continue;
+                var ids = new[] { entry.Id };
+                GLES20.GlDeleteTextures(1, ids, 0);
+            }
+            foreach (var entry in _bubbleTex.Values)
+            {
+                if (entry.Id == 0) continue;
+                var ids = new[] { entry.Id };
+                GLES20.GlDeleteTextures(1, ids, 0);
+            }
+        }
+
+        _texCache.Clear();
+        _atlasMeta.Clear();
+        _pendingTexLoad.Clear();
+        _queuedTex.Clear();
+        _texRetryAtFrame.Clear();
+        _texNeeded.Clear();
+        _texLastUsed.Clear();
+        _bubbleTex.Clear();
+        Port.Content.RsiAtlas.Invalidate();
+    }
+
     void QueueTexture(string rsiPath)
     {
-        if (_texCache.ContainsKey(rsiPath) || _queuedTex.Contains(rsiPath))
+        if ((_texCache.TryGetValue(rsiPath, out var cached) && cached.Id != 0)
+            || _queuedTex.Contains(rsiPath))
             return;
         if (_texRetryAtFrame.TryGetValue(rsiPath, out var retryAt) && _frames < retryAt)
             return;
-        if (_pendingTexLoad.Count > 220)
+        if (_pendingTexLoad.Count >= 512)
             return;
         _queuedTex.Add(rsiPath);
         _pendingTexLoad.Enqueue(rsiPath);
@@ -971,6 +1090,12 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             var path = _pendingTexLoad.Dequeue();
             try
             {
+                if (!EnsureTextureCapacity(path))
+                {
+                    _texRetryAtFrame[path] = _frames + 15;
+                    continue;
+                }
+
                 // Floor tiles are plain PNGs (Textures/Tiles/*.png), not RSI/rsic.
                 if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                 {
@@ -982,7 +1107,6 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                             path.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase)
                                 ? path
                                 : "Textures/" + path.TrimStart('/'));
-                        _queuedTex.Remove(path);
                         _texRetryAtFrame[path] = _frames + 30;
                         continue;
                     }
@@ -995,7 +1119,6 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     }
                     else
                     {
-                        _queuedTex.Remove(path);
                         _texRetryAtFrame[path] = _frames + 90;
                     }
 
@@ -1006,7 +1129,6 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 if (src is null)
                 {
                     _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(contentRoot, path, fetcher);
-                    _queuedTex.Remove(path);
                     _texRetryAtFrame[path] = _frames + 30;
                     continue;
                 }
@@ -1015,7 +1137,6 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 var frame = Port.Content.RsiMeta.TryGetPreviewFrame(src.Value.Path);
                 if (frame is null)
                 {
-                    _queuedTex.Remove(path);
                     _texRetryAtFrame[path] = _frames + 60;
                     continue;
                 }
@@ -1030,14 +1151,16 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 }
                 else
                 {
-                    _queuedTex.Remove(path);
                     _texRetryAtFrame[path] = _frames + 90;
                 }
             }
             catch
             {
-                _queuedTex.Remove(path);
                 _texRetryAtFrame[path] = _frames + 90;
+            }
+            finally
+            {
+                _queuedTex.Remove(path);
             }
         }
     }

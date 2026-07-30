@@ -1266,18 +1266,19 @@ public sealed class GameSessionClient : IDisposable
 
             // Free-cam pan alone does not move the eye — but LeavePvs MUST apply so maps/areas
             // unload when the ghost warps / PVS moves. Otherwise stations stack forever.
-            _worldCache.RemoveEntities(leaving);
+            var removedGrid = _worldCache.RemoveEntities(leaving);
             if (LastWorld is { } world && leaving.Count > 0)
             {
                 var drop = new HashSet<NetEntity>(leaving);
                 var kept = world.Entities.Where(e => !drop.Contains(e.Entity)).ToList();
-                IReadOnlyList<WorldTileDraw>? tiles = world.Tiles;
-                if (tiles is { Count: > 0 })
+                // A removed grid's old floor snapshot must not remain under the new PVS area.
+                var tiles = removedGrid ? Array.Empty<WorldTileDraw>() : world.Tiles;
+                LastWorld = world with
                 {
-                    // Tiles are rebuilt next MsgState from remaining grids.
-                }
-
-                LastWorld = world with { Entities = kept, Detail = world.Detail + $" leavePvs={leaving.Count}" };
+                    Entities = kept,
+                    Tiles = tiles,
+                    Detail = world.Detail + $" leavePvs={leaving.Count}"
+                };
             }
 
             // Reset free-cam pan after large leave so camera recenters on new PVS bubble.
@@ -1985,6 +1986,7 @@ public sealed class GameSessionClient : IDisposable
             {
                 if (_worldCache.Apply(
                         boot.Serializer, payload, localId,
+                        new System.Numerics.Vector2(_panOffX / 32f, _panOffY / 32f),
                         out var eye, out var world, out var tick, out var err))
                 {
                     LastEye = eye;

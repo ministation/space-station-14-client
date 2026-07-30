@@ -57,21 +57,23 @@ public sealed class WorldStateCache
         }
     }
 
-    public void RemoveEntities(IReadOnlyList<NetEntity> entities)
+    public bool RemoveEntities(IReadOnlyList<NetEntity> entities)
     {
         lock (this)
         {
+            var removedGrid = false;
             foreach (var del in entities)
             {
                 _xforms.Remove(del);
                 _sprites.Remove(del);
                 _prototypes.Remove(del);
-                _grids.Remove(del);
+                removedGrid |= _grids.Remove(del);
                 _gridChunkSize.Remove(del);
                 _worldPosCache.Remove(del);
                 _mapEntities.Remove(del);
                 _mapUidCache.Clear();
             }
+            return removedGrid;
         }
     }
 
@@ -105,6 +107,7 @@ public sealed class WorldStateCache
         IRobustSerializer serializer,
         byte[] payload,
         Guid localUserId,
+        Vector2 cameraOffset,
         out EyeSnapshot? eye,
         out WorldSnapshot? world,
         out GameTick toSequence,
@@ -285,7 +288,9 @@ public sealed class WorldStateCache
                 var drawList = new List<WorldEntityDraw>(Math.Min(_xforms.Count * 2, MaxDrawEntities * 2));
                 Vector2 sum = default;
                 var nSum = 0;
-                // Viewport stream: only draw near the eye (+ margin). Far store kept until LeavePvs.
+                // Viewport stream: cull around the rendered camera, not the unpanned eye.
+                // Far store remains until LeavePvs.
+                var focus = worldEye + cameraOffset;
                 const float viewTiles = 40f;
                 var viewR2 = viewTiles * viewTiles;
 
@@ -306,8 +311,8 @@ public sealed class WorldStateCache
                     var wp = ResolveWorldPos(ent);
                     if (!isCtrl && foundXform)
                     {
-                        var dx = wp.X - worldEye.X;
-                        var dy = wp.Y - worldEye.Y;
+                        var dx = wp.X - focus.X;
+                        var dy = wp.Y - focus.Y;
                         if (dx * dx + dy * dy > viewR2)
                             continue;
                     }
@@ -401,9 +406,10 @@ public sealed class WorldStateCache
                 }
 
                 if (!foundXform && nSum > 0)
+                {
                     worldEye = sum / nSum;
-
-                var focus = worldEye;
+                    focus = worldEye + cameraOffset;
+                }
                 // Prefer entities near the eye if still over budget.
                 if (drawList.Count > MaxDrawEntities)
                 {

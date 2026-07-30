@@ -944,15 +944,11 @@ public class MainActivity : Activity
         }
 
         var n = Math.Min(world.Entities.Count, _spriteScratch.Length);
-        var ordered = world.Entities
-            .OrderBy(e => e.DrawDepth)
-            .ThenBy(e => e.Y)
-            .ThenBy(e => e.X)
-            .Take(n)
-            .ToArray();
-        for (var i = 0; i < ordered.Length; i++)
+        // WorldStateCache already applies the authoritative depth/Y/control ordering.
+        // Re-sorting here changed ties and made co-located layers flicker.
+        for (var i = 0; i < n; i++)
         {
-            var e = ordered[i];
+            var e = world.Entities[i];
             _spriteScratch[i] = new GlesClearRenderer.EntitySprite
             {
                 X = e.X,
@@ -969,7 +965,7 @@ public class MainActivity : Activity
             };
         }
 
-        _glView.Renderer.SetEntities(_spriteScratch, ordered.Length);
+        _glView.Renderer.SetEntities(_spriteScratch, n);
 
         var tiles = world.Tiles ?? Array.Empty<WorldTileDraw>();
         var tn = Math.Min(tiles.Count, _tileScratch.Length);
