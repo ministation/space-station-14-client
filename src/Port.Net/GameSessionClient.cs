@@ -8,9 +8,13 @@ using System.Text.Json;
 using Lidgren.Network;
 using Robust.Shared.Enums;
 using Robust.Shared.GameObjects;
+using Robust.Shared.Input;
+using Robust.Shared.Map;
+using Robust.Shared.Maths;
 using Robust.Shared.Network;
 using Robust.Shared.Timing;
 using SpaceWizards.Sodium;
+using System.Numerics;
 
 namespace Port.Net;
 
@@ -43,7 +47,13 @@ public sealed record SpeechBubbleDraw(
     float Alpha,
     float StackOffset);
 
-public sealed record GhostWarpEntry(NetEntity Entity, string DisplayName, bool IsWarpPoint);
+public sealed record GhostWarpEntry(
+    NetEntity Entity,
+    string DisplayName,
+    bool IsWarpPoint,
+    /// <summary>place | player | antag — Mini GhostTargetWindow categories.</summary>
+    string Category = "place",
+    string? Subtitle = null);
 
 public sealed record GameSessionResult(
     GameSessionPhase Phase,
@@ -92,6 +102,24 @@ public sealed class GameSessionClient : IDisposable
     public bool IsObserving { get; set; }
     /// <summary>Fired on UI thread-unsafe path after a successful cycle warp (incl. auto after load).</summary>
     public event Action<string>? WarpCycled;
+    public event Action? GhostUiChanged;
+
+    public int GhostRoleCount { get; private set; }
+    public bool CanReturnToBody { get; private set; } = true;
+    public bool CanTakeGhostRoles { get; private set; } = true;
+
+    /// <summary>Local ghost eye toggles (PC GhostSystem client-side).</summary>
+    public bool DrawFov { get; private set; } = true;
+    public bool DrawLighting { get; private set; } = true;
+    public bool ShowOtherGhosts { get; private set; } = true;
+
+    int _lightingMode; // 0 normal, 1 fullbright
+
+    public string LightingModeLabel => _lightingMode switch
+    {
+        1 => "Ярко",
+        _ => "Свет",
+    };
     public int StatesReceived { get; private set; }
     public int LastStateBytes { get; private set; }
     public string LastCommandAck { get; private set; } = "";
@@ -109,6 +137,9 @@ public sealed class GameSessionClient : IDisposable
     float _flightX;
     float _flightY;
     float _flightSpeed = 980f;
+    BoundKeyMap? _keyMap;
+    uint _inputSequence;
+    bool _keyUp, _keyDown, _keyLeft, _keyRight;
     public string? AssembliesDirectory { get; set; }
     public string? ContentFilesRoot { get; set; }
     public string? ContentSearchRoot { get; set; }
@@ -243,9 +274,12 @@ public sealed class GameSessionClient : IDisposable
         }
 
         IsObserving = true;
-        Set(GameSessionPhase.Observing, "ghost flight — awaiting MsgState");
+        _spawnWarpPending = true;
+        _panOffX = 0;
+        _panOffY = 0;
+        Set(GameSessionPhase.Observing, "ghost flight — awaiting MsgState / spawn warp");
 
-        // Ask server for warp targets (players + locations) like PC Ghost UI.
+        // Ask server for warp targets; first response auto-warps to observer spawn.
         try { RequestGhostWarps(); } catch { /* serializer may not be ready yet */ }
 
         _ = Task.Run(() =>
@@ -263,7 +297,21 @@ public sealed class GameSessionClient : IDisposable
                 }
 
                 Note($"observe serializer → {SerializerStatus} strings={HasMappedStrings} xfStore={_worldCache.XformCount} protos={_protoSprites.Count} tiles={_tileProtos.Count}");
+                try
+                {
+                    // Prefetch MobObserver RSI so ghost is drawable immediately.
+                    TextureFetcher.EnsureFile("Textures/Mobs/Ghosts/ghost_human.rsic", Note);
+                    TextureFetcher.EnsureFile("Textures/Mobs/Ghosts/ghost_human.rsi/meta.json", Note);
+                }
+                catch { /* on-demand later */ }
+                try { EnsureKeyMap(); } catch { /* ignore */ }
                 try { RequestGhostWarps(); } catch { /* ignore */ }
+                // Retry warps a few times until spawn completes (serializer/timing).
+                for (var i = 0; i < 8 && _spawnWarpPending && IsObserving; i++)
+                {
+                    Thread.Sleep(500);
+                    try { RequestGhostWarps(); } catch { /* ignore */ }
+                }
 
                 if (_serializer is { HasMappedStrings: false } && _mapStrHash is { Length: > 0 })
                 {
@@ -308,26 +356,133 @@ public sealed class GameSessionClient : IDisposable
     {
         _flightX = Math.Clamp(x, -1f, 1f);
         _flightY = Math.Clamp(y, -1f, 1f);
+        // Joystick steers the actual ghost entity (PC SharedMoverController), not free-cam.
+        if (Math.Abs(_flightX) > 0.2f || Math.Abs(_flightY) > 0.2f)
+        {
+            _panOffX = 0;
+            _panOffY = 0;
+        }
+
+        SyncMoveKeysFromStick();
     }
 
     public void TickFlight(float dt)
     {
         if (!IsObserving)
             return;
-        if (Math.Abs(_flightX) < 0.01f && Math.Abs(_flightY) < 0.01f)
+        // Predictive local pan only when stick is held AND server input unavailable.
+        if (_keyMap is null && (Math.Abs(_flightX) > 0.01f || Math.Abs(_flightY) > 0.01f))
+        {
+            // Screen-relative pan: stick up → toward top of view (inverse of draw rotation).
+            var speed = _flightSpeed / Math.Max(0.35f, Zoom);
+            var c = MathF.Cos(CamRotation);
+            var s = MathF.Sin(CamRotation);
+            var sx = _flightX * speed * dt;
+            var sy = _flightY * speed * dt;
+            var dx = sx * c - sy * s;
+            var dy = sx * s + sy * c;
+            _panOffX += dx;
+            _panOffY += dy;
+            CamX += dx;
+            CamY += dy;
+        }
+        // Otherwise camera follows ControlledEntity via MsgState; stick already sent as Move* keys.
+    }
+
+    void SyncMoveKeysFromStick()
+    {
+        // CamRotation is north-up (0): stick axes = screen = world cardinals for Move*.
+        const float dead = 0.28f;
+        SetMoveKey(ref _keyRight, EngineKeyFunctions.MoveRight, _flightX > dead);
+        SetMoveKey(ref _keyLeft, EngineKeyFunctions.MoveLeft, _flightX < -dead);
+        SetMoveKey(ref _keyUp, EngineKeyFunctions.MoveUp, _flightY > dead);
+        SetMoveKey(ref _keyDown, EngineKeyFunctions.MoveDown, _flightY < -dead);
+    }
+
+    void SetMoveKey(ref bool held, BoundKeyFunction function, bool wantDown)
+    {
+        if (held == wantDown)
             return;
-        var speed = _flightSpeed / Math.Max(0.35f, Zoom);
-        // Flight stick is view-relative; rotate into world using camera/grid angle.
-        var c = MathF.Cos(CamRotation);
-        var s = MathF.Sin(CamRotation);
-        var vx = _flightX * speed * dt;
-        var vy = _flightY * speed * dt;
-        var dx = vx * c - vy * s;
-        var dy = vx * s + vy * c;
-        _panOffX += dx;
-        _panOffY += dy;
-        CamX += dx;
-        CamY += dy;
+        held = wantDown;
+        try
+        {
+            SendKeyState(function, wantDown ? BoundKeyState.Down : BoundKeyState.Up);
+        }
+        catch (Exception ex)
+        {
+            Note($"move input FAIL: {ex.Message}");
+        }
+    }
+
+    void EnsureKeyMap()
+    {
+        if (_keyMap is not null || _serializer is null)
+            return;
+        try
+        {
+            var map = new BoundKeyMap(_serializer.Reflection);
+            map.PopulateKeyFunctionsMap();
+            _keyMap = map;
+            Note("key map ready (Move* → FullInputCmdMessage)");
+        }
+        catch (Exception ex)
+        {
+            Note($"key map FAIL: {ex.Message}");
+        }
+    }
+
+    void SendKeyState(BoundKeyFunction function, BoundKeyState state)
+    {
+        if (!IsConnected || !IsObserving)
+            return;
+        EnsureKeyMap();
+        if (_keyMap is null)
+            return;
+
+        KeyFunctionId funcId;
+        try
+        {
+            funcId = _keyMap.KeyFunctionID(function);
+        }
+        catch
+        {
+            return;
+        }
+
+        var tick = LastEye?.ToSequence ?? new GameTick(1);
+        var msg = new FullInputCmdMessage(
+            tick,
+            0,
+            funcId,
+            state,
+            NetCoordinates.Invalid,
+            ScreenCoordinates.Invalid,
+            NetEntity.Invalid)
+        {
+            InputSequence = ++_inputSequence,
+        };
+        SendEntitySystemMessage(msg);
+    }
+
+    /// <summary>Ghost chat — <c>say</c> (deadchat when observer) / <c>looc</c> / <c>ooc</c>.</summary>
+    public bool SendChat(string text, string channel = "say")
+    {
+        if (!IsConnected || string.IsNullOrWhiteSpace(text))
+            return false;
+        text = text.Trim();
+        if (text.Length > 256)
+            text = text[..256];
+        var cmd = channel.ToLowerInvariant() switch
+        {
+            "looc" => "looc",
+            "ooc" => "ooc",
+            "me" => "me",
+            "whisper" => "whisper",
+            _ => "say",
+        };
+        // Escape quotes for console.
+        var escaped = text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return SendConsole($"{cmd} \"{escaped}\"");
     }
 
     public void AdjustZoom(float factor)
@@ -1266,18 +1421,21 @@ public sealed class GameSessionClient : IDisposable
 
             // Free-cam pan alone does not move the eye — but LeavePvs MUST apply so maps/areas
             // unload when the ghost warps / PVS moves. Otherwise stations stack forever.
-            var removedGrid = _worldCache.RemoveEntities(leaving);
+            _worldCache.RemoveEntities(leaving);
             if (LastWorld is { } world && leaving.Count > 0)
             {
                 var drop = new HashSet<NetEntity>(leaving);
                 var kept = world.Entities.Where(e => !drop.Contains(e.Entity)).ToList();
-                // A removed grid's old floor snapshot must not remain under the new PVS area.
-                var tiles = removedGrid ? Array.Empty<WorldTileDraw>() : world.Tiles;
+                var audioKept = world.Audio?.Where(a => !drop.Contains(a.Entity)).ToList()
+                                ?? (IReadOnlyList<WorldAudioCue>)Array.Empty<WorldAudioCue>();
+                // Rebuild floors from remaining grids — old area tiles must not linger after warp.
+                var tiles = _worldCache.RebuildTilesNearEye(40f);
                 LastWorld = world with
                 {
                     Entities = kept,
                     Tiles = tiles,
-                    Detail = world.Detail + $" leavePvs={leaving.Count}"
+                    Audio = audioKept,
+                    Detail = world.Detail + $" leavePvs={leaving.Count}",
                 };
             }
 
@@ -1298,6 +1456,20 @@ public sealed class GameSessionClient : IDisposable
 
     readonly List<ChatLine> _chatLines = new();
     readonly object _chatGate = new();
+    readonly object _chatAudioGate = new();
+    readonly List<(string Path, float VolumeDb)> _chatAudioPending = new();
+
+    public IReadOnlyList<(string Path, float VolumeDb)> DrainChatAudio()
+    {
+        lock (_chatAudioGate)
+        {
+            if (_chatAudioPending.Count == 0)
+                return Array.Empty<(string, float)>();
+            var copy = _chatAudioPending.ToArray();
+            _chatAudioPending.Clear();
+            return copy;
+        }
+    }
     int _chatVersion;
     readonly List<GhostWarpEntry> _ghostWarps = new();
     readonly object _warpGate = new();
@@ -1424,11 +1596,38 @@ public sealed class GameSessionClient : IDisposable
         return true;
     }
 
+    /// <summary>PC GhostnadoRequestEvent — warp to the most-followed ghost target.</summary>
+    public bool Ghostnado()
+    {
+        if (!IsConnected || _serializer is not { HasMappedStrings: true } boot)
+            return false;
+
+        if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostnadoRequestEvent", out var type)
+            && !boot.Reflection.TryLooseGetType("GhostnadoRequestEvent", out type))
+        {
+            Note("GhostnadoRequestEvent type missing");
+            return false;
+        }
+
+        var evt = Activator.CreateInstance(type);
+        if (evt is null) return false;
+        _panOffX = 0;
+        _panOffY = 0;
+        SendEntitySystemMessage(evt);
+        Note(">> GhostnadoRequestEvent");
+        return true;
+    }
+
     /// <summary>PC GhostSystem.ReturnToBody → GhostReturnToBodyRequest.</summary>
     public bool ReturnToBody()
     {
         if (!IsConnected || _serializer is not { HasMappedStrings: true } boot)
             return false;
+        if (!CanReturnToBody)
+        {
+            Note("ReturnToBody blocked — CanReturnToBody=false");
+            return false;
+        }
 
         if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostReturnToBodyRequest", out var type)
             && !boot.Reflection.TryLooseGetType("GhostReturnToBodyRequest", out type)
@@ -1477,6 +1676,11 @@ public sealed class GameSessionClient : IDisposable
     {
         if (!IsConnected)
             return false;
+        if (!CanTakeGhostRoles)
+        {
+            Note("ghostroles blocked — CanTakeGhostRoles=false");
+            return false;
+        }
         try
         {
             SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("ghostroles"));
@@ -1488,6 +1692,59 @@ public sealed class GameSessionClient : IDisposable
             Note($"ghostroles FAIL: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>PC GhostSystem.OnToggleFoV — local eye DrawFov.</summary>
+    public void ToggleFov()
+    {
+        DrawFov = !DrawFov;
+        Note($"ToggleFoV → {DrawFov}");
+        try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+    }
+
+    /// <summary>PC GhostSystem.OnToggleLighting — normal ↔ fullbright.</summary>
+    public void ToggleLighting()
+    {
+        _lightingMode = (_lightingMode + 1) % 2;
+        DrawLighting = _lightingMode == 0;
+        Note($"ToggleLighting → {_lightingMode} ({LightingModeLabel})");
+        try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+    }
+
+    /// <summary>PC GhostSystem.ToggleGhostVisibility.</summary>
+    public void ToggleOtherGhosts()
+    {
+        ShowOtherGhosts = !ShowOtherGhosts;
+        Note($"ToggleGhosts → {ShowOtherGhosts}");
+        try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+    }
+
+    public void SetCanReturnToBody(bool value)
+    {
+        if (CanReturnToBody == value) return;
+        CanReturnToBody = value;
+        try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+    }
+
+    void SyncGhostFlagsFromWorld()
+    {
+        var changed = false;
+        if (_worldCache.TryGetControlledGhostFlags(out var canReturn, out var canRoles))
+        {
+            if (CanReturnToBody != canReturn)
+            {
+                CanReturnToBody = canReturn;
+                changed = true;
+            }
+            if (CanTakeGhostRoles != canRoles)
+            {
+                CanTakeGhostRoles = canRoles;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
     }
 
     void SendEntitySystemMessage(object systemMessage)
@@ -1557,6 +1814,13 @@ public sealed class GameSessionClient : IDisposable
                 return;
             }
 
+            if (tn.Contains("GhostUpdateGhostRoleCount", StringComparison.Ordinal)
+                || tn.Contains("GhostRoleCount", StringComparison.Ordinal))
+            {
+                ParseGhostRoleCount(evt);
+                return;
+            }
+
             if (StatesReceived <= 3 || tn.Contains("Ghost", StringComparison.Ordinal))
                 Note($"MsgEntity {tn} tick={sourceTick}");
         }
@@ -1566,45 +1830,93 @@ public sealed class GameSessionClient : IDisposable
         }
     }
 
+    void ParseGhostRoleCount(object evt)
+    {
+        try
+        {
+            var t = evt.GetType();
+            var n = t.GetProperty("AvailableGhostRoles")?.GetValue(evt)
+                    ?? t.GetField("AvailableGhostRoles")?.GetValue(evt)
+                    ?? t.GetProperty("AvailableGhostRoleCount")?.GetValue(evt)
+                    ?? t.GetField("AvailableGhostRoleCount")?.GetValue(evt)
+                    ?? t.GetProperty("Count")?.GetValue(evt);
+            if (n is int i)
+                GhostRoleCount = i;
+            else if (n is not null && int.TryParse(n.ToString(), out var p))
+                GhostRoleCount = p;
+            Note($"GhostRoleCount={GhostRoleCount}");
+            try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+        }
+        catch (Exception ex)
+        {
+            Note($"GhostRoleCount FAIL: {ex.Message}");
+        }
+    }
+
     void ParseGhostWarpsResponse(object evt)
     {
         try
         {
-            var warpsObj = evt.GetType().GetProperty("Warps")?.GetValue(evt)
-                           ?? evt.GetType().GetField("Warps")?.GetValue(evt);
-            if (warpsObj is not System.Collections.IEnumerable en)
+            var list = new List<GhostWarpEntry>();
+            var t = evt.GetType();
+
+            // Vanilla: Warps: List<GhostWarp>
+            var warpsObj = t.GetProperty("Warps")?.GetValue(evt) ?? t.GetField("Warps")?.GetValue(evt);
+            if (warpsObj is System.Collections.IEnumerable enWarps)
             {
-                Note("GhostWarpsResponse: no Warps list");
+                foreach (var item in enWarps)
+                    TryAddWarpItem(item, list, defaultCategory: null);
+            }
+
+            // Mini / enriched panel: Players + Places + Antagonists
+            AppendNamedWarps(t.GetProperty("Places")?.GetValue(evt) ?? t.GetField("Places")?.GetValue(evt),
+                list, isWarpPoint: true, category: "place");
+            AppendNamedWarps(t.GetProperty("Players")?.GetValue(evt) ?? t.GetField("Players")?.GetValue(evt),
+                list, isWarpPoint: false, category: "player");
+            AppendNamedWarps(t.GetProperty("Antagonists")?.GetValue(evt) ?? t.GetField("Antagonists")?.GetValue(evt),
+                list, isWarpPoint: false, category: "antag");
+
+            if (list.Count == 0)
+            {
+                Note("GhostWarpsResponse: empty (no Warps/Players/Places)");
                 return;
             }
 
-            var list = new List<GhostWarpEntry>();
-            foreach (var item in en)
-            {
-                if (item is null) continue;
-                var it = item.GetType();
-                var ent = it.GetProperty("Entity")?.GetValue(item) as NetEntity?
-                          ?? it.GetField("Entity")?.GetValue(item) as NetEntity?
-                          ?? default;
-                var name = it.GetProperty("DisplayName")?.GetValue(item) as string
-                           ?? it.GetField("DisplayName")?.GetValue(item) as string
-                           ?? "?";
-                var isWp = it.GetProperty("IsWarpPoint")?.GetValue(item) as bool?
-                           ?? it.GetField("IsWarpPoint")?.GetValue(item) as bool?
-                           ?? false;
-                if (ent.IsValid())
-                    list.Add(new GhostWarpEntry(ent, name, isWp));
-            }
+            // Dedupe by entity id (players may also appear as antags).
+            list = list
+                .GroupBy(w => w.Entity.Id)
+                .Select(g => g.FirstOrDefault(x => x.Category == "antag") ?? g.First())
+                .OrderBy(w => w.Category switch { "place" => 0, "antag" => 1, _ => 2 })
+                .ThenBy(w => w.DisplayName)
+                .ToList();
 
             lock (_warpGate)
             {
                 _ghostWarps.Clear();
-                _ghostWarps.AddRange(list.OrderBy(w => w.IsWarpPoint).ThenBy(w => w.DisplayName));
+                _ghostWarps.AddRange(list);
                 _warpVersion++;
             }
 
-            Note($"GhostWarpsResponse: {list.Count} targets");
-            if (_warpCyclePending && list.Count > 0)
+            Note($"GhostWarpsResponse: {list.Count} targets " +
+                 $"(places={list.Count(w => w.IsWarpPoint)} players={list.Count(w => !w.IsWarpPoint)})");
+            try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
+
+            if (_spawnWarpPending && list.Count > 0)
+            {
+                _spawnWarpPending = false;
+                var spawn = PickObserverSpawn(list);
+                if (WarpTo(spawn.Entity))
+                {
+                    Note($"spawn warp → {spawn.DisplayName}");
+                    try { WarpCycled?.Invoke(spawn.DisplayName); } catch { /* UI */ }
+                }
+                else
+                {
+                    _spawnWarpPending = true; // retry
+                    Note("spawn warp FAIL — will retry");
+                }
+            }
+            else if (_warpCyclePending && list.Count > 0)
             {
                 if (CycleWarp(out var name) && name is not null)
                     Note($"auto-cycle warp → {name}");
@@ -1614,6 +1926,73 @@ public sealed class GameSessionClient : IDisposable
         {
             Note($"ParseGhostWarps FAIL: {ex.Message}");
         }
+    }
+
+    static void AppendNamedWarps(object? collection, List<GhostWarpEntry> list, bool isWarpPoint, string category)
+    {
+        if (collection is not System.Collections.IEnumerable en)
+            return;
+        foreach (var item in en)
+            TryAddWarpItem(item, list, defaultCategory: category, forceWarpPoint: isWarpPoint);
+    }
+
+    static void TryAddWarpItem(object? item, List<GhostWarpEntry> list, string? defaultCategory, bool? forceWarpPoint = null)
+    {
+        if (item is null) return;
+        var it = item.GetType();
+        var ent = it.GetProperty("Entity")?.GetValue(item) as NetEntity?
+                  ?? it.GetField("Entity")?.GetValue(item) as NetEntity?
+                  ?? default;
+        if (!ent.IsValid())
+            return;
+
+        var name = it.GetProperty("DisplayName")?.GetValue(item) as string
+                   ?? it.GetField("DisplayName")?.GetValue(item) as string
+                   ?? it.GetProperty("Name")?.GetValue(item) as string
+                   ?? it.GetField("Name")?.GetValue(item) as string
+                   ?? "?";
+
+        var isWp = forceWarpPoint
+                   ?? it.GetProperty("IsWarpPoint")?.GetValue(item) as bool?
+                   ?? it.GetField("IsWarpPoint")?.GetValue(item) as bool?
+                   ?? (defaultCategory == "place");
+
+        string? sub = it.GetProperty("Description")?.GetValue(item) as string
+                      ?? it.GetField("Description")?.GetValue(item) as string
+                      ?? it.GetProperty("AntagonistName")?.GetValue(item) as string
+                      ?? it.GetField("AntagonistName")?.GetValue(item) as string
+                      ?? it.GetProperty("JobId")?.GetValue(item)?.ToString();
+
+        var cat = defaultCategory
+                  ?? (isWp ? "place" : "player");
+        if (defaultCategory == "antag")
+            cat = "antag";
+        else if (cat == "player" && !string.IsNullOrEmpty(sub)
+                 && it.Name.Contains("Antagonist", StringComparison.OrdinalIgnoreCase))
+            cat = "antag";
+
+        list.Add(new GhostWarpEntry(ent, name, isWp, cat, sub));
+    }
+
+    bool _spawnWarpPending;
+
+    static GhostWarpEntry PickObserverSpawn(IReadOnlyList<GhostWarpEntry> list)
+    {
+        // Mirror GameTicker.GetObserverSpawnPoint: prefer Observer spawn warp points.
+        static int Score(GhostWarpEntry w)
+        {
+            var n = w.DisplayName ?? "";
+            var score = w.IsWarpPoint ? 100 : 0;
+            if (n.Contains("Observer", StringComparison.OrdinalIgnoreCase)) score += 50;
+            if (n.Contains("наблюд", StringComparison.OrdinalIgnoreCase)) score += 50;
+            if (n.Contains("Spawn", StringComparison.OrdinalIgnoreCase)) score += 30;
+            if (n.Contains("спавн", StringComparison.OrdinalIgnoreCase)) score += 30;
+            if (n.Contains("Arrive", StringComparison.OrdinalIgnoreCase)) score += 10;
+            if (n.Contains("Late", StringComparison.OrdinalIgnoreCase)) score += 10;
+            return score;
+        }
+
+        return list.OrderByDescending(Score).ThenBy(w => w.DisplayName).First();
     }
 
     const int MaxChatLines = 200;
@@ -1732,6 +2111,21 @@ public sealed class GameSessionClient : IDisposable
             var bubbleText = ExtractSpeechBubbleText(wrapped, message);
             if (sender.IsValid() && ShouldShowSpeechBubble(channelFlags, channel) && !string.IsNullOrWhiteSpace(bubbleText))
                 EnqueueSpeechBubble(sender, bubbleText.Trim(), argb, channelFlags);
+
+            var audioPath = t.GetField("AudioPath")?.GetValue(obj) as string
+                            ?? t.GetProperty("AudioPath")?.GetValue(obj) as string;
+            if (!string.IsNullOrWhiteSpace(audioPath))
+            {
+                var vol = t.GetField("AudioVolume")?.GetValue(obj) as float?
+                          ?? t.GetProperty("AudioVolume")?.GetValue(obj) as float?
+                          ?? 0f;
+                lock (_chatAudioGate)
+                {
+                    _chatAudioPending.Add((audioPath.Trim(), vol));
+                    if (_chatAudioPending.Count > 16)
+                        _chatAudioPending.RemoveAt(0);
+                }
+            }
 
             Note($"chat [{channel}] {(text.Length <= 80 ? text : text[..80] + "…")}");
         }
@@ -1990,6 +2384,7 @@ public sealed class GameSessionClient : IDisposable
                         out var eye, out var world, out var tick, out var err))
                 {
                     LastEye = eye;
+                    SyncGhostFlagsFromWorld();
                     // Keep last non-empty world; never wipe sprites/tiles on empty delta blips.
                     if (world is not null
                         && (world.Entities.Count > 0 || (world.Tiles?.Count ?? 0) > 0))
@@ -1997,10 +2392,11 @@ public sealed class GameSessionClient : IDisposable
                     else if (LastWorld is null && world is not null)
                         LastWorld = world;
                     LastEyeHint = eye!.Detail;
-                    // Ghost free-cam: camera = eye world pos + pan; rotate with grid/shuttle.
+                    // Ghost free-cam: follow eye + pan. Keep north-up so joystick maps 1:1
+                    // to screen (grid-snapped CamRotation made Move* feel rotated wrong).
                     CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
                     CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
-                    CamRotation = (float)eye.Rotation.Theta;
+                    CamRotation = 0f;
 
                     try
                     {
@@ -2382,6 +2778,8 @@ public sealed class GameSessionClient : IDisposable
         // Keep AssembliesDirectory / ContentFilesRoot across reconnects in same process.
         IsReady = false;
         IsObserving = false;
+        _spawnWarpPending = false;
+        _warpCyclePending = false;
         StatesReceived = 0;
         LastStateBytes = 0;
         LastEye = null;

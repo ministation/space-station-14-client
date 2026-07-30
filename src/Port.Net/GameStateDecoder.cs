@@ -35,14 +35,19 @@ public readonly record struct WorldEntityDraw(
     bool Visible = true,
     float OffsetX = 0,
     float OffsetY = 0,
-    bool NoRotation = false);
+    bool NoRotation = false,
+    string? Label = null,
+    /// <summary>RSI direction index override (−1 = derive from Rotation). Used by IconSmooth corners.</summary>
+    int DirOverride = -1,
+    bool IsGhost = false);
 
 public sealed record WorldSnapshot(
     EyeSnapshot? Eye,
     IReadOnlyList<WorldEntityDraw> Entities,
     GameTick ToSequence,
     string Detail,
-    IReadOnlyList<WorldTileDraw>? Tiles = null);
+    IReadOnlyList<WorldTileDraw>? Tiles = null,
+    IReadOnlyList<WorldAudioCue>? Audio = null);
 
 public readonly record struct WorldTileDraw(
     float X,
@@ -51,7 +56,21 @@ public readonly record struct WorldTileDraw(
     byte G,
     byte B,
     string? RsiPath = null,
-    string? StateName = null);
+    string? StateName = null,
+    byte Variant = 0,
+    byte RotationMirroring = 0);
+
+/// <summary>Networked AudioComponent cue (PC SharedAudioSystem → Android SoundPool).</summary>
+public readonly record struct WorldAudioCue(
+    NetEntity Entity,
+    string FileName,
+    float X,
+    float Y,
+    float VolumeDb,
+    float MaxDistance,
+    bool Global,
+    bool Loop,
+    bool Playing);
 
 public static class GameStateDecoder
 {
@@ -297,6 +316,9 @@ public static class GameStateDecoder
         public string? Path;
         public string? State;
         public byte R, G, B;
+        public bool HasColor;
+        public bool HasDrawDepth;
+        public bool Visible = true;
         public int DrawDepth = 50;
         public bool NoRotation;
         public readonly List<LayerVis> Layers = new();
@@ -311,7 +333,8 @@ public static class GameStateDecoder
         byte G,
         byte B,
         float OffsetX = 0,
-        float OffsetY = 0);
+        float OffsetY = 0,
+        bool HasDepth = false);
 
     static void TryExtractSprite(
         object state,
@@ -319,49 +342,58 @@ public static class GameStateDecoder
         Dictionary<NetEntity, SpriteVisual> sprites)
     {
         var tn = state.GetType().Name;
-        if (tn.Contains("IconSmooth", StringComparison.OrdinalIgnoreCase))
-        {
-            // PC derives the connected state client-side. Keep prototype art and use
-            // the RSI's complete icon until the mobile adjacency pass supplies a mask.
-            sprites.TryGetValue(ent, out var smooth);
-            smooth ??= new SpriteVisual { FromNetwork = false };
-            smooth.State = "full";
-            sprites[ent] = smooth;
-            return;
-        }
-
-        // Avoid matching unrelated *Sprite* state types.
+        // Avoid matching unrelated *Sprite* types / IconSmooth intermediate junk.
         if (!tn.Contains("SpriteComponent", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(tn, "SpriteComponentState", StringComparison.OrdinalIgnoreCase)
             && !(tn.Contains("Sprite", StringComparison.OrdinalIgnoreCase)
-                 && tn.Contains("State", StringComparison.OrdinalIgnoreCase)))
+                 && tn.Contains("State", StringComparison.OrdinalIgnoreCase)
+                 && !tn.Contains("IconSmooth", StringComparison.OrdinalIgnoreCase)))
             return;
 
         sprites.TryGetValue(ent, out var prev);
-        // Network state replaces prototype fallback entirely (prevents wrong RSI + right state).
         var vis = prev is { FromNetwork: true } ? prev : new SpriteVisual();
+        var t = state.GetType();
+
+        // Probe fields first — empty SpriteComponentState must not wipe prototype art (mobs/players).
+        string? netPath = null;
+        foreach (var name in new[] { "RSI", "Rsi", "RsiPath", "SpritePath", "BaseRSI", "Path", "ActualRsi" })
+        {
+            var p = t.GetProperty(name)?.GetValue(state)
+                    ?? t.GetField(name)?.GetValue(state);
+            netPath = NormalizeRsiPath(p);
+            if (netPath is not null) break;
+        }
+
+        var layersObj = t.GetProperty("Layers")?.GetValue(state)
+                        ?? t.GetField("Layers")?.GetValue(state);
+        var layerCount = 0;
+        if (layersObj is System.Collections.IEnumerable probeEn)
+        {
+            foreach (var _ in probeEn)
+            {
+                layerCount++;
+                if (layerCount > 0) break;
+            }
+        }
+
+        if (netPath is null && layerCount == 0
+            && t.GetProperty("Visible")?.GetValue(state) is not bool
+            && t.GetField("Visible")?.GetValue(state) is not bool)
+        {
+            // Nothing useful — keep prototype / previous sprite.
+            return;
+        }
+
         vis.FromNetwork = true;
         if (prev is { FromNetwork: false })
         {
-            // Drop prototype-guessed path/layers before applying authoritative state.
             vis.Path = null;
             vis.State = null;
             vis.Layers.Clear();
         }
 
-        var t = state.GetType();
-
-        foreach (var name in new[] { "RSI", "Rsi", "RsiPath", "SpritePath", "BaseRSI", "Path", "ActualRsi" })
-        {
-            var p = t.GetProperty(name)?.GetValue(state)
-                    ?? t.GetField(name)?.GetValue(state);
-            var path = NormalizeRsiPath(p);
-            if (path is not null)
-            {
-                vis.Path = path;
-                break;
-            }
-        }
+        if (netPath is not null)
+            vis.Path = netPath;
 
         foreach (var name in new[] { "Layer", "State", "RsiState", "BaseRsiState", "ActualRsiState" })
         {
@@ -389,11 +421,17 @@ public static class GameStateDecoder
             var p = t.GetProperty(name)?.GetValue(state)
                     ?? t.GetField(name)?.GetValue(state);
             if (p is null) continue;
-            if (p is int di) vis.DrawDepth = di;
+            if (p is int di) { vis.DrawDepth = di; vis.HasDrawDepth = true; }
             else if (p is Enum)
+            {
                 vis.DrawDepth = Convert.ToInt32(p);
+                vis.HasDrawDepth = true;
+            }
             else if (int.TryParse(p.ToString(), out var parsed))
+            {
                 vis.DrawDepth = parsed;
+                vis.HasDrawDepth = true;
+            }
         }
 
         var noRot = t.GetProperty("NoRotation")?.GetValue(state)
@@ -402,6 +440,11 @@ public static class GameStateDecoder
                     ?? t.GetField("NoRot")?.GetValue(state);
         if (noRot is bool nr)
             vis.NoRotation = nr;
+
+        var rootVis = t.GetProperty("Visible")?.GetValue(state)
+                      ?? t.GetField("Visible")?.GetValue(state);
+        if (rootVis is bool rv)
+            vis.Visible = rv;
 
         byte r = vis.R, g = vis.G, b = vis.B;
         foreach (var name in new[] { "Color", "Modulate" })
@@ -414,6 +457,7 @@ public static class GameStateDecoder
                 vis.R = r;
                 vis.G = g;
                 vis.B = b;
+                vis.HasColor = true;
             }
             break;
         }
@@ -423,7 +467,6 @@ public static class GameStateDecoder
         if (layers is System.Collections.IEnumerable en)
         {
             vis.Layers.Clear();
-            var layerDepth = vis.DrawDepth;
             foreach (var layer in en)
             {
                 if (layer is null) continue;
@@ -432,7 +475,8 @@ public static class GameStateDecoder
                 string? stName = null;
                 var visible = true;
                 byte lr = r, lg = g, lb = b;
-                var depth = layerDepth;
+                var depth = vis.DrawDepth;
+                var hasDepth = false;
                 float ox = 0, oy = 0;
 
                 foreach (var name in new[] { "RsiPath", "RSI", "Path", "ActualRsi", "Rsi", "Sprite" })
@@ -460,6 +504,16 @@ public static class GameStateDecoder
                               ?? lt.GetField("Visible")?.GetValue(layer);
                 if (visProp is bool vb) visible = vb;
 
+                foreach (var name in new[] { "DrawDepth", "DrawDepthSet" })
+                {
+                    var v = lt.GetProperty(name)?.GetValue(layer)
+                            ?? lt.GetField(name)?.GetValue(layer);
+                    if (v is null) continue;
+                    if (v is int di) { depth = di; hasDepth = true; break; }
+                    if (v is Enum) { depth = Convert.ToInt32(v); hasDepth = true; break; }
+                    if (int.TryParse(v.ToString(), out var parsed)) { depth = parsed; hasDepth = true; break; }
+                }
+
                 foreach (var name in new[] { "Color", "ColorOverride" })
                 {
                     var c = lt.GetProperty(name)?.GetValue(layer)
@@ -480,21 +534,17 @@ public static class GameStateDecoder
                 path ??= vis.Path;
                 stName ??= vis.State;
                 if (path is null && stName is null)
-                {
-                    layerDepth++;
                     continue;
-                }
 
-                vis.Layers.Add(new LayerVis(path, stName, depth, visible, lr, lg, lb, ox, oy));
+                vis.Layers.Add(new LayerVis(path, stName, depth, visible, lr, lg, lb, ox, oy, hasDepth));
                 if (vis.Path is null && path is not null)
                     vis.Path = path;
                 if (vis.State is null && stName is not null)
                     vis.State = stName;
-                layerDepth++;
             }
         }
 
-        if (vis.Path is not null || vis.Layers.Count > 0 || vis.R != 0 || vis.G != 0 || vis.B != 0)
+        if (vis.Path is not null || vis.Layers.Count > 0 || vis.HasColor || !vis.Visible)
             sprites[ent] = vis;
     }
 

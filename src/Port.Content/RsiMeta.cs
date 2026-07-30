@@ -137,7 +137,16 @@ public static class RsiMeta
 
         var fw = doc.Size?.X > 0 ? doc.Size.X : 32;
         var fh = doc.Size?.Y > 0 ? doc.Size.Y : 32;
-        var state = doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
+        // Prefer icon-like states — first meta entry is often an anim strip, not the wall face.
+        static bool Prefer(string? n) =>
+            n is not null && (n.Equals("full", StringComparison.OrdinalIgnoreCase)
+                              || n.Equals("icon", StringComparison.OrdinalIgnoreCase)
+                              || n.Equals("animated", StringComparison.OrdinalIgnoreCase)
+                              || n.Equals("default", StringComparison.OrdinalIgnoreCase));
+        var state = doc.States.FirstOrDefault(s => Prefer(s.Name))
+                    ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name)
+                                                      && File.Exists(Path.Combine(rsiPathOrDirectory, s.Name + ".png")))
+                    ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
                     ?? doc.States.FirstOrDefault();
         if (state is null)
             return null;

@@ -6,6 +6,7 @@ using Android.Widget;
 using Port.Content;
 using Port.Net;
 using Port.Platform.Android;
+using Port.Platform.Android.Audio;
 using Port.Platform.Android.Graphics;
 using System.Timers;
 using Timer = System.Timers.Timer;
@@ -50,6 +51,7 @@ public class MainActivity : Activity
     TextView? _lobbyPlayerCount;
     TextView? _lobbyContentStatus;
     TextView? _observeHud;
+    TextView? _observeFps;
     TextView? _joinDebug;
     TextView? _debugToggle;
     TextView? _downloadLabel;
@@ -89,6 +91,7 @@ public class MainActivity : Activity
     Button? _refreshHubBtn;
     FrameLayout? _observeGl;
     GlesClearSurfaceView? _glView;
+    AndroidAudioPlayer? _audioPlayer;
 
     AndroidPlatformHost? _host;
     ConnectSession _connect = null!;
@@ -114,6 +117,14 @@ public class MainActivity : Activity
     float _flightX;
     float _flightY;
     bool _immersiveApplied;
+    long _lastFullUiMs;
+    int _uiTick;
+    int _lastChatVersion = -1;
+    int _chatChannelIdx;
+    bool _chatExpanded = true;
+    Robust.Shared.Timing.GameTick _lastPushedWorldTick;
+    static readonly string[] ChatChannelLabels = ["Рядом", "LOOC", "OOC", "Шёпот", "Emote"];
+    static readonly string[] ChatChannelCmds = ["say", "looc", "ooc", "whisper", "me"];
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -160,13 +171,34 @@ public class MainActivity : Activity
         _uiTimer.Elapsed += (_, _) =>
         {
             _host?.Clock.Pulse();
-            if (_uiObserving || _connect.Observing)
+            var observing = _uiObserving || _connect.Observing;
+            if (observing)
             {
                 _connect.Session.SetFlightInput(_flightX, _flightY);
                 _connect.Session.TickFlight(0.05f);
             }
 
-            RunOnUiThread(RenderStatus);
+            RunOnUiThread(() =>
+            {
+                if (observing)
+                {
+                    _uiTick++;
+                    // Camera every tick; entity push every tick while observing (stops pop-in flicker).
+                    PushWorldToGl(forceEntities: true);
+                    if ((_uiTick & 1) == 0)
+                        UpdateObserveOverlay();
+                    var now = Environment.TickCount64;
+                    if (now - _lastFullUiMs > 1500)
+                    {
+                        _lastFullUiMs = now;
+                        RenderStatus(skipWorldPush: true);
+                    }
+                }
+                else
+                {
+                    RenderStatus();
+                }
+            });
         };
         _uiTimer.AutoReset = true;
 
@@ -176,7 +208,7 @@ public class MainActivity : Activity
     }
 
     void OnProgressChanged(ContentDownloadProgress p) => RunOnUiThread(() => ApplyProgress(p));
-    void OnDebugChanged() => RunOnUiThread(RenderStatus);
+    void OnDebugChanged() => RunOnUiThread(() => RenderStatus());
 
     public override void OnConfigurationChanged(Android.Content.Res.Configuration newConfig)
     {
@@ -329,6 +361,7 @@ public class MainActivity : Activity
         _lobbyPlayerCount = FindViewById<TextView>(Resource.Id.lobby_player_count);
         _lobbyContentStatus = FindViewById<TextView>(Resource.Id.lobby_content_status);
         _observeHud = FindViewById<TextView>(Resource.Id.observe_hud);
+        _observeFps = FindViewById<TextView>(Resource.Id.observe_fps);
         _joinDebug = FindViewById<TextView>(Resource.Id.join_debug);
         _debugToggle = FindViewById<TextView>(Resource.Id.debug_toggle);
         _downloadLabel = FindViewById<TextView>(Resource.Id.download_label);
@@ -364,6 +397,13 @@ public class MainActivity : Activity
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_down));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_left));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_right));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_return));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_warps));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_follow));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_roles));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_fov));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_light));
+        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_vis));
     }
 
     void WireButtons()
@@ -467,6 +507,7 @@ public class MainActivity : Activity
                 Toast.MakeText(this, "Наблюдение — джойстик / drag / ✈ варп", ToastLength.Short)?.Show();
                 EnsureJoystick();
                 ApplyObserveImmersive(true);
+                RefreshGhostActionButtons();
                 RenderStatus();
             };
 
@@ -484,18 +525,7 @@ public class MainActivity : Activity
         var warpsBtn = FindViewById<Button>(Resource.Id.btn_warps);
         if (warpsBtn != null)
         {
-            warpsBtn.Click += (_, _) =>
-            {
-                try
-                {
-                    if (!_connect.Session.CycleWarp(out _))
-                        Toast.MakeText(this, "Запрос локаций…", ToastLength.Short)?.Show();
-                }
-                catch (Exception ex)
-                {
-                    Toast.MakeText(this, $"Варп: {ex.Message}", ToastLength.Short)?.Show();
-                }
-            };
+            warpsBtn.Click += (_, _) => ShowGhostTargetPicker(places: true);
         }
 
         var returnBtn = FindViewById<Button>(Resource.Id.btn_ghost_return);
@@ -520,20 +550,7 @@ public class MainActivity : Activity
         var followBtn = FindViewById<Button>(Resource.Id.btn_ghost_follow);
         if (followBtn != null)
         {
-            followBtn.Click += (_, _) =>
-            {
-                try
-                {
-                    if (_connect.Session.CycleFollowPlayer(out var name))
-                        Toast.MakeText(this, $"Следим: {name}", ToastLength.Short)?.Show();
-                    else
-                        Toast.MakeText(this, "Запрос игроков…", ToastLength.Short)?.Show();
-                }
-                catch (Exception ex)
-                {
-                    Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
-                }
-            };
+            followBtn.Click += (_, _) => ShowGhostTargetPicker(places: false);
         }
 
         var rolesBtn = FindViewById<Button>(Resource.Id.btn_ghost_roles);
@@ -552,6 +569,235 @@ public class MainActivity : Activity
                 {
                     Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
                 }
+            };
+        }
+
+        FindViewById<Button>(Resource.Id.btn_ghost_fov)!.Click += (_, _) =>
+        {
+            _connect.Session.ToggleFov();
+            RefreshGhostActionButtons();
+        };
+        FindViewById<Button>(Resource.Id.btn_ghost_light)!.Click += (_, _) =>
+        {
+            _connect.Session.ToggleLighting();
+            RefreshGhostActionButtons();
+        };
+        FindViewById<Button>(Resource.Id.btn_ghost_vis)!.Click += (_, _) =>
+        {
+            _connect.Session.ToggleOtherGhosts();
+            RefreshGhostActionButtons();
+        };
+
+        _connect.Session.GhostUiChanged += () => RunOnUiThread(RefreshGhostActionButtons);
+
+        WireObserveChat();
+    }
+
+    List<GhostWarpEntry>? _warpPickerItems;
+
+    void ShowGhostTargetPicker(bool places)
+    {
+        try
+        {
+            _connect.Session.RequestGhostWarps();
+            var all = _connect.Session.GhostWarps;
+            var items = places
+                ? all.Where(w => w.IsWarpPoint || w.Category == "place").ToList()
+                : all.Where(w => !w.IsWarpPoint)
+                    .OrderBy(w => w.Category == "antag" ? 0 : 1)
+                    .ThenBy(w => w.DisplayName, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+            if (items.Count == 0)
+            {
+                Toast.MakeText(this, places ? "Запрос локаций…" : "Запрос игроков…", ToastLength.Short)?.Show();
+                return;
+            }
+
+            _warpPickerItems = items;
+            var overlay = FindViewById<FrameLayout>(Resource.Id.observe_warp_overlay);
+            var list = FindViewById<ListView>(Resource.Id.observe_warp_list);
+            var title = FindViewById<TextView>(Resource.Id.observe_warp_title);
+            var close = FindViewById<Button>(Resource.Id.btn_observe_warp_close);
+            var ghostnado = FindViewById<Button>(Resource.Id.btn_observe_warp_ghostnado);
+            if (overlay is null || list is null)
+                return;
+
+            if (title != null)
+                title.Text = places ? "Варп — локации" : "Следить — игроки";
+
+            if (ghostnado != null)
+            {
+                ghostnado.Visibility = places ? ViewStates.Gone : ViewStates.Visible;
+                ghostnado.Click -= OnGhostnadoClick;
+                ghostnado.Click += OnGhostnadoClick;
+            }
+
+            if (close != null)
+            {
+                close.Click -= OnWarpCloseClick;
+                close.Click += OnWarpCloseClick;
+            }
+
+            overlay.Click -= OnWarpCloseClick;
+            overlay.Click += OnWarpCloseClick;
+
+            var labels = items.Select(w =>
+            {
+                var prefix = w.Category switch
+                {
+                    "antag" => "◆ ",
+                    "place" => "○ ",
+                    _ => "· ",
+                };
+                return string.IsNullOrEmpty(w.Subtitle)
+                    ? prefix + w.DisplayName
+                    : $"{prefix}{w.DisplayName}  ({w.Subtitle})";
+            }).ToList();
+
+            list.Adapter = new ArrayAdapter<string>(
+                this,
+                Android.Resource.Layout.SimpleListItem1,
+                Android.Resource.Id.Text1,
+                labels);
+            list.ItemClick -= OnWarpItemClick;
+            list.ItemClick += OnWarpItemClick;
+            overlay.Visibility = ViewStates.Visible;
+        }
+        catch (Exception ex)
+        {
+            Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+        }
+    }
+
+    void OnWarpCloseClick(object? sender, EventArgs e)
+    {
+        var overlay = FindViewById<FrameLayout>(Resource.Id.observe_warp_overlay);
+        if (overlay != null)
+            overlay.Visibility = ViewStates.Gone;
+        _warpPickerItems = null;
+    }
+
+    void OnGhostnadoClick(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (_connect.Session.Ghostnado())
+                Toast.MakeText(this, "Ghostnado…", ToastLength.Short)?.Show();
+            else
+                Toast.MakeText(this, "Ghostnado недоступен", ToastLength.Short)?.Show();
+        }
+        catch (Exception ex)
+        {
+            Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+        }
+
+        OnWarpCloseClick(sender, e);
+    }
+
+    void OnWarpItemClick(object? sender, AdapterView.ItemClickEventArgs e)
+    {
+        var items = _warpPickerItems;
+        if (items is null || e.Position < 0 || e.Position >= items.Count)
+            return;
+        var target = items[e.Position];
+        if (_connect.Session.WarpTo(target.Entity))
+            Toast.MakeText(this, $"→ {target.DisplayName}", ToastLength.Short)?.Show();
+        OnWarpCloseClick(sender, EventArgs.Empty);
+    }
+
+    void RefreshGhostActionButtons()
+    {
+        var s = _connect.Session;
+        var ret = FindViewById<Button>(Resource.Id.btn_ghost_return);
+        if (ret != null)
+        {
+            ret.Enabled = s.CanReturnToBody;
+            ret.Alpha = s.CanReturnToBody ? 1f : 0.45f;
+        }
+
+        var roles = FindViewById<Button>(Resource.Id.btn_ghost_roles);
+        if (roles != null)
+        {
+            roles.Enabled = s.CanTakeGhostRoles;
+            roles.Alpha = s.CanTakeGhostRoles ? 1f : 0.45f;
+            roles.Text = s.GhostRoleCount > 0 ? $"Роли ({s.GhostRoleCount})" : "Роли";
+        }
+
+        var fov = FindViewById<Button>(Resource.Id.btn_ghost_fov);
+        if (fov != null)
+            fov.Text = s.DrawFov ? "FoV●" : "FoV○";
+
+        var light = FindViewById<Button>(Resource.Id.btn_ghost_light);
+        if (light != null)
+            light.Text = s.LightingModeLabel;
+
+        var vis = FindViewById<Button>(Resource.Id.btn_ghost_vis);
+        if (vis != null)
+            vis.Text = s.ShowOtherGhosts ? "Духи●" : "Духи○";
+    }
+
+    void WireObserveChat()
+    {
+        var input = FindViewById<EditText>(Resource.Id.observe_chat_input);
+        var send = FindViewById<Button>(Resource.Id.btn_observe_chat_send);
+        var channelBtn = FindViewById<Button>(Resource.Id.btn_observe_chat_channel);
+        var filterBtn = FindViewById<Button>(Resource.Id.btn_observe_chat_filter);
+        var panel = FindViewById<LinearLayout>(Resource.Id.observe_chat_panel);
+        var scroll = FindViewById<ScrollView>(Resource.Id.observe_chat_scroll);
+
+        void Send()
+        {
+            if (input is null) return;
+            var text = input.Text?.Trim();
+            if (string.IsNullOrEmpty(text)) return;
+            var cmd = ChatChannelCmds[Math.Clamp(_chatChannelIdx, 0, ChatChannelCmds.Length - 1)];
+            if (_connect.Session.SendChat(text, cmd))
+                input.Text = "";
+        }
+
+        if (send != null)
+            send.Click += (_, _) => Send();
+        if (input != null)
+        {
+            input.EditorAction += (_, e) =>
+            {
+                if (e.ActionId == Android.Views.InputMethods.ImeAction.Send
+                    || e.Event?.KeyCode == Keycode.Enter)
+                    Send();
+            };
+        }
+
+        if (channelBtn != null)
+        {
+            channelBtn.Click += (_, _) =>
+            {
+                _chatChannelIdx = (_chatChannelIdx + 1) % ChatChannelLabels.Length;
+                channelBtn.Text = ChatChannelLabels[_chatChannelIdx];
+                if (input != null)
+                {
+                    input.Hint = _chatChannelIdx switch
+                    {
+                        1 => "LOOC…",
+                        2 => "OOC…",
+                        3 => "шёпот…",
+                        4 => "действие…",
+                        _ => "E чтобы говорить…",
+                    };
+                }
+            };
+        }
+
+        if (filterBtn != null && panel != null && scroll != null)
+        {
+            filterBtn.Click += (_, _) =>
+            {
+                _chatExpanded = !_chatExpanded;
+                var lp = panel.LayoutParameters as FrameLayout.LayoutParams;
+                if (lp is null) return;
+                lp.Height = (int)(Resources!.DisplayMetrics!.Density * (_chatExpanded ? 180f : 44f));
+                panel.LayoutParameters = lp;
+                scroll.Visibility = _chatExpanded ? ViewStates.Visible : ViewStates.Gone;
             };
         }
     }
@@ -920,11 +1166,63 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4000];
-    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[9000];
+    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
+    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[8000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
-    void PushWorldToGl()
+    void UpdateObserveOverlay()
+    {
+        if (_observeHud != null)
+        {
+            var s = _connect.Session;
+            _observeHud.Text = $"{s.UserName ?? "ghost"} · z{s.Zoom:0.0}";
+        }
+
+        if (_observeFps != null && _glView != null)
+            _observeFps.Text = $"{_glView.Renderer.Fps:0} FPS";
+
+        RefreshObserveChatHistory();
+    }
+
+    void RefreshObserveChatHistory()
+    {
+        var history = FindViewById<TextView>(Resource.Id.observe_chat_history);
+        if (history is null)
+            return;
+        var ver = _connect.Session.ChatVersion;
+        if (ver == _lastChatVersion)
+            return;
+        _lastChatVersion = ver;
+
+        var chat = _connect.Session.ChatLines;
+        if (chat.Count == 0)
+        {
+            history.Text = "чат…";
+            return;
+        }
+
+        // Last ~40 lines — enough for PC-like panel without Spannable thrash.
+        var start = Math.Max(0, chat.Count - 40);
+        var sb = new Android.Text.SpannableStringBuilder();
+        for (var i = start; i < chat.Count; i++)
+        {
+            if (sb.Length() > 0) sb.Append('\n');
+            var c = chat[i];
+            var lineStart = sb.Length();
+            sb.Append(c.Text);
+            sb.SetSpan(
+                new Android.Text.Style.ForegroundColorSpan(new Color(c.Argb)),
+                lineStart,
+                sb.Length(),
+                Android.Text.SpanTypes.ExclusiveExclusive);
+        }
+
+        history.SetText(sb, TextView.BufferType.Spannable);
+        var scroll = FindViewById<ScrollView>(Resource.Id.observe_chat_scroll);
+        scroll?.Post(() => scroll.FullScroll(FocusSearchDirection.Down));
+    }
+
+    void PushWorldToGl(bool forceEntities = true)
     {
         if (_glView is null)
             return;
@@ -940,16 +1238,29 @@ public class MainActivity : Activity
             _glView.Renderer.SetEntities(Array.Empty<GlesClearRenderer.EntitySprite>(), 0);
             _glView.Renderer.SetTiles(Array.Empty<GlesClearRenderer.TileSprite>(), 0);
             _glView.Renderer.SetSpeechBubbles(Array.Empty<GlesClearRenderer.SpeechBubbleSprite>(), 0);
+            _audioPlayer?.Tick(Array.Empty<WorldAudioCue>());
             return;
         }
 
-        var n = Math.Min(world.Entities.Count, _spriteScratch.Length);
-        // WorldStateCache already applies the authoritative depth/Y/control ordering.
-        // Re-sorting here changed ties and made co-located layers flicker.
-        for (var i = 0; i < n; i++)
+        var worldChanged = world.ToSequence != _lastPushedWorldTick;
+        if (!forceEntities && !worldChanged)
+        {
+            // Camera-only update — skip entity/tile copy & audio.
+            return;
+        }
+
+        _lastPushedWorldTick = world.ToSequence;
+
+        // WorldStateCache already sorts by DrawDepth — avoid re-OrderBy on UI thread.
+        var showGhosts = s.ShowOtherGhosts;
+        var n = 0;
+        var limit = Math.Min(world.Entities.Count, _spriteScratch.Length);
+        for (var i = 0; i < world.Entities.Count && n < limit; i++)
         {
             var e = world.Entities[i];
-            _spriteScratch[i] = new GlesClearRenderer.EntitySprite
+            if (!showGhosts && !e.IsControlled && (e.IsGhost || LooksLikeOtherGhost(e)))
+                continue;
+            _spriteScratch[n++] = new GlesClearRenderer.EntitySprite
             {
                 X = e.X,
                 Y = e.Y,
@@ -962,10 +1273,14 @@ public class MainActivity : Activity
                 B = e.B,
                 IsControlled = e.IsControlled,
                 NoRotation = e.NoRotation,
+                Label = e.Label,
+                DirOverride = e.DirOverride,
             };
         }
 
         _glView.Renderer.SetEntities(_spriteScratch, n);
+        _glView.Renderer.SetFullbright(!s.DrawLighting);
+        _glView.Renderer.SetDrawFov(s.DrawFov);
 
         var tiles = world.Tiles ?? Array.Empty<WorldTileDraw>();
         var tn = Math.Min(tiles.Count, _tileScratch.Length);
@@ -981,6 +1296,8 @@ public class MainActivity : Activity
                 B = t.B,
                 RsiPath = t.RsiPath,
                 StateName = t.StateName,
+                Variant = t.Variant,
+                RotationMirroring = t.RotationMirroring,
             };
         }
 
@@ -1003,6 +1320,21 @@ public class MainActivity : Activity
         }
 
         _glView.Renderer.SetSpeechBubbles(_bubbleScratch, bn);
+
+        _audioPlayer ??= new AndroidAudioPlayer();
+        _audioPlayer.SetContentRoot(s.ContentFilesRoot);
+        _audioPlayer.SetFetcher(s.TextureFetcher);
+        _audioPlayer.SetEar(s.CamX, s.CamY);
+        _audioPlayer.Tick(world.Audio ?? Array.Empty<WorldAudioCue>());
+        foreach (var (path, vol) in s.DrainChatAudio())
+            _audioPlayer.PlayGlobalOneShot(path, vol);
+    }
+
+    static bool LooksLikeOtherGhost(WorldEntityDraw e)
+    {
+        var p = (e.RsiPath ?? "") + " " + (e.StateName ?? "") + " " + (e.Label ?? "");
+        return p.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Observer", StringComparison.OrdinalIgnoreCase);
     }
 
     void EnsureGl()
@@ -1218,6 +1550,8 @@ public class MainActivity : Activity
         // Orientation recreate must NOT tear down the live game session.
         if (!IsChangingConfigurations)
         {
+            _audioPlayer?.Dispose();
+            _audioPlayer = null;
             _connect.ProgressChanged -= OnProgressChanged;
             _connect.DebugChanged -= OnDebugChanged;
             _connect.Disconnect();
@@ -1230,7 +1564,7 @@ public class MainActivity : Activity
         base.OnDestroy();
     }
 
-    void RenderStatus()
+    void RenderStatus(bool skipWorldPush = false)
     {
         // Sticky UI observe so a brief blip doesn't dump to hub — but exit if UDP died.
         if (_uiObserving && !_connect.Session.IsConnected)
@@ -1367,11 +1701,11 @@ public class MainActivity : Activity
             _lobbyContentStatus.Visibility = ViewStates.Gone;
         }
 
-        if (_observeHud != null && observing)
+        if (observing)
         {
-            var s = _connect.Session;
-            _observeHud.Text = $"{s.UserName ?? "ghost"} · z{s.Zoom:0.0}";
-            PushWorldToGl();
+            UpdateObserveOverlay();
+            if (!skipWorldPush)
+                PushWorldToGl();
         }
 
         if (_lobbyPlayers != null)
