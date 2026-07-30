@@ -360,7 +360,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var vert = 0;
         var textured = 0;
         var rsiPaths = 0;
-        var texDrawBudget = 2800;
+        var texDrawBudget = 4200;
         var viewPad = 200f / zoom;
         var animTime = _frames / 60.0;
 

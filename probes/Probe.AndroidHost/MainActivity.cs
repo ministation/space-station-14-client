@@ -920,7 +920,7 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4000];
+    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[6500];
     readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[9000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 

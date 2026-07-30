@@ -17,7 +17,7 @@ namespace Port.Net;
 /// </summary>
 public sealed class WorldStateCache
 {
-    const int MaxDrawEntities = 4000;
+    const int MaxDrawEntities = 6500;
     const int MaxDrawTiles = 9000;
     const int ChunkDefault = 16;
 
