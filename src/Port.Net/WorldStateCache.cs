@@ -281,6 +281,9 @@ public sealed class WorldStateCache
                                 _names.Remove(es.NetEntity);
                                 _grids.Remove(es.NetEntity);
                                 _gridChunkSize.Remove(es.NetEntity);
+                                _closedContainers.Remove(es.NetEntity);
+                                _openContainers.Remove(es.NetEntity);
+                                _containerOccludes.Remove(es.NetEntity);
                                 _ghostEntities.Remove(es.NetEntity);
                                 _audio.Remove(es.NetEntity);
                                 invalidatePos = true;
@@ -325,14 +328,14 @@ public sealed class WorldStateCache
                             continue;
                         }
 
-                        if (TryApplyContainerState(es.NetEntity, change.State))
-                            continue;
-
                         if (ctrlScan.IsValid() && es.NetEntity == ctrlScan)
                             TryApplyGhostFlags(change.State);
 
                         if (IsGhostComponentState(change.State))
                             _ghostEntities.Add(es.NetEntity);
+
+                        if (TryApplyContainerState(es.NetEntity, change.State))
+                            continue;
 
                         if (TryExtractAudio(change.State, es.NetEntity))
                             continue;
@@ -438,10 +441,7 @@ public sealed class WorldStateCache
                 const float viewTiles = 56f;
                 var viewR2 = viewTiles * viewTiles;
 
-                // IconSmooth occupancy: grid-local snap of wall/window/grille entities.
-                var smoothOcc = BuildIconSmoothOccupancy(eyeMap);
-                // Keep the optimized parent/grid-local lookup from master for the common
-                // wall/window path while retaining the PR resolver for layered fallbacks.
+                // IconSmooth occupancy: parent/grid-local lookup matching PC Snapgrid.
                 var smoothTiles = _smoothTilesScratch;
                 smoothTiles.Clear();
                 var smoothByEnt = _smoothByEntScratch;
@@ -485,10 +485,6 @@ public sealed class WorldStateCache
                         continue; // map-grid entity without sprite — tiles drawn separately
 
                     var isCtrl = controlled.IsValid() && ent == controlled;
-                    // PC ContainerSystem: hide sprites inside closed lockers/crates (ShowContents=false).
-                    if (!isCtrl && IsOccludedByContainer(ent, xf))
-                        continue;
-
                     // Critical: only the eye's map — otherwise stations/asteroids stack in one space.
                     if (!isCtrl && eyeMap.IsValid())
                     {
@@ -516,9 +512,6 @@ public sealed class WorldStateCache
 
                     var worldRot = (float)ResolveWorldRot(ent);
                     _prototypes.TryGetValue(ent, out var protoId);
-
-                    if (!isCtrl && ShouldHideFromDefaultEye(protoId, spr?.Path, spr?.DrawDepth ?? 0))
-                        continue;
 
                     // Pure networked AudioComponent ents have no sprite — skip markers.
                     if (!isCtrl && _audio.ContainsKey(ent))
@@ -670,7 +663,7 @@ public sealed class WorldStateCache
                     {
                         // Mobs: full clothing stack. Doors/airlocks/machines: a few layers.
                         var maxLayers = IsPlayerLike(protoId, spr) || isCtrl
-                            ? 12
+                            ? MaxLayersPerEntity
                             : (LooksLikeDoorOrMachine(protoId, spr.Path) ? 4 : 2);
                         var baseDepth = spr.FromNetwork && spr.HasDrawDepth
                             ? spr.DrawDepth
@@ -678,7 +671,7 @@ public sealed class WorldStateCache
 
                         foreach (var layer in spr.Layers)
                         {
-                            if (layersAdded >= MaxLayersPerEntity) break;
+                            if (layersAdded >= maxLayers) break;
                             if (!layer.Visible) continue;
                             var path = layer.Path
                                        ?? (spr.FromNetwork ? spr.Path : null)
@@ -692,12 +685,11 @@ public sealed class WorldStateCache
                             }
 
                             var layerDepth = layer.HasDepth ? layer.Depth : baseDepth;
-                            if (!isCtrl && (ShouldHideFromDefaultEye(protoId, path, layerDepth)
-                                            || IsHiddenFromDefaultEye(protoId, path, layerDepth, spr.FromNetwork)))
+                            if (!isCtrl && IsHiddenFromDefaultEye(protoId, path, layerDepth, spr.FromNetwork))
                                 continue;
 
                             byte lr = layer.R, lg = layer.G, lb = layer.B;
-                            if (lr == 0 && lg == 0 && lb == 0)
+                            if (!spr.HasColor && lr == 0 && lg == 0 && lb == 0)
                             {
                                 lr = 255;
                                 lg = 255;
@@ -706,7 +698,6 @@ public sealed class WorldStateCache
 
                             var layerState = layer.State ?? spr.State
                                              ?? (isCtrl ? "animated" : DefaultSpriteState(path, protoId));
-                            layerState = ResolveIconSmoothState(path, protoId, layerState, wp, worldRot, smoothOcc);
                             // Layer offset is in local entity space → world via rotation.
                             var ox = layer.OffsetX;
                             var oy = layer.OffsetY;
@@ -754,7 +745,6 @@ public sealed class WorldStateCache
                         }
 
                         stateName ??= DefaultSpriteState(path, protoId);
-                        stateName = ResolveIconSmoothState(path, protoId, stateName, wp, worldRot, smoothOcc);
 
                         if (spr is not { HasColor: true } && r == 0 && g == 0 && b == 0)
                         {
@@ -1223,21 +1213,6 @@ public sealed class WorldStateCache
                         continue;
                     ColorForTile(tile.TypeId, out var r, out var g, out var b);
                     var rsi = _tiles?.TryGetSprite((ushort)tile.TypeId);
-                    // Variant UV: prefer numeric state from tile variant when present.
-                    string? state = null;
-                    try
-                    {
-                        // Robust Tile may expose Variant / Flags — best-effort.
-                        var tt = tile.GetType();
-                        var variant = tt.GetProperty("Variant")?.GetValue(tile)
-                                      ?? tt.GetField("Variant")?.GetValue(tile);
-                        if (variant is byte vb)
-                            state = vb.ToString();
-                        else if (variant is int vi)
-                            state = vi.ToString();
-                    }
-                    catch { /* ignore */ }
-
                     // Textured floors: white modulate (pastel only for missing art).
                     if (!string.IsNullOrEmpty(rsi))
                     {
@@ -1247,8 +1222,10 @@ public sealed class WorldStateCache
                     }
 
                     list.Add(new WorldTileDraw(
-                        world.X, world.Y, r, g, b, rsi, state,
-                        tile.Variant, tile.RotationMirroring, (float)gridRot.Theta));
+                        world.X, world.Y, r, g, b, rsi, null,
+                        Variant: tile.Variant,
+                        RotationMirroring: tile.RotationMirroring,
+                        Rotation: (float)gridRot.Theta));
                 }
             }
         }
