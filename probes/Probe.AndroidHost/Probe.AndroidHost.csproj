@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>org.ss14.mobilehub</ApplicationId>
-    <ApplicationVersion>100</ApplicationVersion>
-    <ApplicationDisplayVersion>0.1.0-hub-beta</ApplicationDisplayVersion>
+    <ApplicationVersion>203</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.3</ApplicationDisplayVersion>
     <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>

@@ -5,10 +5,11 @@
     <string name="hub_title">SPACE STATION 14</string>
     <string name="hub_subtitle">Mobile Hub · Public Beta</string>
     <string name="servers_title">Серверы</string>
+    <string name="hub_search_hint">Поиск: имя, адрес, карта, тег…</string>
     <string name="custom_server_hint">ss14://host:port</string>
     <string name="btn_add_server">Добавить</string>
     <string name="btn_refresh_servers">Обновить</string>
-    <string name="btn_login_ss14">Войти через SS14</string>
+    <string name="btn_login_ss14">Войти</string>
     <string name="btn_logout_ss14">Выйти</string>
     <string name="btn_connect">Подключиться</string>
     <string name="btn_disconnect">Отключиться</string>

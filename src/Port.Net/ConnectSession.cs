@@ -21,6 +21,7 @@ public sealed class ConnectSession
     public string DebugLog { get; private set; } = "";
 
     readonly List<string> _log = new();
+    bool _joinSettled;
 
     public bool InLobby => Session.IsConnected && !Session.IsObserving;
     public bool Observing => Session.IsConnected && Session.IsObserving;
@@ -67,6 +68,7 @@ public sealed class ConnectSession
     {
         if (Busy) return;
         Busy = true;
+        _joinSettled = false;
         _log.Clear();
         try
         {
@@ -81,6 +83,23 @@ public sealed class ConnectSession
             {
                 Summary = "Log in with your SS14 account first";
                 return;
+            }
+
+            // Older sessions saved AllowHwid=false; MiniStation requires HWID.
+            if (!auth.AllowHwid)
+            {
+                auth.AllowHwid = true;
+                if (!string.IsNullOrWhiteSpace(AuthConfigPath))
+                    auth.Save(AuthConfigPath);
+                Note("AllowHwid enabled (required by server)");
+            }
+
+            if (string.IsNullOrWhiteSpace(ClientHwid.StorageDirectory)
+                && !string.IsNullOrWhiteSpace(AuthConfigPath))
+            {
+                ClientHwid.StorageDirectory = Path.Combine(
+                    Path.GetDirectoryName(AuthConfigPath) ?? ".",
+                    "userdata");
             }
 
             Note(auth.StatusLine());
@@ -124,9 +143,12 @@ public sealed class ConnectSession
                 Note("content sync: assemblies in parallel with UDP join");
                 NotifyDebug();
                 
-                // Pre-set AssembliesDirectory so serializer can find files as soon as they land.
+                // Pre-set search roots so serializer can find Assemblies under fork/hash.
+                Session.ContentSearchRoot = ContentRoot;
                 Session.AssembliesDirectory = Path.Combine(ContentRoot, "Assemblies");
+                Session.StringsCacheDirectory = Path.Combine(ContentRoot, "string-cache");
                 Note($"assemblies dir (pre) → {Session.AssembliesDirectory}");
+                Note($"content search root → {Session.ContentSearchRoot}");
                 
                 contentTask = Task.Run(async () =>
                 {
@@ -137,6 +159,8 @@ public sealed class ConnectSession
                         if (!string.IsNullOrWhiteSpace(Content.FilesRoot))
                         {
                             Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
+                            Session.ContentFilesRoot = Content.FilesRoot;
+                            Session.NotifyContentReady(Content.FilesRoot);
                             Note($"assemblies dir → {Session.AssembliesDirectory}");
                         }
 
@@ -168,7 +192,7 @@ public sealed class ConnectSession
                 LastInfo.AuthMode,
                 LastInfo.PublicKey,
                 auth,
-                TimeSpan.FromSeconds(75),
+                TimeSpan.FromSeconds(90),
                 ct);
 
             if (contentTask is not null)
@@ -189,14 +213,18 @@ public sealed class ConnectSession
                     && !string.IsNullOrWhiteSpace(Content.FilesRoot))
                 {
                     Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
+                    Session.ContentFilesRoot = Content.FilesRoot;
                     Note($"assemblies dir (post-content) → {Session.AssembliesDirectory}");
                 }
+
+                Session.NotifyContentReady(Content.FilesRoot);
             }
 
             Note($"session phase={result.Phase} detail={result.Detail}");
             foreach (var line in Session.SnapshotLogPublic(24))
                 Note(line);
 
+            _joinSettled = true;
             if (result.Phase is GameSessionPhase.InLobby or GameSessionPhase.Observing)
             {
                 var local = result.Players?.FirstOrDefault(p => p.UserId == result.UserId);
@@ -207,16 +235,20 @@ public sealed class ConnectSession
             }
             else
             {
-                Summary = $"Connect failed: {result.Detail}";
-                if (result.Detail.Contains("no response", StringComparison.OrdinalIgnoreCase))
-                    Summary += "\nUDP до сервера не доходит — выключи VPN / Private DNS и попробуй на мобильном интернете.";
+                var readable = ConnectFailureFormatter.ExtractReason(result.Detail);
+                Summary = ConnectFailureFormatter.FormatUserSummary(result.Detail);
+                Note($"connect denied (raw): {result.Detail}");
+                if (!string.IsNullOrWhiteSpace(readable) && readable != result.Detail)
+                    Note($"connect denied: {readable}");
                 Note(Summary);
             }
         }
         catch (Exception ex)
         {
-            Summary = $"Error: {ex.Message}";
+            _joinSettled = true;
+            Summary = ConnectFailureFormatter.FormatUserSummary(ex.Message);
             Note($"{ex.GetType().Name}: {ex.Message}");
+            Note(Summary);
         }
         finally
         {
@@ -237,9 +269,15 @@ public sealed class ConnectSession
     void OnContentProgress(ContentDownloadProgress p)
     {
         LastProgress = p;
-        Summary = $"Downloading: {p.Percent}% — {p.Stage} {p.Done}/{p.Total}";
-        if (!string.IsNullOrWhiteSpace(p.CurrentPath))
-            Summary += $"\n{p.CurrentPath}";
+        // After lobby join settles (ok or deny), keep that Summary — background pack
+        // download must not overwrite "Сервер отказал…" with "Downloading…".
+        if (!_joinSettled)
+        {
+            Summary = $"Downloading: {p.Percent}% — {p.Stage} {p.Done}/{p.Total}";
+            if (!string.IsNullOrWhiteSpace(p.CurrentPath))
+                Summary += $"\n{p.CurrentPath}";
+        }
+
         ProgressChanged?.Invoke(p);
         NotifyDebug();
     }

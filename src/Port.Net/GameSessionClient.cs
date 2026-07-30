@@ -60,6 +60,13 @@ public sealed class GameSessionClient : IDisposable
     NetPacketCrypto? _crypto;
     ClientWebSocket? _transferWs;
     CancellationTokenSource? _keepAliveCts;
+    readonly PortTransferReceiver _transfer = new();
+    string _joinHost = "";
+    int _ignoredRx;
+    int _transferDataRx;
+    bool _sawTransferTraffic;
+    DateTime? _lastTransferDataAt;
+    bool _transferHandshakeDone;
 
     public GameSessionPhase Phase { get; private set; } = GameSessionPhase.Idle;
     public string Detail { get; private set; } = "idle";
@@ -74,11 +81,18 @@ public sealed class GameSessionClient : IDisposable
     public string LastCommandAck { get; private set; } = "";
     public string LastEyeHint { get; private set; } = "";
     public EyeSnapshot? LastEye { get; private set; }
+    public WorldSnapshot? LastWorld { get; private set; }
     public SessionStatus LocalStatus { get; private set; } = SessionStatus.Connecting;
     public float CamX { get; private set; }
     public float CamY { get; private set; }
+    float _panOffX;
+    float _panOffY;
     public string? AssembliesDirectory { get; set; }
+    public string? ContentFilesRoot { get; set; }
+    public string? ContentSearchRoot { get; set; }
+    public string? StringsCacheDirectory { get; set; }
     public string SerializerStatus { get; private set; } = "serializer: not started";
+    public bool HasMappedStrings => _serializer?.HasMappedStrings == true;
 
     SerializerBootstrap? _serializer;
     byte[]? _mapStrHash;
@@ -144,15 +158,64 @@ public sealed class GameSessionClient : IDisposable
 
     public bool Observe()
     {
+        EnsureSerializer(forceRediscover: true);
+        if (_serializer is null)
+        {
+            Note("observe: serializer still unavailable — check Assemblies download");
+            Detail = "observe blocked: no Assemblies for GameState";
+            // Still send observe so server attaches ghost; viewport may catch up later.
+        }
+        else if (_serializer is { HasMappedStrings: false })
+        {
+            if (_mapStrHash is { Length: > 0 })
+            {
+                if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
+                    RequestMappedStrings();
+            }
+            else
+                Note("observe: waiting MsgMapStrServerHandshake for string hash");
+        }
+
         if (!SendConsole("observe"))
             return false;
         IsObserving = true;
-        Set(GameSessionPhase.Observing, "sent observe — awaiting MsgState / ghost attach");
+        Set(GameSessionPhase.Observing,
+            HasMappedStrings
+                ? "sent observe — awaiting MsgState / ghost"
+                : "sent observe — waiting serializer/strings for decode");
         return true;
+    }
+
+    public void RequestMappedStrings()
+    {
+        if (_mapStrHash is null || _mapStrHash.Length == 0)
+        {
+            Note("mapstr request skipped — no server hash yet");
+            return;
+        }
+
+        if (_serializer?.HasMappedStrings == true)
+            return;
+
+        try
+        {
+            SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
+            {
+                m.Write(true); // NeedsStrings
+            });
+            _mapStrRequested = true;
+            Note("mapstr: requested NeedsStrings=true (observe/decode)");
+        }
+        catch (Exception ex)
+        {
+            Note($"mapstr request fail: {ex.Message}");
+        }
     }
 
     public void PanCamera(float dx, float dy)
     {
+        _panOffX += dx;
+        _panOffY += dy;
         CamX += dx;
         CamY += dy;
     }
@@ -189,12 +252,15 @@ public sealed class GameSessionClient : IDisposable
                 Note($"try {ip}:{endpoint.Port}");
                 try
                 {
-                    var perTry = TimeSpan.FromSeconds(Math.Max(35, timeout.TotalSeconds));
-                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    linked.CancelAfter(perTry);
+                    _joinHost = endpoint.Host;
 
-                    await ConnectAndLoginAsync(endpoint, ip, authMode, serverPublicKey, auth, linked.Token);
-                    await BootstrapLobbyAsync(linked.Token);
+                    using var loginCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    loginCts.CancelAfter(TimeSpan.FromSeconds(40));
+                    await ConnectAndLoginAsync(endpoint, ip, authMode, serverPublicKey, auth, loginCts.Token);
+
+                    using var bootCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    bootCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(55, timeout.TotalSeconds)));
+                    await BootstrapLobbyAsync(bootCts.Token);
 
                     Set(GameSessionPhase.InLobby,
                         $"in lobby as {UserName} — {Players.Count} player(s)");
@@ -213,6 +279,15 @@ public sealed class GameSessionClient : IDisposable
                     Set(GameSessionPhase.Skipped, "cancelled");
                     DisposeConnection();
                     return Result(sw.Elapsed);
+                }
+                catch (OperationCanceledException ex)
+                {
+                    last = new TimeoutException(
+                        $"lobby timeout (mapstr/transfer/playerlist) — {_ignoredRx} ignored msgs, transferData={_transferDataRx}",
+                        ex);
+                    Note($"fail {ip}: timeout — {last.Message}");
+                    Set(GameSessionPhase.Failed, last.Message);
+                    DisposeConnection();
                 }
                 catch (Exception ex)
                 {
@@ -301,7 +376,9 @@ public sealed class GameSessionClient : IDisposable
                     Note($"status -> {status} ({reason})");
                     if (status == NetConnectionStatus.Disconnected)
                         throw new InvalidOperationException(
-                            string.IsNullOrWhiteSpace(reason) ? "disconnected before login" : reason);
+                            string.IsNullOrWhiteSpace(reason)
+                                ? "disconnected before login"
+                                : ConnectFailureFormatter.ExtractReason(reason));
                 }
                 else if (msg.MessageType == NetIncomingMessageType.Data)
                 {
@@ -393,7 +470,22 @@ public sealed class GameSessionClient : IDisposable
         RandomNumberGenerator.Fill(sharedSecret);
         var authHash = Convert.ToBase64String(MakeAuthHash(sharedSecret, publicKey));
 
-        await JoinAuthServerAsync(auth, authHash, ct);
+        byte[] legacyHwid = [];
+        string? modernHwidB64 = null;
+        // MiniStation denies with "отказался отправлять HWID" when join has hwid=null.
+        var sendHwid = encReq.WantHwid && auth.AllowHwid;
+        if (sendHwid)
+        {
+            legacyHwid = ClientHwid.GetLegacy();
+            modernHwidB64 = ClientHwid.GetModernBase64();
+            Note($"hwid: want={encReq.WantHwid} allow={auth.AllowHwid} modernB64Len={modernHwidB64?.Length ?? 0} legacyLen={legacyHwid.Length}");
+        }
+        else
+        {
+            Note($"hwid: skipped want={encReq.WantHwid} allow={auth.AllowHwid}");
+        }
+
+        await JoinAuthServerAsync(auth, authHash, modernHwidB64, ct);
         Note("api/session/join OK");
 
         var sealedPayload = new byte[sharedSecret.Length + encReq.VerifyToken.Length];
@@ -402,7 +494,7 @@ public sealed class GameSessionClient : IDisposable
         var sealedData = CryptoBox.Seal(sealedPayload, publicKey);
 
         var outMsg = _peer!.CreateMessage();
-        WriteEncryptionResponse(outMsg, Guid.Parse(auth.UserId!), sealedData);
+        WriteEncryptionResponse(outMsg, Guid.Parse(auth.UserId!), sealedData, legacyHwid);
         _peer.SendMessage(outMsg, _conn, NetDeliveryMethod.ReliableOrdered);
         Note("sent MsgEncryptionResponse");
 
@@ -421,7 +513,9 @@ public sealed class GameSessionClient : IDisposable
                     Note($"status -> {status} ({reason})");
                     if (status == NetConnectionStatus.Disconnected)
                         throw new InvalidOperationException(
-                            string.IsNullOrWhiteSpace(reason) ? "disconnected during auth" : reason);
+                            string.IsNullOrWhiteSpace(reason)
+                                ? "disconnected during auth"
+                                : ConnectFailureFormatter.ExtractReason(reason));
                 }
                 else if (m.MessageType == NetIncomingMessageType.Data)
                 {
@@ -452,7 +546,15 @@ public sealed class GameSessionClient : IDisposable
         var cvarsReceived = false;
         var playerListReqSent = false;
         var gotPlayerList = false;
+        var stringTableReady = false;
         DateTime? cvarsSentAt = null;
+        var bootStarted = DateTime.UtcNow;
+        _ignoredRx = 0;
+        _transferDataRx = 0;
+        _sawTransferTraffic = false;
+        _lastTransferDataAt = null;
+        _transferHandshakeDone = false;
+        _transfer.Reset();
 
         Set(GameSessionPhase.StringTable, "awaiting post-login bootstrap");
 
@@ -467,7 +569,9 @@ public sealed class GameSessionClient : IDisposable
                     Note($"status -> {status} ({reason})");
                     if (status == NetConnectionStatus.Disconnected)
                         throw new InvalidOperationException(
-                            string.IsNullOrWhiteSpace(reason) ? "disconnected during lobby bootstrap" : reason);
+                            string.IsNullOrWhiteSpace(reason)
+                                ? "disconnected during lobby bootstrap"
+                                : ConnectFailureFormatter.ExtractReason(reason));
                     return false;
                 }
 
@@ -488,7 +592,7 @@ public sealed class GameSessionClient : IDisposable
                         name = "MsgStringTableEntries";
                     else
                     {
-                        Note($"unknown msg id={id} ({msg.LengthBytes}B) — skip");
+                        NoteIgnore($"unknown msg id={id} ({msg.LengthBytes}B)");
                         return false;
                     }
                 }
@@ -497,19 +601,34 @@ public sealed class GameSessionClient : IDisposable
                 {
                     case "MsgStringTableEntries":
                         ApplyStringTable(msg);
+                        stringTableReady = true;
                         Set(GameSessionPhase.StringTable, $"string table: {_msgIds.Count} names");
                         break;
 
                     case "MsgMapStrServerHandshake":
-                        Set(GameSessionPhase.MapStrings, "MsgMapStrServerHandshake — request package");
+                        Set(GameSessionPhase.MapStrings, "MsgMapStrServerHandshake");
                         _mapStrHash = ReadMapStrHash(msg);
                         EnsureSerializer();
+                        if (_serializer is not null
+                            && _serializer.TryLoadCachedStrings(_mapStrHash, Note))
+                        {
+                            SerializerStatus = _serializer.Status;
+                            SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
+                            {
+                                m.Write(false);
+                            });
+                            mapstrDone = true;
+                            Note("mapstr: cache HIT — NeedsStrings=false");
+                            break;
+                        }
+
+                        // Request package for GameState decode; force-complete later if slow.
                         SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
                         {
                             m.Write(true); // NeedsStrings = true
                         });
                         _mapStrRequested = true;
-                        Note($"sent MsgMapStrClientHandshake NeedsStrings=true hashLen={_mapStrHash.Length}");
+                        Note($"mapstr: NeedsStrings=true hashLen={_mapStrHash.Length}");
                         break;
 
                     case "MsgMapStrStrings":
@@ -522,30 +641,38 @@ public sealed class GameSessionClient : IDisposable
                         if (_serializer is not null && _mapStrHash is not null)
                         {
                             if (_serializer.TrySetMappedPackage(_mapStrHash, package, Note))
+                            {
                                 SerializerStatus = _serializer.Status;
+                                _serializer.TrySaveCachedStrings(_mapStrHash, package, Note);
+                            }
                             else
                                 SerializerStatus = "serializer: SetPackage failed";
-                        }
-                        else
-                        {
-                            SerializerStatus = "serializer: missing bootstrap/hash for strings";
-                            Note(SerializerStatus);
                         }
 
                         SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
                         {
-                            m.Write(false); // complete
+                            m.Write(false);
                         });
                         mapstrDone = true;
-                        Note("sent MsgMapStrClientHandshake NeedsStrings=false (complete)");
+                        Note("sent MsgMapStrClientHandshake NeedsStrings=false (after package)");
                         break;
                     }
 
                     case "MsgTransferInit":
                         Set(GameSessionPhase.Transfer, "MsgTransferInit");
                         await HandleTransferInitAsync(msg, ct);
-                        transferDone = true;
+                        _transferHandshakeDone = true;
                         Note("transfer handshake complete");
+                        break;
+
+                    case "MsgTransferData":
+                        _transferDataRx++;
+                        _sawTransferTraffic = true;
+                        _lastTransferDataAt = DateTime.UtcNow;
+                        Set(GameSessionPhase.Transfer, $"MsgTransferData #{_transferDataRx}");
+                        _transfer.ReadMsgTransferData(msg, Note);
+                        if (TrySendNetworkResourceAck())
+                            transferDone = true;
                         break;
 
                     case "MsgConVars":
@@ -564,13 +691,61 @@ public sealed class GameSessionClient : IDisposable
                                 : $"lobby status={local.Status} ({Players.Count} players)");
                         break;
 
+                    case "MsgEntity":
+                        NoteIgnore("MsgEntity");
+                        break;
+
                     default:
-                        Note($"rx {name} id={id} — ignore");
+                        NoteIgnore($"{name} id={id}");
                         break;
                 }
 
                 return false;
             }, ct);
+
+            var bootElapsed = DateTime.UtcNow - bootStarted;
+            // Don't stall forever on mapstr — force lobby path after a few seconds.
+            if (!mapstrDone && stringTableReady && bootElapsed > TimeSpan.FromSeconds(12))
+            {
+                try
+                {
+                    SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
+                    {
+                        m.Write(false);
+                    });
+                    Note("mapstr: force NeedsStrings=false after 12s wait");
+                }
+                catch (Exception ex)
+                {
+                    Note($"mapstr force-complete fail: {ex.Message}");
+                }
+
+                mapstrDone = true;
+            }
+
+            // Resource ACK unblocks MsgPlayerList on the server.
+            if (!transferDone && TrySendNetworkResourceAck())
+                transferDone = true;
+
+            // Transfer traffic went quiet → force-finish + ACK (Finish frame may have been missed).
+            if (!transferDone && _sawTransferTraffic && _lastTransferDataAt is { } lastXfer
+                && DateTime.UtcNow - lastXfer > TimeSpan.FromSeconds(2))
+            {
+                _transfer.ForceFinishForAck(Note);
+                if (TrySendNetworkResourceAck())
+                    transferDone = true;
+            }
+
+            // No upload payload expected: handshake done (or never came) and no MsgTransferData.
+            if (!transferDone && stringTableReady && !_sawTransferTraffic
+                && bootElapsed > TimeSpan.FromSeconds(4)
+                && (_transferHandshakeDone || bootElapsed > TimeSpan.FromSeconds(10)))
+            {
+                transferDone = true;
+                Note(_transferHandshakeDone
+                    ? "transfer: done (handshake, no download traffic)"
+                    : "transfer: done (no MsgTransferInit / no download)");
+            }
 
             if (mapstrDone && transferDone && !cvarsSent)
             {
@@ -596,12 +771,58 @@ public sealed class GameSessionClient : IDisposable
                 Note("sent MsgPlayerListReq");
             }
 
+            // Re-request player list once if silent (resources may have become ready late).
+            if (playerListReqSent && !gotPlayerList && cvarsSentAt is { } sent
+                && DateTime.UtcNow - sent > TimeSpan.FromSeconds(8))
+            {
+                cvarsSentAt = DateTime.UtcNow;
+                // Re-send resource ACK then player list — covers race where list req arrived first.
+                TrySendNetworkResourceAck(forceResend: true);
+                SendNamed("MsgPlayerListReq", NetDeliveryMethod.ReliableUnordered, _ => { });
+                Note("re-sent NetworkResourceAck + MsgPlayerListReq");
+            }
+
             await Task.Delay(40, ct);
         }
 
         if (!gotPlayerList)
             throw new TimeoutException(
-                $"lobby bootstrap timeout (mapstr={mapstrDone} transfer={transferDone} cvarsRx={cvarsReceived})");
+                $"lobby bootstrap timeout (mapstr={mapstrDone} transfer={transferDone} ack={_transfer.AckSent} cvarsRx={cvarsReceived} ignore={_ignoredRx} xfer={_transferDataRx})");
+    }
+
+    bool TrySendNetworkResourceAck(bool forceResend = false)
+    {
+        if (!_transfer.DownloadFinished && !forceResend)
+            return false;
+        if (_transfer.AckSent && !forceResend)
+            return true;
+        if (!_msgIds.ContainsKey("NetworkResourceAckMessage"))
+        {
+            if (_transfer.DownloadFinished)
+                Note("transfer: NetworkResourceAckMessage not in string table yet");
+            return false;
+        }
+
+        var key = _transfer.DownloadFinished ? _transfer.LastAckKey : PortTransferReceiver.AckInitial;
+        try
+        {
+            SendNamed("NetworkResourceAckMessage", NetDeliveryMethod.ReliableOrdered, m => m.Write(key));
+            _transfer.MarkAckSent();
+            Note($"sent NetworkResourceAckMessage key={key}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Note($"NetworkResourceAckMessage fail: {ex.Message}");
+            return false;
+        }
+    }
+
+    void NoteIgnore(string label)
+    {
+        _ignoredRx++;
+        if (_ignoredRx <= 3 || _ignoredRx % 100 == 0)
+            Note($"rx {label} — ignore (#{_ignoredRx})");
     }
 
     async Task HandleTransferInitAsync(NetIncomingMessage msg, CancellationToken ct)
@@ -617,33 +838,88 @@ public sealed class GameSessionClient : IDisposable
         msg.SkipPadBits();
         var endpointUrl = msg.ReadString();
         var key = msg.ReadBytes(TransferKeyBytes);
+        endpointUrl = RewriteTransferEndpoint(endpointUrl);
         Note($"transfer WS → {endpointUrl}");
 
-        _transferWs = new ClientWebSocket();
-        _transferWs.Options.SetRequestHeader(TransferKeyHeader, Convert.ToBase64String(key));
-        _transferWs.Options.SetRequestHeader(TransferUserHeader, UserId!.Value.ToString());
-        await _transferWs.ConnectAsync(new Uri(endpointUrl), ct);
-        Note($"transfer WS connected ({_transferWs.State})");
-        // Keep socket open; server completes handshake on AcceptWebSocket.
-        _ = Task.Run(() => DrainTransferWsAsync(ct), CancellationToken.None);
+        try
+        {
+            using var wsCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            wsCts.CancelAfter(TimeSpan.FromSeconds(8));
+
+            _transferWs = new ClientWebSocket();
+            _transferWs.Options.SetRequestHeader(TransferKeyHeader, Convert.ToBase64String(key));
+            _transferWs.Options.SetRequestHeader(TransferUserHeader, UserId!.Value.ToString());
+            await _transferWs.ConnectAsync(new Uri(endpointUrl), wsCts.Token);
+            Note($"transfer WS connected ({_transferWs.State})");
+            _ = Task.Run(() => DrainTransferWsAsync(CancellationToken.None), CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Note($"transfer WS fail: {ex.GetType().Name}: {ex.Message} — continuing lobby without WS");
+            try { _transferWs?.Dispose(); } catch { /* ignore */ }
+            _transferWs = null;
+            // Best-effort: some forks accept lidgren ack after WS fail.
+            try
+            {
+                SendNamed("MsgTransferAckInit", NetDeliveryMethod.ReliableOrdered, _ => { });
+                Note("sent MsgTransferAckInit (fallback after WS fail)");
+            }
+            catch (Exception ackEx)
+            {
+                Note($"transfer ack fallback fail: {ackEx.Message}");
+            }
+        }
+    }
+
+    string RewriteTransferEndpoint(string endpointUrl)
+    {
+        if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out var uri))
+            return endpointUrl;
+
+        var host = uri.Host;
+        var rewrite = host is "localhost" or "127.0.0.1" or "::1" or "0.0.0.0";
+        if (!rewrite && IPAddress.TryParse(host, out var ip) && HostResolver.IsPrivate(ip))
+            rewrite = true;
+
+        if (!rewrite || string.IsNullOrWhiteSpace(_joinHost))
+            return endpointUrl;
+
+        var rebuilt = new UriBuilder(uri) { Host = _joinHost }.Uri.ToString();
+        Note($"transfer WS host rewrite {host} → {_joinHost}");
+        return rebuilt;
     }
 
     async Task DrainTransferWsAsync(CancellationToken ct)
     {
         if (_transferWs is null) return;
-        var buf = new byte[4096];
+        var buf = new byte[16384 + 256];
+        var pending = new MemoryStream();
         try
         {
             while (!ct.IsCancellationRequested && _transferWs.State == WebSocketState.Open)
             {
-                var result = await _transferWs.ReceiveAsync(buf, ct);
-                if (result.MessageType == WebSocketMessageType.Close)
-                    break;
+                pending.SetLength(0);
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _transferWs.ReceiveAsync(buf, ct);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                        return;
+                    if (result.Count > 0)
+                        pending.Write(buf, 0, result.Count);
+                } while (!result.EndOfMessage);
+
+                _sawTransferTraffic = true;
+                _lastTransferDataAt = DateTime.UtcNow;
+                _transferDataRx++;
+                var payload = pending.ToArray();
+                _transfer.OnWebSocketMessage(payload, Note);
+                TrySendNetworkResourceAck();
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // hold-open best effort
+            Note($"transfer WS drain end: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -660,7 +936,9 @@ public sealed class GameSessionClient : IDisposable
                     Note($"status -> {status} ({reason})");
                     if (status == NetConnectionStatus.Disconnected)
                         throw new InvalidOperationException(
-                            string.IsNullOrWhiteSpace(reason) ? "disconnected in lobby" : reason);
+                            string.IsNullOrWhiteSpace(reason)
+                                ? "disconnected in lobby"
+                                : ConnectFailureFormatter.ExtractReason(reason));
                 }
                 else if (msg.MessageType == NetIncomingMessageType.Data)
                 {
@@ -706,6 +984,52 @@ public sealed class GameSessionClient : IDisposable
 
             case "MsgState":
                 HandleMsgState(msg);
+                break;
+
+            case "MsgMapStrStrings":
+            {
+                var size = msg.ReadVariableInt32();
+                var package = msg.ReadBytes(size);
+                Note($"post-lobby MsgMapStrStrings {package.Length:N0} B");
+                EnsureSerializer();
+                if (_serializer is not null && _mapStrHash is not null)
+                {
+                    if (_serializer.TrySetMappedPackage(_mapStrHash, package, Note))
+                    {
+                        SerializerStatus = _serializer.Status;
+                        _serializer.TrySaveCachedStrings(_mapStrHash, package, Note);
+                    }
+                }
+
+                try
+                {
+                    SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
+                }
+                catch { /* ignore */ }
+                break;
+            }
+
+            case "MsgMapStrServerHandshake":
+                _mapStrHash = ReadMapStrHash(msg);
+                EnsureSerializer();
+                if (_serializer is not null && !_serializer.HasMappedStrings)
+                {
+                    if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
+                        RequestMappedStrings();
+                    else
+                    {
+                        SerializerStatus = _serializer.Status;
+                        SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
+                    }
+                }
+                break;
+
+            case "MsgTransferData":
+                _transferDataRx++;
+                _sawTransferTraffic = true;
+                _lastTransferDataAt = DateTime.UtcNow;
+                _transfer.ReadMsgTransferData(msg, Note);
+                TrySendNetworkResourceAck();
                 break;
 
             case "MsgStateLeavePvs":
@@ -776,19 +1100,19 @@ public sealed class GameSessionClient : IDisposable
             if (UserId is { } uid && payload.Length >= 16)
                 TryScanControlledEntity(payload, uid);
 
-            EnsureSerializer();
+            EnsureSerializer(forceRediscover: StatesReceived % 40 == 1);
             if (_serializer is { HasMappedStrings: true } boot && UserId is { } localId)
             {
-                if (GameStateDecoder.TryDecode(boot.Serializer, payload, localId, out var eye, out var tick, out var err))
+                if (GameStateDecoder.TryDecodeWorld(
+                        boot.Serializer, payload, localId,
+                        out var eye, out var world, out var tick, out var err))
                 {
                     LastEye = eye;
+                    LastWorld = world;
                     LastEyeHint = eye!.Detail;
-                    // Keep manual pan as offset on top of server eye.
-                    if (!IsObserving || (Math.Abs(CamX) < 0.01f && Math.Abs(CamY) < 0.01f))
-                    {
-                        CamX = eye.LocalPosition.X * 32f;
-                        CamY = eye.LocalPosition.Y * 32f;
-                    }
+                    // Follow controlled entity; touch pan is an extra offset.
+                    CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
+                    CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
 
                     try
                     {
@@ -802,6 +1126,7 @@ public sealed class GameSessionClient : IDisposable
                 else
                 {
                     LastEye = eye;
+                    LastWorld = world;
                     LastEyeHint = err;
                     if (StatesReceived <= 8)
                         Note($"GameState decode: {err}");
@@ -814,6 +1139,12 @@ public sealed class GameSessionClient : IDisposable
                         catch { /* ignore */ }
                     }
                 }
+            }
+            else if (IsObserving && StatesReceived <= 3)
+            {
+                Note($"GameState decode deferred — HasMappedStrings={_serializer?.HasMappedStrings == true}");
+                if (_mapStrHash is { Length: > 0 })
+                    RequestMappedStrings();
             }
 
             if (StatesReceived <= 5 || StatesReceived % 20 == 0)
@@ -828,12 +1159,57 @@ public sealed class GameSessionClient : IDisposable
         }
     }
 
-    void EnsureSerializer()
+    void EnsureSerializer(bool forceRediscover = false)
     {
+        var resolved = ContentAssemblyLocator.Resolve(
+            AssembliesDirectory,
+            ContentFilesRoot is null ? null : Path.Combine(ContentFilesRoot, "Assemblies"),
+            ContentFilesRoot,
+            ContentSearchRoot);
+        if (resolved != null)
+            AssembliesDirectory = resolved;
+
         if (_serializer is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(StringsCacheDirectory))
+                _serializer.StringsCacheDirectory = StringsCacheDirectory;
+            SerializerStatus = _serializer.Status;
             return;
+        }
+
+        if (!ContentAssemblyLocator.HasDlls(AssembliesDirectory))
+        {
+            SerializerStatus = $"serializer: waiting Assemblies ({AssembliesDirectory ?? "null"})";
+            if (forceRediscover || StatesReceived % 30 == 1)
+                Note(SerializerStatus);
+            return;
+        }
+
         _serializer = SerializerBootstrap.TryCreate(AssembliesDirectory, Note);
-        SerializerStatus = _serializer?.Status ?? "serializer: unavailable (no Assemblies?)";
+        if (_serializer is not null && !string.IsNullOrWhiteSpace(StringsCacheDirectory))
+            _serializer.StringsCacheDirectory = StringsCacheDirectory;
+        SerializerStatus = _serializer?.Status
+                           ?? $"serializer: bootstrap failed — {SerializerBootstrap.LastError ?? "unknown"}";
+        if (_serializer is not null
+            && _mapStrHash is { Length: > 0 }
+            && !_serializer.HasMappedStrings)
+        {
+            if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
+                RequestMappedStrings();
+        }
+    }
+
+    /// <summary>Call when content download finishes so Assemblies become visible.</summary>
+    public void NotifyContentReady(string? filesRoot)
+    {
+        if (!string.IsNullOrWhiteSpace(filesRoot))
+        {
+            ContentFilesRoot = filesRoot;
+            AssembliesDirectory = Path.Combine(filesRoot, "Assemblies");
+        }
+
+        EnsureSerializer(forceRediscover: true);
+        Note($"content ready → serializer={SerializerStatus}");
     }
 
     void TryScanControlledEntity(byte[] payload, Guid userId)
@@ -943,13 +1319,13 @@ public sealed class GameSessionClient : IDisposable
         return (verifyToken, publicKey, wantHwid);
     }
 
-    static void WriteEncryptionResponse(NetOutgoingMessage msg, Guid userId, byte[] sealedData)
+    static void WriteEncryptionResponse(NetOutgoingMessage msg, Guid userId, byte[] sealedData, byte[] legacyHwid)
     {
         msg.Write(userId);
         msg.WriteVariableInt32(sealedData.Length);
         msg.Write(sealedData);
-        msg.WriteVariableInt32(0);
-        msg.Write(Array.Empty<byte>());
+        msg.WriteVariableInt32(legacyHwid.Length);
+        msg.Write(legacyHwid);
     }
 
     static byte[] MakeAuthHash(byte[] sharedSecret, byte[] publicKey)
@@ -960,7 +1336,7 @@ public sealed class GameSessionClient : IDisposable
         return incHash.GetHashAndReset();
     }
 
-    static async Task JoinAuthServerAsync(AuthSessionConfig auth, string authHash, CancellationToken ct)
+    static async Task JoinAuthServerAsync(AuthSessionConfig auth, string authHash, string? modernHwidBase64, CancellationToken ct)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         var authServer = string.IsNullOrWhiteSpace(auth.AuthServer)
@@ -972,7 +1348,7 @@ public sealed class GameSessionClient : IDisposable
         using var req = new HttpRequestMessage(HttpMethod.Post, authServer + "api/session/join");
         req.Headers.Authorization = new AuthenticationHeaderValue("SS14Auth", auth.Token);
         req.Content = JsonContent.Create(
-            new JoinRequest(authHash, null),
+            new JoinRequest(authHash, modernHwidBase64),
             options: new JsonSerializerOptions(JsonSerializerDefaults.Web));
         using var resp = await http.SendAsync(req, ct);
         if (resp.IsSuccessStatusCode)
@@ -1055,15 +1431,24 @@ public sealed class GameSessionClient : IDisposable
         _serializer = null;
         _mapStrHash = null;
         _mapStrRequested = false;
+        _transfer.Reset();
+        _sawTransferTraffic = false;
+        _transferDataRx = 0;
+        _lastTransferDataAt = null;
+        _transferHandshakeDone = false;
+        // Keep AssembliesDirectory / ContentFilesRoot across reconnects in same process.
         IsReady = false;
         IsObserving = false;
         StatesReceived = 0;
         LastStateBytes = 0;
         LastEye = null;
+        LastWorld = null;
         LastEyeHint = "";
         SerializerStatus = "serializer: not started";
         CamX = 0;
         CamY = 0;
+        _panOffX = 0;
+        _panOffY = 0;
         LocalStatus = SessionStatus.Disconnected;
     }
 

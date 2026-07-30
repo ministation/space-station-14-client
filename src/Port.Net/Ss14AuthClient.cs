@@ -140,7 +140,7 @@ public sealed class Ss14AuthClient
             Token = result.Token,
             UserName = result.UserName ?? "AndroidPort",
             ExpireTime = result.ExpireTime?.ToString("O"),
-            AllowHwid = false,
+            AllowHwid = true,
             PublicKey = "",
         };
     }

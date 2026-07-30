@@ -263,7 +263,7 @@ public sealed class RobustHandshakeProbe
         // MUST be standard Base64 (not base64url). Auth server does Convert.FromBase64String(hash).
         var authHash = Convert.ToBase64String(MakeAuthHash(sharedSecret, publicKey));
 
-        await JoinAuthServerAsync(auth, authHash, ct);
+        await JoinAuthServerAsync(auth, authHash, encReq.WantHwid && auth.AllowHwid, ct);
         Note("api/session/join OK");
 
         var sealedPayload = new byte[sharedSecret.Length + encReq.VerifyToken.Length];
@@ -273,7 +273,8 @@ public sealed class RobustHandshakeProbe
 
         Set(HandshakeProbePhase.SendingEncryptionResponse, "sending MsgEncryptionResponse");
         var outMsg = peer.CreateMessage();
-        WriteEncryptionResponse(outMsg, Guid.Parse(auth.UserId), sealedData, legacyHwid: Array.Empty<byte>());
+        var legacyHwid = encReq.WantHwid && auth.AllowHwid ? ClientHwid.GetLegacy() : Array.Empty<byte>();
+        WriteEncryptionResponse(outMsg, Guid.Parse(auth.UserId), sealedData, legacyHwid);
         peer.SendMessage(outMsg, conn, NetDeliveryMethod.ReliableOrdered);
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -369,7 +370,7 @@ public sealed class RobustHandshakeProbe
         return incHash.GetHashAndReset();
     }
 
-    static async Task JoinAuthServerAsync(AuthSessionConfig auth, string authHash, CancellationToken ct)
+    static async Task JoinAuthServerAsync(AuthSessionConfig auth, string authHash, bool sendHwid, CancellationToken ct)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         var authServer = string.IsNullOrWhiteSpace(auth.AuthServer)
@@ -381,7 +382,8 @@ public sealed class RobustHandshakeProbe
         using var req = new HttpRequestMessage(HttpMethod.Post, authServer + "api/session/join");
         req.Headers.Authorization = new AuthenticationHeaderValue("SS14Auth", auth.Token);
         // Same shape as Robust.Shared JoinRequest — JsonSerializerDefaults.Web => camelCase hash/hwid
-        req.Content = JsonContent.Create(new JoinRequest(authHash, null), options: new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var hwid = sendHwid ? ClientHwid.GetModernBase64() : null;
+        req.Content = JsonContent.Create(new JoinRequest(authHash, hwid), options: new JsonSerializerOptions(JsonSerializerDefaults.Web));
         using var resp = await http.SendAsync(req, ct);
         if (resp.IsSuccessStatusCode)
             return;

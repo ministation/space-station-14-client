@@ -7,4 +7,7 @@
     <RootNamespace>Port.Platform.Android</RootNamespace>
     <AssemblyName>Port.Platform.Android</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
+  </ItemGroup>
 </Project>

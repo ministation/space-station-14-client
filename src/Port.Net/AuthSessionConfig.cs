@@ -10,7 +10,7 @@ public sealed class AuthSessionConfig
     public string PublicKey { get; set; } = "";
     public string UserName { get; set; } = "AndroidPort";
     public string? ExpireTime { get; set; }
-    public bool AllowHwid { get; set; }
+    public bool AllowHwid { get; set; } = true;
 
     public bool HasRequiredFields =>
         Guid.TryParse(UserId, out var guid) &&
@@ -21,11 +21,15 @@ public sealed class AuthSessionConfig
     public string StatusLine()
     {
         if (!HasRequiredFields)
-            return "auth: not logged in — enter SS14 username/password";
-        var exp = "";
-        if (DateTimeOffset.TryParse(ExpireTime, out var when))
-            exp = $"  expires {when:yyyy-MM-dd HH:mm} UTC";
-        return $"auth: logged in as {UserName} ({UserId}){exp}";
+            return "Войдите через аккаунт SS14";
+        return $"{UserName}\n{UserId}";
+    }
+
+    public string StatusLineShort()
+    {
+        if (!HasRequiredFields)
+            return "Не выполнен вход";
+        return $"{UserName} · {UserId}";
     }
 
     public static AuthSessionConfig FromEnvironment()
@@ -82,6 +86,6 @@ public sealed class AuthSessionConfig
             Token = "paste-launcher-token-here",
             PublicKey = "",
             UserName = "AndroidPort",
-            AllowHwid = false,
+            AllowHwid = true,
         }, new JsonSerializerOptions { WriteIndented = true });
 }
