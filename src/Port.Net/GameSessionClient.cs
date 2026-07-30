@@ -7,7 +7,9 @@ using System.Text;
 using System.Text.Json;
 using Lidgren.Network;
 using Robust.Shared.Enums;
+using Robust.Shared.GameObjects;
 using Robust.Shared.Network;
+using Robust.Shared.Timing;
 using SpaceWizards.Sodium;
 
 namespace Port.Net;
@@ -30,6 +32,18 @@ public enum GameSessionPhase
 }
 
 public sealed record LobbyPlayer(Guid UserId, string Name, SessionStatus Status);
+
+public sealed record ChatLine(string Channel, string Text, DateTime Utc, int Argb = unchecked((int)0xFFD3D3D3));
+
+public sealed record SpeechBubbleDraw(
+    float X,
+    float Y,
+    string Text,
+    int Argb,
+    float Alpha,
+    float StackOffset);
+
+public sealed record GhostWarpEntry(NetEntity Entity, string DisplayName, bool IsWarpPoint);
 
 public sealed record GameSessionResult(
     GameSessionPhase Phase,
@@ -75,7 +89,9 @@ public sealed class GameSessionClient : IDisposable
     public LoginType? LoginType { get; private set; }
     public IReadOnlyList<LobbyPlayer> Players { get; private set; } = Array.Empty<LobbyPlayer>();
     public bool IsReady { get; private set; }
-    public bool IsObserving { get; private set; }
+    public bool IsObserving { get; set; }
+    /// <summary>Fired on UI thread-unsafe path after a successful cycle warp (incl. auto after load).</summary>
+    public event Action<string>? WarpCycled;
     public int StatesReceived { get; private set; }
     public int LastStateBytes { get; private set; }
     public string LastCommandAck { get; private set; } = "";
@@ -85,18 +101,62 @@ public sealed class GameSessionClient : IDisposable
     public SessionStatus LocalStatus { get; private set; } = SessionStatus.Connecting;
     public float CamX { get; private set; }
     public float CamY { get; private set; }
+    /// <summary>World rotation of the eye/grid (radians). View rotates with shuttles.</summary>
+    public float CamRotation { get; private set; }
+    public float Zoom { get; private set; } = 1f;
     float _panOffX;
     float _panOffY;
+    float _flightX;
+    float _flightY;
+    float _flightSpeed = 980f;
     public string? AssembliesDirectory { get; set; }
     public string? ContentFilesRoot { get; set; }
     public string? ContentSearchRoot { get; set; }
     public string? StringsCacheDirectory { get; set; }
     public string SerializerStatus { get; private set; } = "serializer: not started";
     public bool HasMappedStrings => _serializer?.HasMappedStrings == true;
+    public int WorldXformCount => _worldCache.XformCount;
+    public int WorldSpriteCount => _worldCache.SpriteCount;
+    public int PrototypeSpriteCount => _protoSprites.Count;
+    public int WorldTileChunks => _worldCache.TileChunkCount;
 
+    readonly Port.Content.PrototypeSpriteIndex _protoSprites = new();
+    readonly Port.Content.TilePrototypeIndex _tileProtos = new();
+    public Port.Content.AczOnDemandFetcher TextureFetcher { get; } = new();
+
+    public void ConfigureTextureFetcher(string statusBaseUrl, Port.Content.ContentManifest manifest, string filesRoot)
+    {
+        try
+        {
+            TextureFetcher.Configure(statusBaseUrl, manifest, filesRoot);
+            Note($"texture fetcher ready — rsicIndex={TextureFetcher.IndexedRsicCount}");
+        }
+        catch (Exception ex)
+        {
+            Note($"texture fetcher FAIL: {ex.Message}");
+        }
+    }
+
+    public void ConfigureTextureFetcher(string statusBaseUrl, IReadOnlyDictionary<string, int> rsicByPath, string filesRoot)
+    {
+        try
+        {
+            TextureFetcher.Configure(statusBaseUrl, rsicByPath, filesRoot);
+            Note($"texture fetcher ready — rsicIndex={TextureFetcher.IndexedRsicCount}");
+        }
+        catch (Exception ex)
+        {
+            Note($"texture fetcher FAIL: {ex.Message}");
+        }
+    }
     SerializerBootstrap? _serializer;
     byte[]? _mapStrHash;
+    byte[]? _pendingMapStrPackage;
     bool _mapStrRequested;
+    /// <summary>None → got ServerHandshake → awaiting package → complete (do NOT send ClientHandshake again).</summary>
+    enum MapStrPhase { None, AwaitingResponse, AwaitingPackage, Complete }
+    MapStrPhase _mapStrPhase = MapStrPhase.None;
+    readonly WorldStateCache _worldCache = new();
 
     public bool IsConnected =>
         (Phase is GameSessionPhase.InLobby or GameSessionPhase.Observing) &&
@@ -160,32 +220,132 @@ public sealed class GameSessionClient : IDisposable
 
     public bool Observe()
     {
-        EnsureSerializer(forceRediscover: true);
-        if (_serializer is null)
+        // Send command first — serializer bootstrap must not block / risk UI drop.
+        if (!IsConnected)
+            return false;
+
+        try
         {
-            Note("observe: serializer still unavailable — check Assemblies download");
-            Detail = "observe blocked: no Assemblies for GameState";
-            // Still send observe so server attaches ghost; viewport may catch up later.
-        }
-        else if (_serializer is { HasMappedStrings: false })
-        {
-            if (_mapStrHash is { Length: > 0 })
+            // Common SS14 lobby observer entry points across forks.
+            SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("observe"));
+            Note(">> observe");
+            try
             {
-                if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
-                    RequestMappedStrings();
+                SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("observer"));
+                Note(">> observer");
             }
-            else
-                Note("observe: waiting MsgMapStrServerHandshake for string hash");
+            catch { /* ignore */ }
+        }
+        catch (Exception ex)
+        {
+            Note($"observe cmd fail: {ex.Message}");
+            return false;
         }
 
-        if (!SendConsole("observe"))
-            return false;
         IsObserving = true;
-        Set(GameSessionPhase.Observing,
-            HasMappedStrings
-                ? "sent observe — awaiting MsgState / ghost"
-                : "sent observe — waiting serializer/strings for decode");
+        Set(GameSessionPhase.Observing, "ghost flight — awaiting MsgState");
+
+        // Ask server for warp targets (players + locations) like PC Ghost UI.
+        try { RequestGhostWarps(); } catch { /* serializer may not be ready yet */ }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                EnsureSerializer(forceRediscover: true);
+                TryApplyPendingMapStrings();
+                if (!string.IsNullOrWhiteSpace(ContentFilesRoot))
+                {
+                    _protoSprites.EnsureLoaded(ContentFilesRoot, Note);
+                    _tileProtos.EnsureLoaded(ContentFilesRoot, Note);
+                    _worldCache.SetPrototypeIndex(_protoSprites);
+                    _worldCache.SetTileIndex(_tileProtos);
+                }
+
+                Note($"observe serializer → {SerializerStatus} strings={HasMappedStrings} xfStore={_worldCache.XformCount} protos={_protoSprites.Count} tiles={_tileProtos.Count}");
+                try { RequestGhostWarps(); } catch { /* ignore */ }
+
+                if (_serializer is { HasMappedStrings: false } && _mapStrHash is { Length: > 0 })
+                {
+                    if (_serializer.TryLoadCachedStrings(_mapStrHash, Note))
+                    {
+                        SerializerStatus = _serializer.Status;
+                        Note("observe: mapped strings from cache");
+                    }
+                    else
+                    {
+                        Note(_mapStrPhase == MapStrPhase.Complete
+                            ? "observe: no string cache — GameState decode needs MsgMapStrStrings (reconnect)"
+                            : "observe: waiting for in-progress mapstr package");
+                    }
+                }
+
+                // Fallback command used by some forks (safe — not mapstr).
+                try
+                {
+                    if (IsConnected && LocalStatus != SessionStatus.InGame)
+                    {
+                        SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("ghost"));
+                        Note(">> ghost (fallback)");
+                    }
+                }
+                catch { /* ignore */ }
+
+                Detail = HasMappedStrings
+                    ? $"ghost — strings ready, xfStore={_worldCache.XformCount}"
+                    : $"ghost — NEED strings ({SerializerStatus}); phase={_mapStrPhase}";
+            }
+            catch (Exception ex)
+            {
+                Note($"observe background: {ex.Message}");
+            }
+        });
+
         return true;
+    }
+
+    public void SetFlightInput(float x, float y)
+    {
+        _flightX = Math.Clamp(x, -1f, 1f);
+        _flightY = Math.Clamp(y, -1f, 1f);
+    }
+
+    public void TickFlight(float dt)
+    {
+        if (!IsObserving)
+            return;
+        if (Math.Abs(_flightX) < 0.01f && Math.Abs(_flightY) < 0.01f)
+            return;
+        var speed = _flightSpeed / Math.Max(0.35f, Zoom);
+        // Flight stick is view-relative; rotate into world using camera/grid angle.
+        var c = MathF.Cos(CamRotation);
+        var s = MathF.Sin(CamRotation);
+        var vx = _flightX * speed * dt;
+        var vy = _flightY * speed * dt;
+        var dx = vx * c - vy * s;
+        var dy = vx * s + vy * c;
+        _panOffX += dx;
+        _panOffY += dy;
+        CamX += dx;
+        CamY += dy;
+    }
+
+    public void AdjustZoom(float factor)
+    {
+        Zoom = Math.Clamp(Zoom * factor, 0.35f, 3.5f);
+    }
+
+    public void PanCamera(float dx, float dy)
+    {
+        // dx/dy are view-space pixel deltas (already sens-scaled).
+        var c = MathF.Cos(CamRotation);
+        var s = MathF.Sin(CamRotation);
+        var wx = dx * c - dy * s;
+        var wy = dx * s + dy * c;
+        _panOffX += wx;
+        _panOffY += wy;
+        CamX += wx;
+        CamY += wy;
     }
 
     public void RequestMappedStrings()
@@ -199,6 +359,13 @@ public sealed class GameSessionClient : IDisposable
         if (_serializer?.HasMappedStrings == true)
             return;
 
+        // Only legal while server opened a handshake (AwaitingResponse).
+        if (_mapStrPhase is not MapStrPhase.AwaitingResponse)
+        {
+            Note($"mapstr request skipped — phase={_mapStrPhase} (ClientHandshake would kick)");
+            return;
+        }
+
         try
         {
             SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
@@ -206,20 +373,13 @@ public sealed class GameSessionClient : IDisposable
                 m.Write(true); // NeedsStrings
             });
             _mapStrRequested = true;
-            Note("mapstr: requested NeedsStrings=true (observe/decode)");
+            _mapStrPhase = MapStrPhase.AwaitingPackage;
+            Note("mapstr: requested NeedsStrings=true");
         }
         catch (Exception ex)
         {
             Note($"mapstr request fail: {ex.Message}");
         }
-    }
-
-    public void PanCamera(float dx, float dy)
-    {
-        _panOffX += dx;
-        _panOffY += dy;
-        CamX += dx;
-        CamY += dy;
     }
 
     public async Task<GameSessionResult> JoinLobbyAsync(
@@ -329,8 +489,9 @@ public sealed class GameSessionClient : IDisposable
     public void Disconnect(string reason = "client disconnect")
     {
         Note($"disconnect: {reason}");
-        if (Phase is GameSessionPhase.InLobby or GameSessionPhase.LoginSuccess
-            or GameSessionPhase.SyncingCVars or GameSessionPhase.RequestingPlayers)
+        if (Phase is GameSessionPhase.InLobby or GameSessionPhase.Observing
+            or GameSessionPhase.LoginSuccess or GameSessionPhase.SyncingCVars
+            or GameSessionPhase.RequestingPlayers)
             Set(GameSessionPhase.Idle, reason);
         DisposeConnection();
     }
@@ -348,8 +509,9 @@ public sealed class GameSessionClient : IDisposable
         catch (Exception ex)
         {
             Note($"keepalive end: {ex.GetType().Name}: {ex.Message}");
-            if (Phase == GameSessionPhase.InLobby)
+            if (Phase is GameSessionPhase.InLobby or GameSessionPhase.Observing)
                 Set(GameSessionPhase.Failed, ex.Message);
+            // Keep IsObserving until Dispose so UI can show the error briefly.
             DisposeConnection();
         }
     }
@@ -610,6 +772,7 @@ public sealed class GameSessionClient : IDisposable
                     case "MsgMapStrServerHandshake":
                         Set(GameSessionPhase.MapStrings, "MsgMapStrServerHandshake");
                         _mapStrHash = ReadMapStrHash(msg);
+                        _mapStrPhase = MapStrPhase.AwaitingResponse;
                         EnsureSerializer();
                         if (_serializer is not null
                             && _serializer.TryLoadCachedStrings(_mapStrHash, Note))
@@ -619,17 +782,19 @@ public sealed class GameSessionClient : IDisposable
                             {
                                 m.Write(false);
                             });
+                            _mapStrPhase = MapStrPhase.Complete;
                             mapstrDone = true;
                             Note("mapstr: cache HIT — NeedsStrings=false");
                             break;
                         }
 
-                        // Request package for GameState decode; force-complete later if slow.
+                        // Request package for GameState decode.
                         SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
                         {
                             m.Write(true); // NeedsStrings = true
                         });
                         _mapStrRequested = true;
+                        _mapStrPhase = MapStrPhase.AwaitingPackage;
                         Note($"mapstr: NeedsStrings=true hashLen={_mapStrHash.Length}");
                         break;
 
@@ -639,24 +804,23 @@ public sealed class GameSessionClient : IDisposable
                         var size = msg.ReadVariableInt32();
                         var package = msg.ReadBytes(size);
                         Note($"MsgMapStrStrings {package.Length:N0} B");
+                        _pendingMapStrPackage = package;
                         EnsureSerializer();
-                        if (_serializer is not null && _mapStrHash is not null)
+                        var applied = TryApplyPendingMapStrings();
+                        if (_mapStrPhase is MapStrPhase.AwaitingPackage or MapStrPhase.AwaitingResponse)
                         {
-                            if (_serializer.TrySetMappedPackage(_mapStrHash, package, Note))
+                            // Ack only after we buffered/applied — never drop package on late Assemblies.
+                            SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
                             {
-                                SerializerStatus = _serializer.Status;
-                                _serializer.TrySaveCachedStrings(_mapStrHash, package, Note);
-                            }
-                            else
-                                SerializerStatus = "serializer: SetPackage failed";
+                                m.Write(false);
+                            });
+                            Note(applied
+                                ? "sent MsgMapStrClientHandshake NeedsStrings=false (after package)"
+                                : "sent NeedsStrings=false — package buffered until serializer ready");
                         }
 
-                        SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
-                        {
-                            m.Write(false);
-                        });
+                        _mapStrPhase = MapStrPhase.Complete;
                         mapstrDone = true;
-                        Note("sent MsgMapStrClientHandshake NeedsStrings=false (after package)");
                         break;
                     }
 
@@ -706,23 +870,34 @@ public sealed class GameSessionClient : IDisposable
             }, ct);
 
             var bootElapsed = DateTime.UtcNow - bootStarted;
-            // Don't stall forever on mapstr — force lobby path after a few seconds.
-            if (!mapstrDone && stringTableReady && bootElapsed > TimeSpan.FromSeconds(12))
+            // Don't stall forever on mapstr — but NEVER send a second ClientHandshake
+            // (server disconnects: "without in-progress handshake").
+            if (!mapstrDone && stringTableReady && bootElapsed > TimeSpan.FromSeconds(20))
             {
-                try
+                if (_mapStrPhase == MapStrPhase.None)
                 {
-                    SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
-                    {
-                        m.Write(false);
-                    });
-                    Note("mapstr: force NeedsStrings=false after 12s wait");
+                    Note("mapstr: no ServerHandshake yet — continue without strings");
+                    _mapStrPhase = MapStrPhase.Complete;
+                    mapstrDone = true;
                 }
-                catch (Exception ex)
+                else if (_mapStrPhase == MapStrPhase.AwaitingPackage
+                         && _serializer?.HasMappedStrings == true)
                 {
-                    Note($"mapstr force-complete fail: {ex.Message}");
+                    _mapStrPhase = MapStrPhase.Complete;
+                    mapstrDone = true;
+                    Note("mapstr: package already loaded — mark complete");
                 }
-
-                mapstrDone = true;
+                else if (_mapStrPhase == MapStrPhase.AwaitingPackage && bootElapsed > TimeSpan.FromSeconds(45))
+                {
+                    // Give up waiting for package; do not send another handshake.
+                    Note("mapstr: package timeout — lobby without strings (GameState decode limited)");
+                    _mapStrPhase = MapStrPhase.Complete;
+                    mapstrDone = true;
+                }
+                else if (_mapStrPhase == MapStrPhase.Complete)
+                {
+                    mapstrDone = true;
+                }
             }
 
             // Resource ACK unblocks MsgPlayerList on the server.
@@ -993,36 +1168,47 @@ public sealed class GameSessionClient : IDisposable
                 var size = msg.ReadVariableInt32();
                 var package = msg.ReadBytes(size);
                 Note($"post-lobby MsgMapStrStrings {package.Length:N0} B");
+                _pendingMapStrPackage = package;
                 EnsureSerializer();
-                if (_serializer is not null && _mapStrHash is not null)
+                TryApplyPendingMapStrings();
+
+                if (_mapStrPhase is MapStrPhase.AwaitingPackage or MapStrPhase.AwaitingResponse)
                 {
-                    if (_serializer.TrySetMappedPackage(_mapStrHash, package, Note))
+                    try
                     {
-                        SerializerStatus = _serializer.Status;
-                        _serializer.TrySaveCachedStrings(_mapStrHash, package, Note);
+                        SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
                     }
+                    catch { /* ignore */ }
                 }
 
-                try
-                {
-                    SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
-                }
-                catch { /* ignore */ }
+                _mapStrPhase = MapStrPhase.Complete;
                 break;
             }
 
             case "MsgMapStrServerHandshake":
                 _mapStrHash = ReadMapStrHash(msg);
+                _mapStrPhase = MapStrPhase.AwaitingResponse;
                 EnsureSerializer();
                 if (_serializer is not null && !_serializer.HasMappedStrings)
                 {
-                    if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
-                        RequestMappedStrings();
-                    else
+                    if (_serializer.TryLoadCachedStrings(_mapStrHash, Note))
                     {
                         SerializerStatus = _serializer.Status;
                         SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
+                        _mapStrPhase = MapStrPhase.Complete;
                     }
+                    else
+                        RequestMappedStrings();
+                }
+                else
+                {
+                    // Already have strings (or no serializer yet) — ack without download.
+                    try
+                    {
+                        SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
+                        _mapStrPhase = MapStrPhase.Complete;
+                    }
+                    catch { /* ignore */ }
                 }
                 break;
 
@@ -1035,12 +1221,15 @@ public sealed class GameSessionClient : IDisposable
                 break;
 
             case "MsgStateLeavePvs":
-                Note($"MsgStateLeavePvs ({msg.LengthBytes}B)");
+                HandleMsgStateLeavePvs(msg);
+                break;
+
+            case "MsgChatMessage":
+                HandleMsgChatMessage(msg);
                 break;
 
             case "MsgEntity":
-                // Content ticker events — full deserialize needs content serializer.
-                Note($"MsgEntity ({msg.LengthBytes}B)");
+                HandleMsgEntity(msg);
                 break;
 
             case "MsgConCmdAck":
@@ -1057,6 +1246,694 @@ public sealed class GameSessionClient : IDisposable
                         Note($"rx {name} id={id} ({msg.LengthBytes}B)");
                         break;
         }
+    }
+
+    void HandleMsgStateLeavePvs(NetIncomingMessage msg)
+    {
+        try
+        {
+            var tick = msg.ReadUInt32();
+            var length = msg.ReadInt32();
+            if (length < 0 || length > 50_000)
+            {
+                Note($"MsgStateLeavePvs bad length={length}");
+                return;
+            }
+
+            var leaving = new List<NetEntity>(length);
+            for (var i = 0; i < length; i++)
+                leaving.Add(new NetEntity(msg.ReadInt32()));
+
+            // Free-cam pan alone does not move the eye — but LeavePvs MUST apply so maps/areas
+            // unload when the ghost warps / PVS moves. Otherwise stations stack forever.
+            _worldCache.RemoveEntities(leaving);
+            if (LastWorld is { } world && leaving.Count > 0)
+            {
+                var drop = new HashSet<NetEntity>(leaving);
+                var kept = world.Entities.Where(e => !drop.Contains(e.Entity)).ToList();
+                IReadOnlyList<WorldTileDraw>? tiles = world.Tiles;
+                if (tiles is { Count: > 0 })
+                {
+                    // Tiles are rebuilt next MsgState from remaining grids.
+                }
+
+                LastWorld = world with { Entities = kept, Detail = world.Detail + $" leavePvs={leaving.Count}" };
+            }
+
+            // Reset free-cam pan after large leave so camera recenters on new PVS bubble.
+            if (leaving.Count > 64)
+            {
+                _panOffX = 0;
+                _panOffY = 0;
+            }
+
+            Note($"MsgStateLeavePvs tick={tick} left={leaving.Count} store={_worldCache.XformCount}");
+        }
+        catch (Exception ex)
+        {
+            Note($"MsgStateLeavePvs FAIL: {ex.Message}");
+        }
+    }
+
+    readonly List<ChatLine> _chatLines = new();
+    readonly object _chatGate = new();
+    int _chatVersion;
+    readonly List<GhostWarpEntry> _ghostWarps = new();
+    readonly object _warpGate = new();
+    int _warpVersion;
+    uint _entityMsgSequence;
+
+    public IReadOnlyList<ChatLine> ChatLines
+    {
+        get { lock (_chatGate) return _chatLines.ToList(); }
+    }
+
+    public int ChatVersion
+    {
+        get { lock (_chatGate) return _chatVersion; }
+    }
+
+    public IReadOnlyList<GhostWarpEntry> GhostWarps
+    {
+        get { lock (_warpGate) return _ghostWarps.ToList(); }
+    }
+
+    public int WarpVersion
+    {
+        get { lock (_warpGate) return _warpVersion; }
+    }
+
+    public bool CycleWarp(out string? destinationName)
+    {
+        destinationName = null;
+        if (!IsConnected)
+            return false;
+
+        // Prefer location warp points (maps/rooms); fall back to players.
+        List<GhostWarpEntry> list;
+        lock (_warpGate)
+        {
+            list = _ghostWarps.Where(w => w.IsWarpPoint).ToList();
+            if (list.Count == 0)
+                list = _ghostWarps.ToList();
+        }
+
+        if (list.Count == 0)
+        {
+            _warpCyclePending = true;
+            try { RequestGhostWarps(); } catch { /* ignore */ }
+            return false;
+        }
+
+        _warpCyclePending = false;
+        _warpCycleIndex = (_warpCycleIndex + 1) % list.Count;
+        var target = list[_warpCycleIndex];
+        destinationName = target.DisplayName;
+        var ok = WarpTo(target.Entity);
+        if (ok)
+        {
+            try { WarpCycled?.Invoke(destinationName); } catch { /* UI */ }
+        }
+
+        return ok;
+    }
+
+    bool _warpCyclePending;
+    int _warpCycleIndex = -1;
+
+    public void RequestGhostWarps()
+    {
+        if (!IsConnected || _serializer is not { HasMappedStrings: true } boot)
+        {
+            Note("RequestGhostWarps deferred — serializer not ready");
+            return;
+        }
+
+        if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostWarpsRequestEvent", out var type)
+            && !boot.Reflection.TryLooseGetType("GhostWarpsRequestEvent", out type))
+        {
+            Note("GhostWarpsRequestEvent type missing");
+            return;
+        }
+
+        var evt = Activator.CreateInstance(type);
+        if (evt is null) return;
+        SendEntitySystemMessage(evt);
+        Note(">> GhostWarpsRequestEvent");
+    }
+
+    public bool WarpTo(NetEntity target)
+    {
+        if (!IsConnected || !target.IsValid() || _serializer is not { HasMappedStrings: true } boot)
+            return false;
+
+        if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostWarpToTargetRequestEvent", out var type)
+            && !boot.Reflection.TryLooseGetType("GhostWarpToTargetRequestEvent", out type))
+        {
+            Note("GhostWarpToTargetRequestEvent type missing");
+            return false;
+        }
+
+        object? evt = null;
+        try
+        {
+            evt = Activator.CreateInstance(type, target);
+        }
+        catch
+        {
+            try
+            {
+                evt = Activator.CreateInstance(type);
+                type.GetProperty("Target")?.SetValue(evt, target);
+                type.GetField("Target")?.SetValue(evt, target);
+            }
+            catch (Exception ex)
+            {
+                Note($"WarpTo create FAIL: {ex.Message}");
+                return false;
+            }
+        }
+
+        if (evt is null) return false;
+        // Reset pan so camera follows the new eye position after warp.
+        _panOffX = 0;
+        _panOffY = 0;
+        SendEntitySystemMessage(evt);
+        Note($">> GhostWarpToTargetRequestEvent → {target}");
+        return true;
+    }
+
+    /// <summary>PC GhostSystem.ReturnToBody → GhostReturnToBodyRequest.</summary>
+    public bool ReturnToBody()
+    {
+        if (!IsConnected || _serializer is not { HasMappedStrings: true } boot)
+            return false;
+
+        if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostReturnToBodyRequest", out var type)
+            && !boot.Reflection.TryLooseGetType("GhostReturnToBodyRequest", out type)
+            && !boot.Reflection.TryLooseGetType("Content.Shared.Ghost.SharedGhostSystem+GhostReturnToBodyRequest", out type))
+        {
+            Note("GhostReturnToBodyRequest type missing");
+            return false;
+        }
+
+        var evt = Activator.CreateInstance(type);
+        if (evt is null) return false;
+        _panOffX = 0;
+        _panOffY = 0;
+        SendEntitySystemMessage(evt);
+        Note(">> GhostReturnToBodyRequest");
+        return true;
+    }
+
+    /// <summary>Cycle follow among player warps (non-warp-point entries).</summary>
+    public bool CycleFollowPlayer(out string? name)
+    {
+        name = null;
+        if (!IsConnected)
+            return false;
+
+        List<GhostWarpEntry> players;
+        lock (_warpGate)
+            players = _ghostWarps.Where(w => !w.IsWarpPoint).ToList();
+
+        if (players.Count == 0)
+        {
+            try { RequestGhostWarps(); } catch { /* ignore */ }
+            return false;
+        }
+
+        _followCycleIndex = (_followCycleIndex + 1) % players.Count;
+        var target = players[_followCycleIndex];
+        name = target.DisplayName;
+        return WarpTo(target.Entity);
+    }
+
+    int _followCycleIndex = -1;
+
+    /// <summary>PC GhostSystem.OpenGhostRoles → remote console ghostroles.</summary>
+    public bool OpenGhostRoles()
+    {
+        if (!IsConnected)
+            return false;
+        try
+        {
+            SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("ghostroles"));
+            Note(">> ghostroles");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Note($"ghostroles FAIL: {ex.Message}");
+            return false;
+        }
+    }
+
+    void SendEntitySystemMessage(object systemMessage)
+    {
+        if (_serializer is null)
+            throw new InvalidOperationException("serializer missing");
+
+        var tick = LastEye?.ToSequence ?? new GameTick(1);
+        var seq = ++_entityMsgSequence;
+        SendNamed("MsgEntity", NetDeliveryMethod.ReliableOrdered, m =>
+        {
+            m.Write((byte)1); // EntityMessageType.SystemMessage
+            m.Write(tick);
+            m.Write(seq);
+            using var stream = new MemoryStream();
+            _serializer.Serializer.Serialize(stream, systemMessage);
+            var bytes = stream.ToArray();
+            m.WriteVariableInt32(bytes.Length);
+            m.Write(bytes);
+        });
+    }
+
+    void HandleMsgEntity(NetIncomingMessage msg)
+    {
+        try
+        {
+            if (_serializer is not { HasMappedStrings: true } boot)
+            {
+                Note($"MsgEntity skipped ({msg.LengthBytes}B) — no serializer");
+                return;
+            }
+
+            var typeByte = msg.ReadByte();
+            var sourceTick = msg.ReadGameTick();
+            var sequence = msg.ReadUInt32();
+            if (typeByte != 1) // SystemMessage
+            {
+                Note($"MsgEntity type={typeByte} tick={sourceTick} seq={sequence}");
+                return;
+            }
+
+            var length = msg.ReadVariableInt32();
+            if (length <= 0 || length > 4_000_000)
+            {
+                Note($"MsgEntity bad length={length}");
+                return;
+            }
+
+            using var stream = new MemoryStream(length);
+            msg.ReadAlignedMemory(stream, length);
+            object? evt;
+            try
+            {
+                evt = boot.Serializer.Deserialize(stream);
+            }
+            catch (Exception ex)
+            {
+                Note($"MsgEntity deserialize FAIL: {ex.Message}");
+                return;
+            }
+
+            if (evt is null) return;
+            var tn = evt.GetType().Name;
+            if (tn.Contains("GhostWarpsResponse", StringComparison.Ordinal))
+            {
+                ParseGhostWarpsResponse(evt);
+                return;
+            }
+
+            if (StatesReceived <= 3 || tn.Contains("Ghost", StringComparison.Ordinal))
+                Note($"MsgEntity {tn} tick={sourceTick}");
+        }
+        catch (Exception ex)
+        {
+            Note($"MsgEntity FAIL: {ex.Message}");
+        }
+    }
+
+    void ParseGhostWarpsResponse(object evt)
+    {
+        try
+        {
+            var warpsObj = evt.GetType().GetProperty("Warps")?.GetValue(evt)
+                           ?? evt.GetType().GetField("Warps")?.GetValue(evt);
+            if (warpsObj is not System.Collections.IEnumerable en)
+            {
+                Note("GhostWarpsResponse: no Warps list");
+                return;
+            }
+
+            var list = new List<GhostWarpEntry>();
+            foreach (var item in en)
+            {
+                if (item is null) continue;
+                var it = item.GetType();
+                var ent = it.GetProperty("Entity")?.GetValue(item) as NetEntity?
+                          ?? it.GetField("Entity")?.GetValue(item) as NetEntity?
+                          ?? default;
+                var name = it.GetProperty("DisplayName")?.GetValue(item) as string
+                           ?? it.GetField("DisplayName")?.GetValue(item) as string
+                           ?? "?";
+                var isWp = it.GetProperty("IsWarpPoint")?.GetValue(item) as bool?
+                           ?? it.GetField("IsWarpPoint")?.GetValue(item) as bool?
+                           ?? false;
+                if (ent.IsValid())
+                    list.Add(new GhostWarpEntry(ent, name, isWp));
+            }
+
+            lock (_warpGate)
+            {
+                _ghostWarps.Clear();
+                _ghostWarps.AddRange(list.OrderBy(w => w.IsWarpPoint).ThenBy(w => w.DisplayName));
+                _warpVersion++;
+            }
+
+            Note($"GhostWarpsResponse: {list.Count} targets");
+            if (_warpCyclePending && list.Count > 0)
+            {
+                if (CycleWarp(out var name) && name is not null)
+                    Note($"auto-cycle warp → {name}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Note($"ParseGhostWarps FAIL: {ex.Message}");
+        }
+    }
+
+    const int MaxChatLines = 200;
+
+    void HandleMsgChatMessage(NetIncomingMessage msg)
+    {
+        try
+        {
+            if (_serializer is not { HasMappedStrings: true } boot)
+            {
+                // Consume payload so the stream stays aligned.
+                var skipLen = msg.ReadVariableInt32();
+                if (skipLen > 0 && skipLen < 2_000_000)
+                    msg.ReadBytes(skipLen);
+                Note("MsgChatMessage deferred — serializer not ready");
+                return;
+            }
+
+            var length = msg.ReadVariableInt32();
+            if (length <= 0 || length > 2_000_000)
+            {
+                Note($"MsgChatMessage bad length={length}");
+                return;
+            }
+
+            using var stream = new MemoryStream(length);
+            msg.ReadAlignedMemory(stream, length);
+
+            if (!boot.Reflection.TryLooseGetType("Content.Shared.Chat.ChatMessage", out var chatType)
+                && !boot.Reflection.TryLooseGetType("ChatMessage", out chatType))
+            {
+                Note("MsgChatMessage: ChatMessage type missing");
+                return;
+            }
+
+            var method = typeof(Robust.Shared.Serialization.IRobustSerializer)
+                .GetMethod(nameof(Robust.Shared.Serialization.IRobustSerializer.DeserializeDirect))!
+                .MakeGenericMethod(chatType);
+            var args = new object?[] { stream, null };
+            method.Invoke(boot.Serializer, args);
+            var obj = args[1];
+            if (obj is null)
+                return;
+
+            var t = obj.GetType();
+            var hide = t.GetField("HideChat")?.GetValue(obj) as bool? ?? false;
+            if (hide)
+                return;
+
+            var message = t.GetField("Message")?.GetValue(obj) as string
+                          ?? t.GetProperty("Message")?.GetValue(obj) as string
+                          ?? "";
+            var wrapped = t.GetField("WrappedMessage")?.GetValue(obj) as string
+                          ?? t.GetProperty("WrappedMessage")?.GetValue(obj) as string
+                          ?? message;
+            var channelObj = t.GetField("Channel")?.GetValue(obj)
+                             ?? t.GetProperty("Channel")?.GetValue(obj);
+            var channel = channelObj?.ToString() ?? "Chat";
+            ushort channelFlags = 0;
+            if (channelObj is Enum en)
+            {
+                channel = en.ToString();
+                try
+                {
+                    var raw = Convert.ToUInt32(en);
+                    channelFlags = (ushort)(raw & 0xFFFF);
+                }
+                catch { /* ignore */ }
+            }
+            else if (channelObj is not null && uint.TryParse(channelObj.ToString(), out var flags))
+            {
+                channelFlags = (ushort)(flags & 0xFFFF);
+                channel = ChatChannelLabel(channelFlags);
+            }
+
+            var overrideColor = t.GetField("MessageColorOverride")?.GetValue(obj)
+                                ?? t.GetProperty("MessageColorOverride")?.GetValue(obj);
+            var argb = ColorArgbFromChannel(channelFlags);
+            if (overrideColor is not null)
+            {
+                try
+                {
+                    var ct = overrideColor.GetType();
+                    var rf = ct.GetProperty("R")?.GetValue(overrideColor) as float?
+                             ?? ct.GetField("R")?.GetValue(overrideColor) as float? ?? 1f;
+                    var gf = ct.GetProperty("G")?.GetValue(overrideColor) as float?
+                             ?? ct.GetField("G")?.GetValue(overrideColor) as float? ?? 1f;
+                    var bf = ct.GetProperty("B")?.GetValue(overrideColor) as float?
+                             ?? ct.GetField("B")?.GetValue(overrideColor) as float? ?? 1f;
+                    var af = ct.GetProperty("A")?.GetValue(overrideColor) as float?
+                             ?? ct.GetField("A")?.GetValue(overrideColor) as float? ?? 1f;
+                    argb = (unchecked((int)(Math.Clamp(af, 0f, 1f) * 255)) << 24)
+                           | ((int)(Math.Clamp(rf, 0f, 1f) * 255) << 16)
+                           | ((int)(Math.Clamp(gf, 0f, 1f) * 255) << 8)
+                           | (int)(Math.Clamp(bf, 0f, 1f) * 255);
+                }
+                catch { /* keep channel color */ }
+            }
+
+            var text = StripMarkup(string.IsNullOrWhiteSpace(wrapped) ? message : wrapped);
+            if (string.IsNullOrWhiteSpace(text))
+                text = message;
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            lock (_chatGate)
+            {
+                _chatLines.Add(new ChatLine(channel, text.Trim(), DateTime.UtcNow, argb));
+                while (_chatLines.Count > MaxChatLines)
+                    _chatLines.RemoveAt(0);
+                _chatVersion++;
+            }
+
+            var sender = ReadNetEntity(t.GetField("SenderEntity")?.GetValue(obj)
+                                       ?? t.GetProperty("SenderEntity")?.GetValue(obj));
+            var bubbleText = ExtractSpeechBubbleText(wrapped, message);
+            if (sender.IsValid() && ShouldShowSpeechBubble(channelFlags, channel) && !string.IsNullOrWhiteSpace(bubbleText))
+                EnqueueSpeechBubble(sender, bubbleText.Trim(), argb, channelFlags);
+
+            Note($"chat [{channel}] {(text.Length <= 80 ? text : text[..80] + "…")}");
+        }
+        catch (Exception ex)
+        {
+            Note($"MsgChatMessage FAIL: {ex.Message}");
+        }
+    }
+
+    static NetEntity ReadNetEntity(object? value)
+    {
+        if (value is NetEntity ne)
+            return ne;
+        if (value is int i)
+            return new NetEntity(i);
+        if (value is uint u)
+            return new NetEntity(unchecked((int)u));
+        if (value is not null && int.TryParse(value.ToString(), out var parsed))
+            return new NetEntity(parsed);
+        return default;
+    }
+
+    /// <summary>Local / Whisper / LOOC / Emotes / Dead — same channels as ChatUIController.</summary>
+    static bool ShouldShowSpeechBubble(ushort flags)
+    {
+        const ushort mask =
+            (1 << 0) | // Local
+            (1 << 1) | // Whisper
+            (1 << 5) | // LOOC
+            (1 << 9) | // Emotes
+            (1 << 10); // Dead
+        if ((flags & mask) != 0)
+            return true;
+        // Fallback when only channel name survived (flags lost).
+        return false;
+    }
+
+    static bool ShouldShowSpeechBubble(ushort flags, string channel)
+    {
+        if (ShouldShowSpeechBubble(flags))
+            return true;
+        return channel.Equals("Local", StringComparison.OrdinalIgnoreCase)
+               || channel.Equals("Whisper", StringComparison.OrdinalIgnoreCase)
+               || channel.Equals("LOOC", StringComparison.OrdinalIgnoreCase)
+               || channel.Equals("Emotes", StringComparison.OrdinalIgnoreCase)
+               || channel.Equals("Dead", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string ExtractSpeechBubbleText(string wrapped, string message)
+    {
+        // Fancy bubbles wrap spoken text in BubbleContent.
+        var m = System.Text.RegularExpressions.Regex.Match(
+            wrapped ?? "",
+            @"\[BubbleContent[^\]]*\](.*?)\[/BubbleContent\]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            | System.Text.RegularExpressions.RegexOptions.Singleline);
+        if (m.Success)
+        {
+            var inner = StripMarkup(m.Groups[1].Value).Trim();
+            if (inner.Length > 0)
+                return TruncateBubble(inner);
+        }
+
+        var plain = StripMarkup(string.IsNullOrWhiteSpace(message) ? wrapped : message).Trim();
+        return TruncateBubble(plain);
+    }
+
+    static string TruncateBubble(string s)
+    {
+        if (s.Length <= 140)
+            return s;
+        return s[..137] + "…";
+    }
+
+    sealed class ActiveSpeechBubble
+    {
+        public NetEntity Entity;
+        public string Text = "";
+        public int Argb;
+        public DateTime ExpiresUtc;
+        public float StackOffset;
+        public bool EmoteStyle;
+    }
+
+    readonly List<ActiveSpeechBubble> _speechBubbles = new();
+    readonly object _bubbleGate = new();
+    const int SpeechBubbleCap = 4;
+    static readonly TimeSpan SpeechBubbleLife = TimeSpan.FromSeconds(4);
+    static readonly TimeSpan SpeechBubbleFade = TimeSpan.FromSeconds(0.25);
+
+    void EnqueueSpeechBubble(NetEntity entity, string text, int argb, ushort channelFlags)
+    {
+        var now = DateTime.UtcNow;
+        var emote = (channelFlags & (1 << 9)) != 0 || (channelFlags & (1 << 5)) != 0;
+        lock (_bubbleGate)
+        {
+            PruneSpeechBubblesLocked(now);
+            // Approximate content height so older bubbles push up (PC SpeechBubble).
+            var approxH = 28f + Math.Min(3, text.Length / 40) * 16f;
+            foreach (var existing in _speechBubbles)
+            {
+                if (existing.Entity == entity)
+                    existing.StackOffset += approxH;
+            }
+
+            _speechBubbles.Add(new ActiveSpeechBubble
+            {
+                Entity = entity,
+                Text = text,
+                Argb = argb,
+                ExpiresUtc = now + SpeechBubbleLife,
+                StackOffset = 0,
+                EmoteStyle = emote,
+            });
+
+            var forEnt = 0;
+            for (var i = _speechBubbles.Count - 1; i >= 0; i--)
+            {
+                if (_speechBubbles[i].Entity != entity)
+                    continue;
+                forEnt++;
+                if (forEnt > SpeechBubbleCap)
+                    _speechBubbles[i].ExpiresUtc = now; // fade immediately
+            }
+        }
+    }
+
+    void PruneSpeechBubblesLocked(DateTime now)
+    {
+        _speechBubbles.RemoveAll(b => b.ExpiresUtc < now - SpeechBubbleFade);
+    }
+
+    public IReadOnlyList<SpeechBubbleDraw> SnapshotSpeechBubbles()
+    {
+        var now = DateTime.UtcNow;
+        var list = new List<SpeechBubbleDraw>(8);
+        lock (_bubbleGate)
+        {
+            PruneSpeechBubblesLocked(now);
+            foreach (var b in _speechBubbles)
+            {
+                if (!_worldCache.TryGetWorldPos(b.Entity, out var x, out var y))
+                    continue;
+                var remaining = (b.ExpiresUtc - now).TotalSeconds;
+                float alpha = 1f;
+                if (remaining <= 0)
+                    alpha = Math.Clamp(1f + (float)(remaining / SpeechBubbleFade.TotalSeconds), 0f, 1f);
+                else if (remaining < SpeechBubbleFade.TotalSeconds)
+                    alpha = (float)(remaining / SpeechBubbleFade.TotalSeconds);
+
+                list.Add(new SpeechBubbleDraw(x, y, b.Text, b.Argb, alpha, b.StackOffset));
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>Matches Content.Shared.Chat.ChatChannelExtensions.TextColor.</summary>
+    static int ColorArgbFromChannel(ushort flags)
+    {
+        // Prefer exact single-channel match; else default LightGray.
+        return flags switch
+        {
+            1 << 2 => unchecked((int)0xFFFFA500), // Server Orange
+            1 << 4 => unchecked((int)0xFF32CD32), // Radio LimeGreen
+            1 << 5 => unchecked((int)0xFF48D1CC), // LOOC MediumTurquoise
+            1 << 6 => unchecked((int)0xFF87CEFA), // OOC LightSkyBlue
+            1 << 10 => unchecked((int)0xFF9370DB), // Dead MediumPurple
+            1 << 11 => unchecked((int)0xFFFF0000), // Admin Red
+            1 << 12 => unchecked((int)0xFFFF0000), // AdminAlert Red
+            1 << 13 => unchecked((int)0xFFFF69B4), // AdminChat HotPink
+            1 << 1 => unchecked((int)0xFFA9A9A9), // Whisper DarkGray
+            _ when (flags & (1 << 6)) != 0 => unchecked((int)0xFF87CEFA),
+            _ when (flags & (1 << 5)) != 0 => unchecked((int)0xFF48D1CC),
+            _ when (flags & (1 << 2)) != 0 => unchecked((int)0xFFFFA500),
+            _ when (flags & (1 << 4)) != 0 => unchecked((int)0xFF32CD32),
+            _ when (flags & (1 << 11)) != 0 => unchecked((int)0xFFFF0000),
+            _ when (flags & (1 << 13)) != 0 => unchecked((int)0xFFFF69B4),
+            _ when (flags & (1 << 10)) != 0 => unchecked((int)0xFF9370DB),
+            _ => unchecked((int)0xFFD3D3D3), // Local / default LightGray
+        };
+    }
+
+    static string ChatChannelLabel(ushort flags) => flags switch
+    {
+        1 << 0 => "Local",
+        1 << 1 => "Whisper",
+        1 << 2 => "Server",
+        1 << 4 => "Radio",
+        1 << 5 => "LOOC",
+        1 << 6 => "OOC",
+        1 << 9 => "Emote",
+        1 << 10 => "Dead",
+        1 << 11 => "Admin",
+        1 << 13 => "AHelp",
+        _ => "Chat",
+    };
+
+    static string StripMarkup(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        // SS14 FormattedMessage tags: [color=#fff], [/color], [bold], …
+        return System.Text.RegularExpressions.Regex.Replace(s, @"\[/?[^\]]+\]", "");
     }
 
     void HandleMsgState(NetIncomingMessage msg)
@@ -1103,18 +1980,25 @@ public sealed class GameSessionClient : IDisposable
                 TryScanControlledEntity(payload, uid);
 
             EnsureSerializer(forceRediscover: StatesReceived % 40 == 1);
+            TryApplyPendingMapStrings();
             if (_serializer is { HasMappedStrings: true } boot && UserId is { } localId)
             {
-                if (GameStateDecoder.TryDecodeWorld(
+                if (_worldCache.Apply(
                         boot.Serializer, payload, localId,
                         out var eye, out var world, out var tick, out var err))
                 {
                     LastEye = eye;
-                    LastWorld = world;
+                    // Keep last non-empty world; never wipe sprites/tiles on empty delta blips.
+                    if (world is not null
+                        && (world.Entities.Count > 0 || (world.Tiles?.Count ?? 0) > 0))
+                        LastWorld = world;
+                    else if (LastWorld is null && world is not null)
+                        LastWorld = world;
                     LastEyeHint = eye!.Detail;
-                    // Follow controlled entity; touch pan is an extra offset.
+                    // Ghost free-cam: camera = eye world pos + pan; rotate with grid/shuttle.
                     CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
                     CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
+                    CamRotation = (float)eye.Rotation.Theta;
 
                     try
                     {
@@ -1128,37 +2012,75 @@ public sealed class GameSessionClient : IDisposable
                 else
                 {
                     LastEye = eye;
-                    LastWorld = world;
+                    if (world is { Entities.Count: > 0 })
+                        LastWorld = world;
                     LastEyeHint = err;
-                    if (StatesReceived <= 8)
+                    if (StatesReceived <= 8 || StatesReceived % 50 == 0)
                         Note($"GameState decode: {err}");
-                    if (eye is not null)
+                    // Always ack so the server keeps sending full/delta PVS.
+                    var ackTick = eye?.ToSequence.Value ?? tick.Value;
+                    try
                     {
-                        try
-                        {
-                            SendNamed("MsgStateAck", NetDeliveryMethod.Unreliable, m => m.Write(eye.ToSequence.Value));
-                        }
-                        catch { /* ignore */ }
+                        if (ackTick != 0)
+                            SendNamed("MsgStateAck", NetDeliveryMethod.Unreliable, m => m.Write(ackTick));
                     }
+                    catch { /* ignore */ }
                 }
             }
-            else if (IsObserving && StatesReceived <= 3)
+            else
             {
-                Note($"GameState decode deferred — HasMappedStrings={_serializer?.HasMappedStrings == true}");
-                if (_mapStrHash is { Length: > 0 })
-                    RequestMappedStrings();
+                if (IsObserving && (StatesReceived <= 5 || StatesReceived % 40 == 0))
+                {
+                    Note($"GameState decode deferred — strings={HasMappedStrings} ser={_serializer != null} phase={_mapStrPhase} pendingPkg={_pendingMapStrPackage?.Length ?? 0}");
+                    if (_mapStrHash is { Length: > 0 } && _serializer is not null && !_serializer.HasMappedStrings)
+                        _serializer.TryLoadCachedStrings(_mapStrHash, Note);
+                }
+
+                // Ack even without strings so server does not stall PVS forever.
+                try
+                {
+                    // Sequence is unknown without decode — skip ack (server resends full eventually).
+                }
+                catch { /* ignore */ }
             }
 
             if (StatesReceived <= 5 || StatesReceived % 20 == 0)
-                Note($"MsgState #{StatesReceived} raw={uncompressed}B z={compressed} {LastEyeHint}");
+                Note($"MsgState #{StatesReceived} raw={uncompressed}B z={compressed} store={_worldCache.XformCount} {LastEyeHint}");
 
             if (IsObserving)
-                Detail = $"observing · MsgState x{StatesReceived} ({uncompressed}B) {LastEyeHint}";
+                Detail = $"observing · MsgState x{StatesReceived} store={_worldCache.XformCount} {LastEyeHint}";
         }
         catch (Exception ex)
         {
             Note($"MsgState parse: {ex.Message}");
         }
+    }
+
+    bool TryApplyPendingMapStrings()
+    {
+        if (_pendingMapStrPackage is null || _pendingMapStrPackage.Length == 0)
+            return _serializer?.HasMappedStrings == true;
+        if (_serializer is null || _mapStrHash is null)
+            return false;
+        if (_serializer.HasMappedStrings)
+        {
+            _pendingMapStrPackage = null;
+            return true;
+        }
+
+        if (_serializer.TrySetMappedPackage(_mapStrHash, _pendingMapStrPackage, Note))
+        {
+            SerializerStatus = _serializer.Status;
+            _serializer.TrySaveCachedStrings(_mapStrHash, _pendingMapStrPackage, Note);
+            Note($"mapstr: applied buffered package ({_pendingMapStrPackage.Length:N0}B)");
+            _pendingMapStrPackage = null;
+            return true;
+        }
+
+        SerializerStatus = _serializer.Status;
+        if (string.IsNullOrWhiteSpace(SerializerStatus) || !SerializerStatus.Contains("SetPackage", StringComparison.Ordinal))
+            SerializerStatus = $"serializer: SetPackage failed — {SerializerBootstrap.LastError ?? "unknown"}";
+        return false;
     }
 
     void EnsureSerializer(bool forceRediscover = false)
@@ -1192,11 +2114,14 @@ public sealed class GameSessionClient : IDisposable
             _serializer.StringsCacheDirectory = StringsCacheDirectory;
         SerializerStatus = _serializer?.Status
                            ?? $"serializer: bootstrap failed — {SerializerBootstrap.LastError ?? "unknown"}";
+        if (_serializer is not null)
+            TryApplyPendingMapStrings();
         if (_serializer is not null
             && _mapStrHash is { Length: > 0 }
             && !_serializer.HasMappedStrings)
         {
-            if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note))
+            if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note)
+                && _mapStrPhase == MapStrPhase.AwaitingResponse)
                 RequestMappedStrings();
         }
     }
@@ -1211,7 +2136,18 @@ public sealed class GameSessionClient : IDisposable
         }
 
         EnsureSerializer(forceRediscover: true);
-        Note($"content ready → serializer={SerializerStatus}");
+        TryApplyPendingMapStrings();
+        if (!string.IsNullOrWhiteSpace(ContentFilesRoot))
+        {
+            _protoSprites.Invalidate();
+            _protoSprites.EnsureLoaded(ContentFilesRoot, Note);
+            _tileProtos.Invalidate();
+            _tileProtos.EnsureLoaded(ContentFilesRoot, Note);
+            _worldCache.SetPrototypeIndex(_protoSprites);
+            _worldCache.SetTileIndex(_tileProtos);
+        }
+
+        Note($"content ready → serializer={SerializerStatus} strings={HasMappedStrings} pendingPkg={_pendingMapStrPackage?.Length ?? 0} protos={_protoSprites.Count} tiles={_tileProtos.Count}");
     }
 
     void TryScanControlledEntity(byte[] payload, Guid userId)
@@ -1432,7 +2368,10 @@ public sealed class GameSessionClient : IDisposable
         try { _serializer?.Dispose(); } catch { /* ignore */ }
         _serializer = null;
         _mapStrHash = null;
+        _pendingMapStrPackage = null;
         _mapStrRequested = false;
+        _mapStrPhase = MapStrPhase.None;
+        _worldCache.Clear();
         _transfer.Reset();
         _sawTransferTraffic = false;
         _transferDataRx = 0;
@@ -1449,9 +2388,23 @@ public sealed class GameSessionClient : IDisposable
         SerializerStatus = "serializer: not started";
         CamX = 0;
         CamY = 0;
+        CamRotation = 0;
+        Zoom = 1f;
         _panOffX = 0;
         _panOffY = 0;
+        _flightX = 0;
+        _flightY = 0;
         LocalStatus = SessionStatus.Disconnected;
+        lock (_chatGate)
+        {
+            _chatLines.Clear();
+            _chatVersion++;
+        }
+        lock (_warpGate)
+        {
+            _ghostWarps.Clear();
+            _warpVersion++;
+        }
     }
 
     public void Dispose() => Disconnect("dispose");

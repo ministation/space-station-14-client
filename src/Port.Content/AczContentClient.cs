@@ -180,6 +180,183 @@ public sealed class AczContentClient
             ct);
     }
 
+    /// <summary>
+    /// Download by protocol index+path in batches (no full ContentManifest in RAM).
+    /// Skips files already on disk. Reports progress after each file.
+    /// </summary>
+    public async Task<int> DownloadIndexedPathsBatchedAsync(
+        string statusBaseUrl,
+        IReadOnlyList<(int Index, string Path)> files,
+        string rootDir,
+        IProgress<ContentDownloadProgress>? progress = null,
+        int batchSize = DefaultBatchSize,
+        string stage = "textures",
+        CancellationToken ct = default)
+    {
+        Directory.CreateDirectory(rootDir);
+        var need = new List<(int Index, string Path)>(files.Count);
+        long bytes = 0;
+        var done = 0;
+        var total = files.Count;
+
+        foreach (var f in files)
+        {
+            var outPath = FilePathFor(rootDir, f.Path);
+            if (File.Exists(outPath) && new FileInfo(outPath).Length > 0)
+            {
+                done++;
+                try { bytes += new FileInfo(outPath).Length; } catch { /* ignore */ }
+                continue;
+            }
+
+            need.Add(f);
+        }
+
+        progress?.Report(new ContentDownloadProgress(stage, done, total, bytes, Detail: $"{need.Count} remaining"));
+        if (need.Count == 0)
+            return done;
+
+        for (var offset = 0; offset < need.Count; offset += batchSize)
+        {
+            ct.ThrowIfCancellationRequested();
+            var batch = need.Skip(offset).Take(batchSize).ToList();
+            Exception? last = null;
+            for (var attempt = 1; attempt <= 3; attempt++)
+            {
+                try
+                {
+                    await DownloadIndexedPathsAsync(
+                        statusBaseUrl, batch, rootDir,
+                        onFile: (path, len) =>
+                        {
+                            done++;
+                            bytes += len;
+                            progress?.Report(new ContentDownloadProgress(
+                                stage, done, total, bytes, path,
+                                Detail: $"batch {offset / batchSize + 1}/{(need.Count + batchSize - 1) / batchSize}"));
+                        },
+                        ct);
+                    last = null;
+                    break;
+                }
+                catch (Exception ex) when (attempt < 3 && !ct.IsCancellationRequested)
+                {
+                    last = ex;
+                    progress?.Report(new ContentDownloadProgress(
+                        stage, done, total, bytes,
+                        Detail: $"retry {attempt}/3: {PortHttp.FormatException(ex)}"));
+                    await Task.Delay(400 * attempt, ct);
+                }
+            }
+
+            if (last != null)
+                throw last;
+        }
+
+        return done;
+    }
+
+    /// <summary>
+    /// Download files by protocol index with explicit relative paths (no full ContentManifest required).
+    /// </summary>
+    public async Task<int> DownloadIndexedPathsAsync(
+        string statusBaseUrl,
+        IReadOnlyList<(int Index, string Path)> files,
+        string rootDir,
+        CancellationToken ct = default)
+        => await DownloadIndexedPathsAsync(statusBaseUrl, files, rootDir, onFile: null, ct);
+
+    async Task<int> DownloadIndexedPathsAsync(
+        string statusBaseUrl,
+        IReadOnlyList<(int Index, string Path)> files,
+        string rootDir,
+        Action<string, int>? onFile,
+        CancellationToken ct)
+    {
+        if (files.Count == 0)
+            return 0;
+
+        Directory.CreateDirectory(rootDir);
+        var need = new List<(int Index, string Path)>(files.Count);
+        foreach (var f in files)
+        {
+            var outPath = FilePathFor(rootDir, f.Path);
+            if (File.Exists(outPath) && new FileInfo(outPath).Length > 0)
+                continue;
+            need.Add(f);
+        }
+
+        if (need.Count == 0)
+            return files.Count;
+
+        var indexList = need.Select(f => f.Index).ToArray();
+        var body = new byte[indexList.Length * 4];
+        for (var n = 0; n < indexList.Length; n++)
+            BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(n * 4, 4), indexList[n]);
+
+        var url = statusBaseUrl.TrimEnd('/') + "/download";
+        using var req = new HttpRequestMessage(HttpMethod.Post, url);
+        req.Headers.TryAddWithoutValidation("X-Robust-Download-Protocol", "1");
+        req.Headers.TryAddWithoutValidation("Accept-Encoding", "identity");
+        req.Content = new ByteArrayContent(body);
+        req.Content.Headers.TryAddWithoutValidation("Content-Type", "application/octet-stream");
+
+        using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureOkAsync(resp, "POST /download", ct);
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+
+        var headerBuf = new byte[8];
+        await ReadExactAsync(stream, headerBuf.AsMemory(0, 4), ct);
+        var flags = BinaryPrimitives.ReadInt32LittleEndian(headerBuf.AsSpan(0, 4));
+        var preCompressed = (flags & 1) != 0;
+        var written = 0;
+
+        foreach (var (index, path) in need)
+        {
+            ct.ThrowIfCancellationRequested();
+            await ReadExactAsync(stream, headerBuf.AsMemory(0, 4), ct);
+            var uncompressed = BinaryPrimitives.ReadInt32LittleEndian(headerBuf.AsSpan(0, 4));
+            var compressed = 0;
+            if (preCompressed)
+            {
+                await ReadExactAsync(stream, headerBuf.AsMemory(0, 4), ct);
+                compressed = BinaryPrimitives.ReadInt32LittleEndian(headerBuf.AsSpan(0, 4));
+            }
+
+            if (uncompressed < 0 || uncompressed > 512 * 1024 * 1024)
+                throw new InvalidDataException($"suspicious uncompressed size {uncompressed} for {path}");
+            var onWire = compressed > 0 ? compressed : uncompressed;
+            if (onWire < 0 || onWire > 512 * 1024 * 1024)
+                throw new InvalidDataException($"suspicious on-wire size {onWire} for {path}");
+
+            var data = new byte[onWire];
+            await ReadExactAsync(stream, data, ct);
+            var outPath = FilePathFor(rootDir, path);
+            Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+
+            int writtenLen;
+            if (compressed > 0)
+            {
+                var plain = new ZstdSharp.Decompressor().Unwrap(data, uncompressed).ToArray();
+                if (plain.Length != uncompressed)
+                    throw new InvalidDataException($"zstd size mismatch {plain.Length}/{uncompressed} for {path}");
+                await File.WriteAllBytesAsync(outPath, plain, ct);
+                writtenLen = plain.Length;
+            }
+            else
+            {
+                await File.WriteAllBytesAsync(outPath, data, ct);
+                writtenLen = data.Length;
+            }
+
+            written++;
+            onFile?.Invoke(path, writtenLen);
+            _ = index;
+        }
+
+        return written;
+    }
+
     async Task<int> DownloadFilesAsync(
         string statusBaseUrl,
         ContentManifest manifest,

@@ -18,12 +18,26 @@ namespace Probe.AndroidHost;
     Label = "@string/app_name",
     MainLauncher = true,
     Theme = "@android:style/Theme.DeviceDefault.NoActionBar",
-    ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.ScreenSize | ConfigChanges.KeyboardHidden)]
+    ConfigurationChanges = ConfigChanges.Orientation
+        | ConfigChanges.ScreenSize
+        | ConfigChanges.ScreenLayout
+        | ConfigChanges.SmallestScreenSize
+        | ConfigChanges.KeyboardHidden
+        | ConfigChanges.UiMode
+        | ConfigChanges.Density
+        | ConfigChanges.FontScale
+        | ConfigChanges.LayoutDirection
+        | ConfigChanges.ColorMode)]
 public class MainActivity : Activity
 {
+    // Survive Activity recreate (orientation) so Observe does not dump to hub.
+    static ConnectSession? s_connect;
+    static bool s_uiObserving;
+    static bool s_forceLandscape;
     View? _screenHome;
     View? _screenLobby;
     View? _screenObserve;
+    View? _screenLoading;
     TextView? _authStatus;
     TextView? _connectStatus;
     TextView? _serverChip;
@@ -41,6 +55,15 @@ public class MainActivity : Activity
     TextView? _downloadLabel;
     TextView? _downloadPct;
     ProgressBar? _downloadProgress;
+    TextView? _loadingTitle;
+    TextView? _loadingServer;
+    TextView? _loadingStatus;
+    TextView? _loadingPct;
+    ProgressBar? _loadingProgress;
+    Button? _loadingCancelBtn;
+    FrameLayout? _loadingParallaxHost;
+    FrameLayout? _lobbyParallaxHost;
+    TextView? _lobbyWelcome;
     bool _debugOpen;
     EditText? _authUsername;
     EditText? _authPassword;
@@ -68,7 +91,7 @@ public class MainActivity : Activity
     GlesClearSurfaceView? _glView;
 
     AndroidPlatformHost? _host;
-    readonly ConnectSession _connect = new();
+    ConnectSession _connect = null!;
     readonly Ss14AuthClient _authClient = new();
     readonly ServerInfoClient _infoClient = new();
     HubServerCatalog? _hub;
@@ -87,12 +110,22 @@ public class MainActivity : Activity
     float _lastTouchX, _lastTouchY;
     bool _dragging;
     bool _landscapeLocked;
+    bool _uiObserving;
+    float _flightX;
+    float _flightY;
+    bool _immersiveApplied;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         SodiumAndroidBootstrap.EnsureLoaded();
+        ZstdAndroidBootstrap.EnsureLoaded();
         base.OnCreate(savedInstanceState);
-        RequestedOrientation = ScreenOrientation.Portrait;
+        // Landscape locked from loading onward. Portrait only on hub home.
+        if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
+            || s_connect?.Observing == true || s_uiObserving)
+            RequestedOrientation = ScreenOrientation.Landscape;
+        else
+            RequestedOrientation = ScreenOrientation.Portrait;
         SetContentView(Resource.Layout.activity_main);
         ApplySafeAreaInsets();
 
@@ -100,12 +133,16 @@ public class MainActivity : Activity
         _host = new AndroidPlatformHost(paths);
         _host.EnsureDirectories();
         _host.OnLifecycle(PlatformLifecycle.Created);
+        _connect = s_connect ??= new ConnectSession();
+        _uiObserving = s_uiObserving;
         _connect.AuthConfigPath = System.IO.Path.Combine(paths.FilesDir, "auth-session.json");
         _connect.ContentRoot = paths.ContentDir;
         ClientHwid.StorageDirectory = paths.UserDataDir;
         _hub = new HubServerCatalog(System.IO.Path.Combine(paths.FilesDir, "hub-favorites.json"));
-        _connect.ProgressChanged += p => RunOnUiThread(() => ApplyProgress(p));
-        _connect.DebugChanged += () => RunOnUiThread(RenderStatus);
+        _connect.ProgressChanged -= OnProgressChanged;
+        _connect.ProgressChanged += OnProgressChanged;
+        _connect.DebugChanged -= OnDebugChanged;
+        _connect.DebugChanged += OnDebugChanged;
 
         BindViews();
         WireButtons();
@@ -119,10 +156,16 @@ public class MainActivity : Activity
                 _charName.Text = existing.UserName;
         }
 
-        _uiTimer = new Timer(250);
+        _uiTimer = new Timer(50);
         _uiTimer.Elapsed += (_, _) =>
         {
             _host?.Clock.Pulse();
+            if (_uiObserving || _connect.Observing)
+            {
+                _connect.Session.SetFlightInput(_flightX, _flightY);
+                _connect.Session.TickFlight(0.05f);
+            }
+
             RunOnUiThread(RenderStatus);
         };
         _uiTimer.AutoReset = true;
@@ -130,6 +173,16 @@ public class MainActivity : Activity
         RenderStatus();
         _ = RefreshHubAsync();
         _ = RefreshHomeStatusAsync();
+    }
+
+    void OnProgressChanged(ContentDownloadProgress p) => RunOnUiThread(() => ApplyProgress(p));
+    void OnDebugChanged() => RunOnUiThread(RenderStatus);
+
+    public override void OnConfigurationChanged(Android.Content.Res.Configuration newConfig)
+    {
+        base.OnConfigurationChanged(newConfig);
+        // Keep lobby/observe UI after rotation without tearing down the session.
+        RenderStatus();
     }
 
     void ApplySafeAreaInsets()
@@ -153,14 +206,64 @@ public class MainActivity : Activity
                 | (int)WindowInsetsControllerAppearance.LightNavigationBars);
         }
 
-        root.SetOnApplyWindowInsetsListener(new SafeAreaInsetsListener());
+        root.SetOnApplyWindowInsetsListener(new SafeAreaInsetsListener(() =>
+            _uiObserving || _connect.Observing || s_uiObserving));
         root.RequestApplyInsets();
+    }
+
+    void ApplyObserveImmersive(bool on)
+    {
+        if (Window is null) return;
+        var root = FindViewById(Resource.Id.root);
+
+        if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window.InsetsController is { } ctrl)
+        {
+            if (on)
+            {
+                ctrl.Hide(WindowInsets.Type.SystemBars());
+                ctrl.SystemBarsBehavior =
+                    (int)WindowInsetsControllerBehavior.ShowTransientBarsBySwipe;
+                root?.SetPadding(0, 0, 0, 0);
+                Window.SetNavigationBarColor(Color.Transparent);
+            }
+            else
+            {
+                ctrl.Show(WindowInsets.Type.SystemBars());
+                Window.SetNavigationBarColor(Color.ParseColor("#1E232A"));
+                root?.RequestApplyInsets();
+            }
+        }
+        else
+        {
+#pragma warning disable CS0618
+            if (on)
+            {
+                Window.AddFlags(WindowManagerFlags.Fullscreen);
+                root?.SetPadding(0, 0, 0, 0);
+            }
+            else
+            {
+                Window.ClearFlags(WindowManagerFlags.Fullscreen);
+                root?.RequestApplyInsets();
+            }
+#pragma warning restore CS0618
+        }
     }
 
     sealed class SafeAreaInsetsListener : Java.Lang.Object, View.IOnApplyWindowInsetsListener
     {
+        readonly Func<bool> _isObserving;
+
+        public SafeAreaInsetsListener(Func<bool> isObserving) => _isObserving = isObserving;
+
         public WindowInsets OnApplyWindowInsets(View v, WindowInsets insets)
         {
+            if (_isObserving())
+            {
+                v.SetPadding(0, 0, 0, 0);
+                return insets;
+            }
+
             if (OperatingSystem.IsAndroidVersionAtLeast(30))
             {
                 var bars = insets.GetInsets(
@@ -185,6 +288,35 @@ public class MainActivity : Activity
         _screenHome = FindViewById(Resource.Id.screen_home);
         _screenLobby = FindViewById(Resource.Id.screen_lobby);
         _screenObserve = FindViewById(Resource.Id.screen_observe);
+        _screenLoading = FindViewById(Resource.Id.screen_loading);
+        _loadingParallaxHost = FindViewById<FrameLayout>(Resource.Id.loading_parallax_host);
+        if (_loadingParallaxHost != null && _loadingParallaxHost.ChildCount == 0)
+        {
+            _loadingParallaxHost.AddView(new ParallaxStarfieldView(this),
+                new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MatchParent,
+                    ViewGroup.LayoutParams.MatchParent));
+        }
+
+        _lobbyParallaxHost = FindViewById<FrameLayout>(Resource.Id.lobby_parallax_host);
+        if (_lobbyParallaxHost != null && _lobbyParallaxHost.ChildCount == 0)
+        {
+            _lobbyParallaxHost.AddView(new ParallaxStarfieldView(this),
+                new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MatchParent,
+                    ViewGroup.LayoutParams.MatchParent));
+        }
+
+        _lobbyWelcome = FindViewById<TextView>(Resource.Id.lobby_welcome);
+        if (_lobbyWelcome != null)
+            _lobbyWelcome.Visibility = ViewStates.Gone;
+
+        _loadingTitle = FindViewById<TextView>(Resource.Id.loading_title);
+        _loadingServer = FindViewById<TextView>(Resource.Id.loading_server);
+        _loadingStatus = FindViewById<TextView>(Resource.Id.loading_status);
+        _loadingPct = FindViewById<TextView>(Resource.Id.loading_pct);
+        _loadingProgress = FindViewById<ProgressBar>(Resource.Id.loading_progress);
+        _loadingCancelBtn = FindViewById<Button>(Resource.Id.btn_loading_cancel);
         _authStatus = FindViewById<TextView>(Resource.Id.auth_status);
         _connectStatus = FindViewById<TextView>(Resource.Id.connect_status);
         _serverChip = FindViewById<TextView>(Resource.Id.server_chip);
@@ -226,7 +358,7 @@ public class MainActivity : Activity
         _refreshHubBtn = FindViewById<Button>(Resource.Id.btn_refresh_hub);
         _observeGl = FindViewById<FrameLayout>(Resource.Id.observe_gl);
 
-        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn, _refreshHubBtn })
+        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn, _refreshHubBtn, _loadingCancelBtn })
             ClearMaterialTint(b);
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_up));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_down));
@@ -253,6 +385,15 @@ public class MainActivity : Activity
             _logoutBtn.Click += (_, _) => Logout();
         if (_connectBtn != null)
             _connectBtn.Click += async (_, _) => await RunConnectAsync();
+        if (_loadingCancelBtn != null)
+        {
+            _loadingCancelBtn.Click += (_, _) =>
+            {
+                _connectCts?.Cancel();
+                if (_loadingStatus != null)
+                    _loadingStatus.Text = "Отмена…";
+            };
+        }
         if (_disconnectBtn != null)
             _disconnectBtn.Click += (_, _) => LeaveServer();
         if (_observeLeaveBtn != null)
@@ -299,40 +440,148 @@ public class MainActivity : Activity
         if (_observeBtn != null)
             _observeBtn.Click += (_, _) =>
             {
-                _connect.Session.EnsureSerializerPublic();
-                if (!_connect.Observe())
+                if (!_connect.InLobby && !_connect.Session.IsConnected)
                 {
                     Toast.MakeText(this, "Нет соединения с сервером", ToastLength.Short)?.Show();
                     return;
                 }
 
+                // Enter observe UI first so orientation/recreate cannot drop us to hub mid-command.
+                _uiObserving = true;
+                s_uiObserving = true;
                 EnsureGl();
                 _glView?.Renderer.SetGhostMode(true);
-                ApplyOrientation(forceLandscape: true);
-                Toast.MakeText(this, "Наблюдение…", ToastLength.Short)?.Show();
+                // Landscape only once we are already on the server (lobby→observe).
+                ApplyOrientation(landscape: true);
+                RenderStatus();
+
+                if (!_connect.Observe())
+                {
+                    _uiObserving = false;
+                    s_uiObserving = false;
+                    Toast.MakeText(this, "Не удалось отправить observe", ToastLength.Short)?.Show();
+                    RenderStatus();
+                    return;
+                }
+
+                Toast.MakeText(this, "Наблюдение — джойстик / drag / ✈ варп", ToastLength.Short)?.Show();
+                EnsureJoystick();
+                ApplyObserveImmersive(true);
                 RenderStatus();
             };
 
-        WireNudge(Resource.Id.btn_touch_up, 0, -48);
-        WireNudge(Resource.Id.btn_touch_down, 0, 48);
-        WireNudge(Resource.Id.btn_touch_left, -48, 0);
-        WireNudge(Resource.Id.btn_touch_right, 48, 0);
+        WireZoom(Resource.Id.btn_zoom_in, 1.15f);
+        WireZoom(Resource.Id.btn_zoom_out, 1f / 1.15f);
+
+        EnsureJoystick();
+
+        _connect.Session.WarpCycled += name =>
+        {
+            RunOnUiThread(() =>
+                Toast.MakeText(this, $"→ {name}", ToastLength.Short)?.Show());
+        };
+
+        var warpsBtn = FindViewById<Button>(Resource.Id.btn_warps);
+        if (warpsBtn != null)
+        {
+            warpsBtn.Click += (_, _) =>
+            {
+                try
+                {
+                    if (!_connect.Session.CycleWarp(out _))
+                        Toast.MakeText(this, "Запрос локаций…", ToastLength.Short)?.Show();
+                }
+                catch (Exception ex)
+                {
+                    Toast.MakeText(this, $"Варп: {ex.Message}", ToastLength.Short)?.Show();
+                }
+            };
+        }
+
+        var returnBtn = FindViewById<Button>(Resource.Id.btn_ghost_return);
+        if (returnBtn != null)
+        {
+            returnBtn.Click += (_, _) =>
+            {
+                try
+                {
+                    if (_connect.Session.ReturnToBody())
+                        Toast.MakeText(this, "Возврат в тело…", ToastLength.Short)?.Show();
+                    else
+                        Toast.MakeText(this, "Нельзя вернуться в тело", ToastLength.Short)?.Show();
+                }
+                catch (Exception ex)
+                {
+                    Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+                }
+            };
+        }
+
+        var followBtn = FindViewById<Button>(Resource.Id.btn_ghost_follow);
+        if (followBtn != null)
+        {
+            followBtn.Click += (_, _) =>
+            {
+                try
+                {
+                    if (_connect.Session.CycleFollowPlayer(out var name))
+                        Toast.MakeText(this, $"Следим: {name}", ToastLength.Short)?.Show();
+                    else
+                        Toast.MakeText(this, "Запрос игроков…", ToastLength.Short)?.Show();
+                }
+                catch (Exception ex)
+                {
+                    Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+                }
+            };
+        }
+
+        var rolesBtn = FindViewById<Button>(Resource.Id.btn_ghost_roles);
+        if (rolesBtn != null)
+        {
+            rolesBtn.Click += (_, _) =>
+            {
+                try
+                {
+                    if (_connect.Session.OpenGhostRoles())
+                        Toast.MakeText(this, "ghostroles…", ToastLength.Short)?.Show();
+                    else
+                        Toast.MakeText(this, "Роли недоступны", ToastLength.Short)?.Show();
+                }
+                catch (Exception ex)
+                {
+                    Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+                }
+            };
+        }
     }
 
-    void WireNudge(int id, float dx, float dy)
+    VirtualJoystickView? _joystick;
+
+    void EnsureJoystick()
+    {
+        var host = FindViewById<FrameLayout>(Resource.Id.joystick_host);
+        if (host is null || _joystick != null)
+            return;
+        _joystick = new VirtualJoystickView(this);
+        host.AddView(_joystick, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.MatchParent));
+        _joystick.AxisChanged += (x, y) =>
+        {
+            _flightX = x;
+            _flightY = y;
+        };
+    }
+
+    void WireZoom(int id, float factor)
     {
         var btn = FindViewById<Button>(id);
         if (btn is null) return;
-        btn.Touch += (_, e) =>
+        btn.Click += (_, _) =>
         {
-            if (e.Event is null) return;
-            if (e.Event.ActionMasked is MotionEventActions.Down or MotionEventActions.Move)
-            {
-                _connect.PanCamera(dx * 0.35f, dy * 0.35f);
-                _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
-            }
-
-            e.Handled = true;
+            _connect.Session.AdjustZoom(factor);
+            _glView?.Renderer.SetZoom(_connect.Session.Zoom);
         };
     }
 
@@ -640,19 +889,20 @@ public class MainActivity : Activity
         Toast.MakeText(this, $"Добавлен {entry.Name}", ToastLength.Short)?.Show();
     }
 
-    void ApplyOrientation(bool forceLandscape)
+    void ApplyOrientation(bool landscape)
     {
-        var want = forceLandscape || _connect.Observing || _connect.InLobby;
-        if (want == _landscapeLocked && want)
+        s_forceLandscape = landscape;
+        var want = landscape
+            ? ScreenOrientation.Landscape
+            : ScreenOrientation.Portrait;
+        if (RequestedOrientation == want)
         {
-            RequestedOrientation = ScreenOrientation.SensorLandscape;
+            _landscapeLocked = landscape;
             return;
         }
 
-        _landscapeLocked = want;
-        RequestedOrientation = want
-            ? ScreenOrientation.SensorLandscape
-            : ScreenOrientation.Portrait;
+        _landscapeLocked = landscape;
+        RequestedOrientation = want;
     }
 
     async Task RefreshHomeStatusAsync()
@@ -670,7 +920,9 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[3500];
+    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4000];
+    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[9000];
+    readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
     void PushWorldToGl()
     {
@@ -678,32 +930,83 @@ public class MainActivity : Activity
             return;
         var s = _connect.Session;
         _glView.Renderer.SetContentFilesRoot(s.ContentFilesRoot);
+        _glView.Renderer.SetTextureFetcher(s.TextureFetcher);
         _glView.Renderer.SetCamera(s.CamX, s.CamY);
+        _glView.Renderer.SetCameraRotation(s.CamRotation);
+        _glView.Renderer.SetZoom(s.Zoom);
         var world = s.LastWorld;
-        if (world is null || world.Entities.Count == 0)
+        if (world is null)
         {
             _glView.Renderer.SetEntities(Array.Empty<GlesClearRenderer.EntitySprite>(), 0);
+            _glView.Renderer.SetTiles(Array.Empty<GlesClearRenderer.TileSprite>(), 0);
+            _glView.Renderer.SetSpeechBubbles(Array.Empty<GlesClearRenderer.SpeechBubbleSprite>(), 0);
             return;
         }
 
         var n = Math.Min(world.Entities.Count, _spriteScratch.Length);
-        for (var i = 0; i < n; i++)
+        var ordered = world.Entities
+            .OrderBy(e => e.DrawDepth)
+            .ThenBy(e => e.Y)
+            .ThenBy(e => e.X)
+            .Take(n)
+            .ToArray();
+        for (var i = 0; i < ordered.Length; i++)
         {
-            var e = world.Entities[i];
+            var e = ordered[i];
             _spriteScratch[i] = new GlesClearRenderer.EntitySprite
             {
                 X = e.X,
                 Y = e.Y,
                 Rotation = e.Rotation,
                 RsiPath = e.RsiPath,
+                StateName = e.StateName,
+                DrawDepth = e.DrawDepth,
                 R = e.R,
                 G = e.G,
                 B = e.B,
                 IsControlled = e.IsControlled,
+                NoRotation = e.NoRotation,
             };
         }
 
-        _glView.Renderer.SetEntities(_spriteScratch, n);
+        _glView.Renderer.SetEntities(_spriteScratch, ordered.Length);
+
+        var tiles = world.Tiles ?? Array.Empty<WorldTileDraw>();
+        var tn = Math.Min(tiles.Count, _tileScratch.Length);
+        for (var i = 0; i < tn; i++)
+        {
+            var t = tiles[i];
+            _tileScratch[i] = new GlesClearRenderer.TileSprite
+            {
+                X = t.X,
+                Y = t.Y,
+                R = t.R,
+                G = t.G,
+                B = t.B,
+                RsiPath = t.RsiPath,
+                StateName = t.StateName,
+            };
+        }
+
+        _glView.Renderer.SetTiles(_tileScratch, tn);
+
+        var bubbles = s.SnapshotSpeechBubbles();
+        var bn = Math.Min(bubbles.Count, _bubbleScratch.Length);
+        for (var i = 0; i < bn; i++)
+        {
+            var b = bubbles[i];
+            _bubbleScratch[i] = new GlesClearRenderer.SpeechBubbleSprite
+            {
+                X = b.X,
+                Y = b.Y,
+                Text = b.Text,
+                Argb = b.Argb,
+                Alpha = b.Alpha,
+                StackOffset = b.StackOffset,
+            };
+        }
+
+        _glView.Renderer.SetSpeechBubbles(_bubbleScratch, bn);
     }
 
     void EnsureGl()
@@ -718,13 +1021,24 @@ public class MainActivity : Activity
         _observeGl.AddView(_glView, 0);
         _glView.Renderer.SetGhostMode(true);
         _glView.Renderer.SetContentFilesRoot(_connect.Session.ContentFilesRoot);
+        _glView.Renderer.SetTextureFetcher(_connect.Session.TextureFetcher);
     }
 
     void LeaveServer()
     {
+        _uiObserving = false;
+        s_uiObserving = false;
+        _flightX = 0;
+        _flightY = 0;
+        if (_immersiveApplied)
+        {
+            _immersiveApplied = false;
+            ApplyObserveImmersive(false);
+        }
         _connect.Disconnect();
         _glView?.Renderer.SetGhostMode(false);
-        ApplyOrientation(forceLandscape: false);
+        s_forceLandscape = false;
+        ApplyOrientation(landscape: false);
         RenderStatus();
     }
 
@@ -742,10 +1056,13 @@ public class MainActivity : Activity
             case MotionEventActions.Move when _dragging:
                 var x = ev.GetX();
                 var y = ev.GetY();
-                _connect.PanCamera(-(x - _lastTouchX), y - _lastTouchY);
+                // Drag = free-flight pan (screen px → world px, Y flipped for station coords).
+                var sens = 2.1f / Math.Max(0.35f, _connect.Session.Zoom);
+                _connect.PanCamera(-(x - _lastTouchX) * sens, (y - _lastTouchY) * sens);
                 _lastTouchX = x;
                 _lastTouchY = y;
                 _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
+                _glView?.Renderer.SetZoom(_connect.Session.Zoom);
                 break;
             case MotionEventActions.Up:
             case MotionEventActions.Cancel:
@@ -823,20 +1140,39 @@ public class MainActivity : Activity
         _connectCts?.Cancel();
         _connectCts = new CancellationTokenSource();
         if (_connectBtn != null) _connectBtn.Enabled = false;
-        ApplyOrientation(forceLandscape: true);
+
+        // Landscape locked from the moment content loading starts (and lobby/observe).
+        s_forceLandscape = true;
+        ApplyOrientation(landscape: true);
+        if (_loadingTitle != null)
+            _loadingTitle.Text = "ПОДКЛЮЧЕНИЕ";
+        if (_loadingServer != null)
+            _loadingServer.Text = _selected.Name;
+        if (_loadingStatus != null)
+            _loadingStatus.Text = "Подготовка…";
+        if (_loadingProgress != null)
+            _loadingProgress.Progress = 0;
+        if (_loadingPct != null)
+            _loadingPct.Text = "0%";
+        if (_screenLoading != null)
+            _screenLoading.Visibility = ViewStates.Visible;
+        if (_screenHome != null)
+            _screenHome.Visibility = ViewStates.Gone;
+
         RenderStatus();
         try
         {
             await _connect.RunAsync(_connectCts.Token);
             if (_connect.InLobby || _connect.Observing)
             {
+                ApplyOrientation(landscape: true);
                 _authUiStatus = $"В сети: {_connect.Session.UserName}";
                 if (_charName != null && string.IsNullOrWhiteSpace(_charName.Text))
                     _charName.Text = _connect.Session.UserName;
             }
             else
             {
-                ApplyOrientation(forceLandscape: false);
+                ApplyOrientation(landscape: false);
             }
         }
         finally
@@ -883,27 +1219,74 @@ public class MainActivity : Activity
         _uiTimer?.Stop();
         _uiTimer?.Dispose();
         _uiTimer = null;
-        _connect.Disconnect();
+        // Orientation recreate must NOT tear down the live game session.
+        if (!IsChangingConfigurations)
+        {
+            _connect.ProgressChanged -= OnProgressChanged;
+            _connect.DebugChanged -= OnDebugChanged;
+            _connect.Disconnect();
+            s_connect = null;
+            s_uiObserving = false;
+            _uiObserving = false;
+        }
+
         _host?.OnLifecycle(PlatformLifecycle.Destroyed);
         base.OnDestroy();
     }
 
     void RenderStatus()
     {
-        var observing = _connect.Observing;
-        var lobby = _connect.InLobby;
+        // Sticky UI observe so a brief blip doesn't dump to hub — but exit if UDP died.
+        if (_uiObserving && !_connect.Session.IsConnected)
+        {
+            _uiObserving = false;
+            s_uiObserving = false;
+            if (_authUiStatus.StartsWith("В сети", StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(_authUiStatus))
+                _authUiStatus = string.IsNullOrWhiteSpace(_connect.Session.Detail)
+                    ? "Соединение потеряно"
+                    : $"Отключено: {_connect.Session.Detail}";
+        }
+        else if (_uiObserving && !_connect.Session.IsObserving && _connect.Session.IsConnected)
+            _connect.Session.IsObserving = true;
 
+        var observing = _uiObserving || _connect.Observing;
+        if (observing != _immersiveApplied)
+        {
+            _immersiveApplied = observing;
+            ApplyObserveImmersive(observing);
+        }
+        var lobby = _connect.InLobby && !observing;
+        var loading = _connect.Busy && !lobby && !observing;
+
+        if (_screenLoading != null)
+            _screenLoading.Visibility = loading ? ViewStates.Visible : ViewStates.Gone;
         if (_screenHome != null)
-            _screenHome.Visibility = lobby || observing ? ViewStates.Gone : ViewStates.Visible;
+            _screenHome.Visibility = lobby || observing || loading ? ViewStates.Gone : ViewStates.Visible;
         if (_screenLobby != null)
             _screenLobby.Visibility = lobby ? ViewStates.Visible : ViewStates.Gone;
         if (_screenObserve != null)
             _screenObserve.Visibility = observing ? ViewStates.Visible : ViewStates.Gone;
 
-        if (lobby || observing)
-            ApplyOrientation(forceLandscape: true);
-        else if (!_connect.Busy)
-            ApplyOrientation(forceLandscape: false);
+        s_uiObserving = _uiObserving;
+
+        // Landscape while loading / lobby / observe. Portrait only on hub home.
+        if (loading || _connect.Busy || lobby || observing)
+            ApplyOrientation(landscape: true);
+        else
+            ApplyOrientation(landscape: false);
+
+        if (loading)
+        {
+            if (_loadingServer != null && _selected is not null)
+                _loadingServer.Text = _selected.Name;
+            if (_loadingStatus != null)
+                _loadingStatus.Text = string.IsNullOrWhiteSpace(_connect.Summary)
+                    ? "Подключение…"
+                    : _connect.Summary;
+            if (_connect.LastProgress is { } lp)
+                ApplyProgress(lp);
+        }
 
         if (observing)
             EnsureGl();
@@ -950,6 +1333,9 @@ public class MainActivity : Activity
             _lobbyStation.Text = string.IsNullOrWhiteSpace(name) ? "Server" : name;
         }
 
+        if (_lobbyWelcome != null)
+            _lobbyWelcome.Visibility = ViewStates.Gone;
+
         if (_lobbyRound != null)
         {
             if (_connect.Session.IsConnected)
@@ -982,55 +1368,58 @@ public class MainActivity : Activity
 
         if (_lobbyContentStatus != null && lobby)
         {
-            _lobbyContentStatus.Text = ContentCapabilityReport.Format(
-                _connect.Session.ContentFilesRoot,
-                _connect.Session.SerializerStatus,
-                _connect.Session.HasMappedStrings,
-                _connect.Session.LastWorld?.Entities.Count ?? 0);
+            _lobbyContentStatus.Visibility = ViewStates.Gone;
+        }
+
+        if (_observeHud != null && observing)
+        {
+            var s = _connect.Session;
+            _observeHud.Text = $"{s.UserName ?? "ghost"} · z{s.Zoom:0.0}";
+            PushWorldToGl();
         }
 
         if (_lobbyPlayers != null)
         {
-            var players = _connect.Session.Players;
+            var chat = _connect.Session.ChatLines;
             if (_lobbyPlayerCount != null)
-                _lobbyPlayerCount.Text = players.Count.ToString();
-            if (players.Count == 0)
-                _lobbyPlayers.Text = lobby ? "ожидание списка…" : "—";
+                _lobbyPlayerCount.Text = _connect.Session.Players.Count.ToString();
+            if (chat.Count == 0)
+            {
+                _lobbyPlayers.Text = lobby ? "ожидание чата…" : "—";
+                _lobbyPlayers.SetTextColor(Color.ParseColor("#F3F0E8"));
+            }
             else
             {
-                _lobbyPlayers.Text = string.Join('\n', players
-                    .OrderBy(p => p.Status)
-                    .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-                    .Select(p =>
-                    {
-                        var name = p.Name.PadRight(18);
-                        if (name.Length > 18) name = p.Name[..16] + "…";
-                        return $"{name}  {StatusLabel(p.Status)}";
-                    }));
+                var take = chat.Count > 80 ? chat.Skip(chat.Count - 80).ToList() : chat;
+                var sb = new Android.Text.SpannableStringBuilder();
+                for (var i = 0; i < take.Count; i++)
+                {
+                    if (i > 0) sb.Append('\n');
+                    var c = take[i];
+                    var ch = c.Channel.Length > 8 ? c.Channel[..8] : c.Channel;
+                    var line = $"[{ch}] {c.Text}";
+                    var start = sb.Length();
+                    sb.Append(line);
+                    var color = new Color(c.Argb);
+                    sb.SetSpan(
+                        new Android.Text.Style.ForegroundColorSpan(color),
+                        start,
+                        sb.Length(),
+                        Android.Text.SpanTypes.ExclusiveExclusive);
+                }
+
+                _lobbyPlayers.SetText(sb, TextView.BufferType.Spannable);
             }
         }
 
         if (_lobbyDetail != null)
-            _lobbyDetail.Text = $"{_connect.Session.SerializerStatus} · {_connect.Session.Detail}";
+            _lobbyDetail.Text = _connect.Session.Detail;
 
         if (_joinDebug != null)
             _joinDebug.Text = string.IsNullOrWhiteSpace(_connect.DebugLog) ? _connect.Summary : _connect.DebugLog;
 
         if (_connect.LastProgress is { } prog && _connect.Busy)
             ApplyProgress(prog);
-
-        if (_observeHud != null && observing)
-        {
-            var s = _connect.Session;
-            var worldN = s.LastWorld?.Entities.Count ?? 0;
-            _observeHud.Text =
-                $"{s.Detail}\n" +
-                $"MsgState={s.StatesReceived}  strings={s.HasMappedStrings}  {s.SerializerStatus}\n" +
-                $"world={worldN}  {_glView?.Renderer.Format()}\n" +
-                $"eye: {s.LastEye?.Detail ?? s.LastEyeHint}\n" +
-                $"cam=({s.CamX:0},{s.CamY:0}) · drag / D-pad";
-            PushWorldToGl();
-        }
 
         if (_readyBtn != null)
         {
@@ -1061,6 +1450,29 @@ public class MainActivity : Activity
             _downloadPct.Visibility = ViewStates.Visible;
             _downloadPct.Text = $"{p.Percent}%  {p.Stage}  {p.Done}/{p.Total}" +
                                 (string.IsNullOrWhiteSpace(p.CurrentPath) ? "" : $"\n{p.CurrentPath}");
+        }
+
+        if (_loadingProgress != null)
+            _loadingProgress.Progress = p.Percent;
+        if (_loadingPct != null)
+        {
+            var mb = p.BytesWritten > 0 ? $" · {p.BytesWritten / (1024.0 * 1024.0):0.0} MB" : "";
+            _loadingPct.Text = $"{p.Percent}%  ·  {p.Stage}  {p.Done}/{p.Total}{mb}";
+        }
+
+        if (_loadingStatus != null)
+            _loadingStatus.Text = _connect.Summary;
+        if (_loadingTitle != null)
+        {
+            _loadingTitle.Text = p.Stage switch
+            {
+                "textures" => "ТЕКСТУРЫ",
+                "prototypes" => "ПРОТОТИПЫ",
+                "assemblies" => "СБОРКИ",
+                "manifest" or "index" => "МАНИФЕСТ",
+                "done" => "ГОТОВО",
+                _ => "ПОДКЛЮЧЕНИЕ",
+            };
         }
 
         if (_connectStatus != null)

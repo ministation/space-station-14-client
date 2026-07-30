@@ -19,7 +19,7 @@ public sealed record EyeSnapshot(
     GameTick ToSequence,
     string Detail);
 
-/// <summary>One drawable entity for the Android ghost viewport.</summary>
+/// <summary>One drawable entity/layer for the Android ghost viewport.</summary>
 public readonly record struct WorldEntityDraw(
     NetEntity Entity,
     float X,
@@ -29,13 +29,29 @@ public readonly record struct WorldEntityDraw(
     byte R,
     byte G,
     byte B,
-    bool IsControlled);
+    bool IsControlled,
+    int DrawDepth = 50,
+    string? StateName = null,
+    bool Visible = true,
+    float OffsetX = 0,
+    float OffsetY = 0,
+    bool NoRotation = false);
 
 public sealed record WorldSnapshot(
     EyeSnapshot? Eye,
     IReadOnlyList<WorldEntityDraw> Entities,
     GameTick ToSequence,
-    string Detail);
+    string Detail,
+    IReadOnlyList<WorldTileDraw>? Tiles = null);
+
+public readonly record struct WorldTileDraw(
+    float X,
+    float Y,
+    byte R,
+    byte G,
+    byte B,
+    string? RsiPath = null,
+    string? StateName = null);
 
 public static class GameStateDecoder
 {
@@ -82,7 +98,7 @@ public static class GameStateDecoder
 
             var entities = state.EntityStates.Value ?? Array.Empty<EntityState>();
             var xforms = new Dictionary<NetEntity, TransformComponentState>(entities.Count);
-            var sprites = new Dictionary<NetEntity, (string? Path, byte R, byte G, byte B)>(Math.Min(entities.Count, 512));
+            var sprites = new Dictionary<NetEntity, SpriteVisual>(Math.Min(entities.Count, 512));
 
             foreach (var es in entities)
             {
@@ -110,7 +126,8 @@ public static class GameStateDecoder
 
             if (controlled.IsValid() && xforms.TryGetValue(controlled, out var cx))
             {
-                localPos = cx.LocalPosition;
+                var worldCache = new Dictionary<NetEntity, Vector2>(xforms.Count);
+                localPos = ResolveWorldPos(controlled, xforms, worldCache);
                 rot = cx.Rotation;
                 foundXform = true;
             }
@@ -156,16 +173,17 @@ public static class GameStateDecoder
                         break;
                     var wp = ResolveWorldPos(ent, xforms, worldPosCacheEarly);
                     sprites.TryGetValue(ent, out var spr);
-                    byte r = spr.R, g = spr.G, b = spr.B;
+                    byte r = spr?.R ?? 0, g = spr?.G ?? 0, b = spr?.B ?? 0;
                     if (r == 0 && g == 0 && b == 0)
                     {
-                        if (!string.IsNullOrEmpty(spr.Path)) { r = 200; g = 190; b = 160; }
+                        if (!string.IsNullOrEmpty(spr?.Path)) { r = 200; g = 190; b = 160; }
                         else { r = 70; g = 95; b = 130; }
                     }
 
                     drawEarly.Add(new WorldEntityDraw(
                         ent, wp.X, wp.Y, (float)xf.Rotation.Theta,
-                        spr.Path, r, g, b, IsControlled: false));
+                        spr?.Path, r, g, b, IsControlled: false,
+                        spr?.DrawDepth ?? GuessDepth(spr?.Path), spr?.State));
                     sum += wp;
                     nSum++;
                 }
@@ -192,21 +210,27 @@ public static class GameStateDecoder
                 var wp = ResolveWorldPos(ent, xforms, worldPosCache);
                 sprites.TryGetValue(ent, out var spr);
                 var isCtrl = ent == controlled;
-                byte r = spr.R, g = spr.G, b = spr.B;
+                byte r = spr?.R ?? 0, g = spr?.G ?? 0, b = spr?.B ?? 0;
                 if (r == 0 && g == 0 && b == 0)
                 {
                     if (isCtrl) { r = 80; g = 220; b = 255; }
-                    else if (!string.IsNullOrEmpty(spr.Path)) { r = 200; g = 190; b = 160; }
+                    else if (!string.IsNullOrEmpty(spr?.Path)) { r = 200; g = 190; b = 160; }
                     else { r = 90; g = 110; b = 140; }
                 }
 
                 drawList.Add(new WorldEntityDraw(
                     ent, wp.X, wp.Y, (float)xf.Rotation.Theta,
-                    spr.Path, r, g, b, isCtrl));
+                    spr?.Path, r, g, b, isCtrl,
+                    spr?.DrawDepth ?? GuessDepth(spr?.Path), spr?.State));
             }
 
-            // Controlled first for camera / highlight.
-            drawList.Sort((a, b) => b.IsControlled.CompareTo(a.IsControlled));
+            // Depth then controlled.
+            drawList.Sort((a, b) =>
+            {
+                var d = a.DrawDepth.CompareTo(b.DrawDepth);
+                if (d != 0) return d;
+                return b.IsControlled.CompareTo(a.IsControlled);
+            });
 
             var detail =
                 $"ent={controlled} xform={foundXform} eye={foundEye} " +
@@ -260,92 +284,294 @@ public static class GameStateDecoder
         return pos;
     }
 
+    public static void TryExtractSpritePublic(
+        object state,
+        NetEntity ent,
+        Dictionary<NetEntity, SpriteVisual> sprites)
+        => TryExtractSprite(state, ent, sprites);
+
+    public sealed class SpriteVisual
+    {
+        /// <summary>True after a real SpriteComponentState was applied (not prototype YAML guess).</summary>
+        public bool FromNetwork;
+        public string? Path;
+        public string? State;
+        public byte R, G, B;
+        public int DrawDepth = 50;
+        public bool NoRotation;
+        public readonly List<LayerVis> Layers = new();
+    }
+
+    public readonly record struct LayerVis(
+        string? Path,
+        string? State,
+        int Depth,
+        bool Visible,
+        byte R,
+        byte G,
+        byte B,
+        float OffsetX = 0,
+        float OffsetY = 0);
+
     static void TryExtractSprite(
         object state,
         NetEntity ent,
-        Dictionary<NetEntity, (string? Path, byte R, byte G, byte B)> sprites)
+        Dictionary<NetEntity, SpriteVisual> sprites)
     {
         var tn = state.GetType().Name;
-        if (!tn.Contains("Sprite", StringComparison.OrdinalIgnoreCase))
+        // Avoid matching unrelated *Sprite* types / IconSmooth intermediate junk.
+        if (!tn.Contains("SpriteComponent", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(tn, "SpriteComponentState", StringComparison.OrdinalIgnoreCase)
+            && !(tn.Contains("Sprite", StringComparison.OrdinalIgnoreCase)
+                 && tn.Contains("State", StringComparison.OrdinalIgnoreCase)
+                 && !tn.Contains("IconSmooth", StringComparison.OrdinalIgnoreCase)))
             return;
 
-        string? path = null;
-        byte r = 0, g = 0, b = 0;
+        sprites.TryGetValue(ent, out var prev);
+        // Network state replaces prototype fallback entirely (prevents wrong RSI + right state).
+        var vis = prev is { FromNetwork: true } ? prev : new SpriteVisual();
+        vis.FromNetwork = true;
+        if (prev is { FromNetwork: false })
+        {
+            // Drop prototype-guessed path/layers before applying authoritative state.
+            vis.Path = null;
+            vis.State = null;
+            vis.Layers.Clear();
+        }
+
         var t = state.GetType();
 
-        foreach (var name in new[] { "RSI", "Rsi", "RsiPath", "SpritePath", "BaseRSI", "Path" })
+        foreach (var name in new[] { "RSI", "Rsi", "RsiPath", "SpritePath", "BaseRSI", "Path", "ActualRsi" })
         {
             var p = t.GetProperty(name)?.GetValue(state)
                     ?? t.GetField(name)?.GetValue(state);
-            if (p is null)
-                continue;
-            var s = p.ToString();
-            if (!string.IsNullOrWhiteSpace(s) && s!.Contains('/'))
+            var path = NormalizeRsiPath(p);
+            if (path is not null)
             {
-                path = s.Replace('\\', '/');
-                if (path.StartsWith("/Textures/", StringComparison.OrdinalIgnoreCase))
-                    path = path["/Textures/".Length..];
-                else if (path.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
-                    path = path["Textures/".Length..];
+                vis.Path = path;
                 break;
             }
         }
 
-        // Layers collection — first RSI-like string.
-        if (path is null)
+        foreach (var name in new[] { "Layer", "State", "RsiState", "BaseRsiState", "ActualRsiState" })
         {
-            var layers = t.GetProperty("Layers")?.GetValue(state)
-                         ?? t.GetField("Layers")?.GetValue(state);
-            if (layers is System.Collections.IEnumerable en)
+            var p = t.GetProperty(name)?.GetValue(state)
+                    ?? t.GetField(name)?.GetValue(state);
+            if (p is string s && !string.IsNullOrWhiteSpace(s))
             {
-                foreach (var layer in en)
+                vis.State = s;
+                break;
+            }
+
+            var asStr = p?.ToString();
+            if (!string.IsNullOrWhiteSpace(asStr) && asStr is not "null")
+            {
+                if (asStr.Length < 64 && !asStr.Contains('.'))
                 {
-                    if (layer is null) continue;
-                    var lt = layer.GetType();
-                    foreach (var name in new[] { "RsiPath", "RSI", "Path", "ActualRsi" })
-                    {
-                        var v = lt.GetProperty(name)?.GetValue(layer)
-                                ?? lt.GetField(name)?.GetValue(layer);
-                        var s = v?.ToString();
-                        if (!string.IsNullOrWhiteSpace(s) && s!.Contains('/'))
-                        {
-                            path = s.Replace('\\', '/');
-                            break;
-                        }
-                    }
-                    if (path is not null)
-                        break;
+                    vis.State = asStr;
+                    break;
                 }
             }
         }
 
+        foreach (var name in new[] { "DrawDepth", "DrawDepthSet" })
+        {
+            var p = t.GetProperty(name)?.GetValue(state)
+                    ?? t.GetField(name)?.GetValue(state);
+            if (p is null) continue;
+            if (p is int di) vis.DrawDepth = di;
+            else if (p is Enum)
+                vis.DrawDepth = Convert.ToInt32(p);
+            else if (int.TryParse(p.ToString(), out var parsed))
+                vis.DrawDepth = parsed;
+        }
+
+        var noRot = t.GetProperty("NoRotation")?.GetValue(state)
+                    ?? t.GetField("NoRotation")?.GetValue(state)
+                    ?? t.GetProperty("NoRot")?.GetValue(state)
+                    ?? t.GetField("NoRot")?.GetValue(state);
+        if (noRot is bool nr)
+            vis.NoRotation = nr;
+
+        byte r = vis.R, g = vis.G, b = vis.B;
         foreach (var name in new[] { "Color", "Modulate" })
         {
             var c = t.GetProperty(name)?.GetValue(state)
                     ?? t.GetField(name)?.GetValue(state);
             if (c is null) continue;
-            var ct = c.GetType();
-            try
+            if (TryReadColor(c, out r, out g, out b))
             {
-                float rf = 1, gf = 1, bf = 1;
-                if (ct.GetProperty("R")?.GetValue(c) is float fr) rf = fr;
-                else if (ct.GetField("R")?.GetValue(c) is float fr2) rf = fr2;
-                else if (ct.GetProperty("R")?.GetValue(c) is byte br) rf = br / 255f;
-                if (ct.GetProperty("G")?.GetValue(c) is float fg) gf = fg;
-                else if (ct.GetField("G")?.GetValue(c) is float fg2) gf = fg2;
-                else if (ct.GetProperty("G")?.GetValue(c) is byte bg) gf = bg / 255f;
-                if (ct.GetProperty("B")?.GetValue(c) is float fb) bf = fb;
-                else if (ct.GetField("B")?.GetValue(c) is float fb2) bf = fb2;
-                else if (ct.GetProperty("B")?.GetValue(c) is byte bb) bf = bb / 255f;
-                r = (byte)Math.Clamp((int)(rf * 255), 0, 255);
-                g = (byte)Math.Clamp((int)(gf * 255), 0, 255);
-                b = (byte)Math.Clamp((int)(bf * 255), 0, 255);
+                vis.R = r;
+                vis.G = g;
+                vis.B = b;
             }
-            catch { /* ignore */ }
             break;
         }
 
-        if (path is not null || r != 0 || g != 0 || b != 0)
-            sprites[ent] = (path, r, g, b);
+        var layers = t.GetProperty("Layers")?.GetValue(state)
+                     ?? t.GetField("Layers")?.GetValue(state);
+        if (layers is System.Collections.IEnumerable en)
+        {
+            vis.Layers.Clear();
+            var layerDepth = vis.DrawDepth;
+            foreach (var layer in en)
+            {
+                if (layer is null) continue;
+                var lt = layer.GetType();
+                string? path = null;
+                string? stName = null;
+                var visible = true;
+                byte lr = r, lg = g, lb = b;
+                var depth = layerDepth;
+                float ox = 0, oy = 0;
+
+                foreach (var name in new[] { "RsiPath", "RSI", "Path", "ActualRsi", "Rsi", "Sprite" })
+                {
+                    var v = lt.GetProperty(name)?.GetValue(layer)
+                            ?? lt.GetField(name)?.GetValue(layer);
+                    path = NormalizeRsiPath(v);
+                    if (path is not null) break;
+                }
+
+                foreach (var name in new[] { "State", "RsiState", "ActualState", "AnimationState" })
+                {
+                    var v = lt.GetProperty(name)?.GetValue(layer)
+                            ?? lt.GetField(name)?.GetValue(layer);
+                    if (v is null) continue;
+                    var s = v as string ?? v.ToString();
+                    if (!string.IsNullOrWhiteSpace(s) && s is not "null" && s.Length < 64)
+                    {
+                        stName = s;
+                        break;
+                    }
+                }
+
+                var visProp = lt.GetProperty("Visible")?.GetValue(layer)
+                              ?? lt.GetField("Visible")?.GetValue(layer);
+                if (visProp is bool vb) visible = vb;
+
+                foreach (var name in new[] { "Color", "ColorOverride" })
+                {
+                    var c = lt.GetProperty(name)?.GetValue(layer)
+                            ?? lt.GetField(name)?.GetValue(layer);
+                    if (c is not null && TryReadColor(c, out lr, out lg, out lb))
+                        break;
+                }
+
+                var off = lt.GetProperty("Offset")?.GetValue(layer)
+                          ?? lt.GetField("Offset")?.GetValue(layer);
+                if (off is Vector2 ov)
+                {
+                    ox = ov.X;
+                    oy = ov.Y;
+                }
+
+                // Layer without own RSI must use THIS component's base RSI (network), never a stale proto guess.
+                path ??= vis.Path;
+                stName ??= vis.State;
+                if (path is null && stName is null)
+                {
+                    layerDepth++;
+                    continue;
+                }
+
+                vis.Layers.Add(new LayerVis(path, stName, depth, visible, lr, lg, lb, ox, oy));
+                if (vis.Path is null && path is not null)
+                    vis.Path = path;
+                if (vis.State is null && stName is not null)
+                    vis.State = stName;
+                layerDepth++;
+            }
+        }
+
+        if (vis.Path is not null || vis.Layers.Count > 0 || vis.R != 0 || vis.G != 0 || vis.B != 0)
+            sprites[ent] = vis;
+    }
+
+    static bool TryReadColor(object c, out byte r, out byte g, out byte b)
+    {
+        r = g = b = 0;
+        try
+        {
+            var ct = c.GetType();
+            float rf = 1, gf = 1, bf = 1;
+            if (ct.GetProperty("R")?.GetValue(c) is float fr) rf = fr;
+            else if (ct.GetField("R")?.GetValue(c) is float fr2) rf = fr2;
+            else if (ct.GetProperty("R")?.GetValue(c) is byte br) rf = br / 255f;
+            if (ct.GetProperty("G")?.GetValue(c) is float fg) gf = fg;
+            else if (ct.GetField("G")?.GetValue(c) is float fg2) gf = fg2;
+            else if (ct.GetProperty("G")?.GetValue(c) is byte bg) gf = bg / 255f;
+            if (ct.GetProperty("B")?.GetValue(c) is float fb) bf = fb;
+            else if (ct.GetField("B")?.GetValue(c) is float fb2) bf = fb2;
+            else if (ct.GetProperty("B")?.GetValue(c) is byte bb) bf = bb / 255f;
+            r = (byte)Math.Clamp((int)(rf * 255), 0, 255);
+            g = (byte)Math.Clamp((int)(gf * 255), 0, 255);
+            b = (byte)Math.Clamp((int)(bf * 255), 0, 255);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static string? NormalizeRsiPath(object? value)
+    {
+        if (value is null)
+            return null;
+
+        // ResourcePath / ResPath often expose CanonString / ToString.
+        string? s = null;
+        var vt = value.GetType();
+        s = vt.GetProperty("CanonString")?.GetValue(value)?.ToString()
+            ?? vt.GetProperty("Path")?.GetValue(value)?.ToString()
+            ?? value.ToString();
+        if (string.IsNullOrWhiteSpace(s))
+            return null;
+
+        var path = s.Replace('\\', '/').Trim();
+        if (path.StartsWith("/Textures/", StringComparison.OrdinalIgnoreCase))
+            path = path["/Textures/".Length..];
+        else if (path.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
+            path = path["Textures/".Length..];
+        else if (path.StartsWith('/'))
+            path = path.TrimStart('/');
+
+        if (!path.Contains('/') && !path.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
+            return null;
+        return path;
+    }
+
+    public static int GuessDepth(string? rsiPath)
+    {
+        if (string.IsNullOrWhiteSpace(rsiPath)) return 40;
+        var p = rsiPath.Replace('\\', '/');
+        if (p.Contains("Tiles/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("/Floor", StringComparison.OrdinalIgnoreCase))
+            return 0;
+        if (p.Contains("Wall", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("grille", StringComparison.OrdinalIgnoreCase))
+            return 20;
+        if (p.Contains("cable", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("wire", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Power/", StringComparison.OrdinalIgnoreCase))
+            return 30;
+        if (p.Contains("pipe", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Atmos", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("disposal", StringComparison.OrdinalIgnoreCase))
+            return 35;
+        if (p.Contains("Door", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("airlock", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("windoor", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("shutter", StringComparison.OrdinalIgnoreCase))
+            return 45;
+        if (p.Contains("Mobs/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Species/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("ghost", StringComparison.OrdinalIgnoreCase))
+            return 70;
+        if (p.Contains("Clothing/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Objects/", StringComparison.OrdinalIgnoreCase))
+            return 55;
+        return 50;
     }
 }

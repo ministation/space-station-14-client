@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace Port.Content;
 
 /// <summary>
-/// Minimal RSI folder reader (meta.json + PNG). Spec-compatible with Robust RSI, no Clyde.
+/// Minimal RSI reader: exploded .rsi/ folders OR packed .rsic (PNG atlas + embedded meta).
 /// </summary>
 public static class RsiMeta
 {
@@ -51,9 +51,15 @@ public static class RsiMeta
     };
 
     /// <summary>
-    /// Resolve an RSI path like <c>Structures/Walls/walls.rsi</c> under a content files root.
+    /// Resolve RSI preview source under content root.
+    /// Prefers packed <c>.rsic</c> (MinStation/ACZ), then exploded <c>.rsi/</c> folders.
     /// </summary>
     public static string? FindRsiDirectory(string contentFilesRoot, string rsiRelative)
+        => FindRsiSource(contentFilesRoot, rsiRelative)?.Path;
+
+    public readonly record struct RsiSource(string Path, bool IsRsic);
+
+    public static RsiSource? FindRsiSource(string contentFilesRoot, string rsiRelative)
     {
         if (string.IsNullOrWhiteSpace(contentFilesRoot) || string.IsNullOrWhiteSpace(rsiRelative))
             return null;
@@ -61,19 +67,36 @@ public static class RsiMeta
         var rel = rsiRelative.Replace('\\', '/').TrimStart('/');
         if (rel.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
             rel = rel["Textures/".Length..];
-        if (!rel.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
-            rel += ".rsi";
 
-        var candidates = new[]
+        var noExt = rel;
+        if (noExt.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
+            noExt = noExt[..^5];
+        else if (noExt.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
+            noExt = noExt[..^4];
+
+        var rsicCandidates = new[]
         {
-            Path.Combine(contentFilesRoot, "Textures", rel.Replace('/', Path.DirectorySeparatorChar)),
-            Path.Combine(contentFilesRoot, rel.Replace('/', Path.DirectorySeparatorChar)),
+            Path.Combine(contentFilesRoot, "Textures", noExt.Replace('/', Path.DirectorySeparatorChar) + ".rsic"),
+            Path.Combine(contentFilesRoot, "Resources", "Textures", noExt.Replace('/', Path.DirectorySeparatorChar) + ".rsic"),
+            Path.Combine(contentFilesRoot, noExt.Replace('/', Path.DirectorySeparatorChar) + ".rsic"),
         };
+        foreach (var c in rsicCandidates)
+        {
+            if (File.Exists(c))
+                return new RsiSource(c, IsRsic: true);
+        }
 
-        foreach (var c in candidates)
+        var dirRel = noExt + ".rsi";
+        var dirCandidates = new[]
+        {
+            Path.Combine(contentFilesRoot, "Textures", dirRel.Replace('/', Path.DirectorySeparatorChar)),
+            Path.Combine(contentFilesRoot, "Resources", "Textures", dirRel.Replace('/', Path.DirectorySeparatorChar)),
+            Path.Combine(contentFilesRoot, dirRel.Replace('/', Path.DirectorySeparatorChar)),
+        };
+        foreach (var c in dirCandidates)
         {
             if (Directory.Exists(c) && File.Exists(Path.Combine(c, "meta.json")))
-                return c;
+                return new RsiSource(c, IsRsic: false);
         }
 
         return null;
@@ -95,12 +118,20 @@ public static class RsiMeta
         }
     }
 
-    /// <summary>
-    /// Pick the first state's PNG (state name.png or sheet). Good enough for ghost preview.
-    /// </summary>
-    public static FrameInfo? TryGetPreviewFrame(string rsiDirectory)
+    /// <summary>Pick a preview frame from .rsic file or exploded .rsi folder.</summary>
+    public static FrameInfo? TryGetPreviewFrame(string rsiPathOrDirectory)
     {
-        var doc = TryLoad(rsiDirectory);
+        if (File.Exists(rsiPathOrDirectory)
+            && rsiPathOrDirectory.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
+        {
+            var size = PngTextChunk.TryReadRsicFrameSize(rsiPathOrDirectory) ?? (32, 32);
+            return new FrameInfo(rsiPathOrDirectory, size.W, size.H, 0);
+        }
+
+        if (!Directory.Exists(rsiPathOrDirectory))
+            return null;
+
+        var doc = TryLoad(rsiPathOrDirectory);
         if (doc is null)
             return null;
 
@@ -111,16 +142,17 @@ public static class RsiMeta
         if (state is null)
             return null;
 
-        var png = Path.Combine(rsiDirectory, state.Name + ".png");
+        var png = Path.Combine(rsiPathOrDirectory, state.Name + ".png");
         if (!File.Exists(png))
         {
-            // Some RSIs use a single sheet named after the RSI folder.
-            var sheet = Path.Combine(rsiDirectory, Path.GetFileNameWithoutExtension(rsiDirectory.TrimEnd('/', '\\')) + ".png");
+            var sheet = Path.Combine(
+                rsiPathOrDirectory,
+                Path.GetFileNameWithoutExtension(rsiPathOrDirectory.TrimEnd('/', '\\')) + ".png");
             if (File.Exists(sheet))
                 png = sheet;
             else
             {
-                var any = Directory.GetFiles(rsiDirectory, "*.png").FirstOrDefault();
+                var any = Directory.GetFiles(rsiPathOrDirectory, "*.png").FirstOrDefault();
                 if (any is null)
                     return null;
                 png = any;
@@ -128,5 +160,35 @@ public static class RsiMeta
         }
 
         return new FrameInfo(png, fw, fh, 0);
+    }
+
+    /// <summary>
+    /// Resolve preview frame; if missing, request ACZ on-demand download for .rsic candidates.
+    /// </summary>
+    public static FrameInfo? TryGetPreviewFrameOrFetch(
+        string contentFilesRoot,
+        string rsiRelative,
+        AczOnDemandFetcher? fetcher,
+        Action<string>? log = null)
+    {
+        var src = FindRsiSource(contentFilesRoot, rsiRelative);
+        if (src is { } s)
+            return TryGetPreviewFrame(s.Path);
+
+        if (fetcher is null || !fetcher.IsReady)
+            return null;
+
+        foreach (var candidate in AczOnDemandFetcher.CandidateTexturePaths(rsiRelative))
+        {
+            var local = fetcher.EnsureFile(candidate, log);
+            if (local is null)
+                continue;
+            var frame = TryGetPreviewFrame(local);
+            if (frame is not null)
+                return frame;
+            // meta.json alone — wait for folder pngs; ignore
+        }
+
+        return null;
     }
 }

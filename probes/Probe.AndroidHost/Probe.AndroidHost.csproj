@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>org.ss14.mobilehub</ApplicationId>
-    <ApplicationVersion>204</ApplicationVersion>
-    <ApplicationDisplayVersion>0.2.4</ApplicationDisplayVersion>
+    <ApplicationVersion>228</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.28</ApplicationDisplayVersion>
     <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
     <!-- AOT + aggressive trim strips NetSerializable types → serializer bootstrap fails. -->
@@ -15,11 +15,13 @@
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
   </PropertyGroup>
   <ItemGroup>
-    <TrimmerRootAssembly Include="Robust.Shared" />
-    <TrimmerRootAssembly Include="Robust.Shared.Maths" />
-    <TrimmerRootAssembly Include="Port.Net" />
-    <TrimmerRootAssembly Include="Port.Content" />
-    <TrimmerRootAssembly Include="Robust.NetSerializer" />
+    <TrimmerRootAssembly Include="Robust.Shared" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Shared.Maths" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Client" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Server" RootMode="All" />
+    <TrimmerRootAssembly Include="Port.Net" RootMode="All" />
+    <TrimmerRootAssembly Include="Port.Content" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.NetSerializer" RootMode="All" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Probe.SharedOnAndroid\Probe.SharedOnAndroid.csproj" />
@@ -29,6 +31,7 @@
   </ItemGroup>
 
   <!-- Ship libsodium for CryptoBox / AEAD (NuGet android RIDs + explicit ABI pack). -->
+  <!-- Ship libzstd for SharpZstd / mapped strings / MsgState (from com.github.luben:zstd-jni 1.5.6-9). -->
   <ItemGroup>
     <AndroidNativeLibrary Include="lib\arm64-v8a\libsodium.so">
       <Abi>arm64-v8a</Abi>
@@ -40,6 +43,18 @@
       <Abi>armeabi-v7a</Abi>
     </AndroidNativeLibrary>
     <AndroidNativeLibrary Include="lib\x86\libsodium.so">
+      <Abi>x86</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libzstd.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86_64\libzstd.so">
+      <Abi>x86_64</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\armeabi-v7a\libzstd.so">
+      <Abi>armeabi-v7a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86\libzstd.so">
       <Abi>x86</Abi>
     </AndroidNativeLibrary>
   </ItemGroup>

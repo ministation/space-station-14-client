@@ -34,7 +34,7 @@ public static class ContentCapabilityReport
             {
                 try
                 {
-                    rsi = Directory.EnumerateDirectories(tex, "*.rsi", SearchOption.AllDirectories)
+                    rsi = Directory.EnumerateFiles(tex, "*.rsic", SearchOption.AllDirectories)
                         .Take(5000).Count();
                 }
                 catch { /* ignore */ }
@@ -57,8 +57,8 @@ public static class ContentCapabilityReport
             ? $"YAML на диске: {protoYaml} (движок НЕ грузит)"
             : "YAML: нет на диске / ещё качается";
         var spriteLine = rsi > 0 || textures
-            ? $"RSI≈{rsi} (preview GLES{(worldEntities > 0 ? ", world OK" : "")})"
-            : "спрайты: нет Textures (нужен full pack)";
+            ? $".rsic≈{rsi} (GLES on-demand)"
+            : "спрайты: .rsic ещё не скачаны (on-demand при Observe)";
         var mapLine = maps > 0
             ? $"Maps файлов: {maps} (карта = GameState PVS, не .yml map)"
             : "карта: только из MsgState (нет Maps/)";
