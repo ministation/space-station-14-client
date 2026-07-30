@@ -17,6 +17,8 @@ public sealed class GlesClearSurfaceView : GLSurfaceView
     {
         Holder?.SetFormat(global::Android.Graphics.Format.Opaque);
         SetEGLContextClientVersion(2);
+        // Prefer keeping GL objects across pause; renderer still clears on OnSurfaceCreated.
+        PreserveEGLContextOnPause = true;
         Renderer = new GlesClearRenderer();
         SetRenderer(Renderer);
         RenderMode = Rendermode.Continuously;
@@ -26,6 +28,7 @@ public sealed class GlesClearSurfaceView : GLSurfaceView
     {
         Holder?.SetFormat(global::Android.Graphics.Format.Opaque);
         SetEGLContextClientVersion(2);
+        PreserveEGLContextOnPause = true;
         Renderer = new GlesClearRenderer();
         SetRenderer(Renderer);
         RenderMode = Rendermode.Continuously;

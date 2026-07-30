@@ -51,7 +51,8 @@ public readonly record struct WorldTileDraw(
     byte G,
     byte B,
     string? RsiPath = null,
-    string? StateName = null);
+    string? StateName = null,
+    float Rotation = 0f);
 
 public static class GameStateDecoder
 {

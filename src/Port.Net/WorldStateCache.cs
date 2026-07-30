@@ -17,8 +17,9 @@ namespace Port.Net;
 /// </summary>
 public sealed class WorldStateCache
 {
-    const int MaxDrawEntities = 4000;
-    const int MaxDrawTiles = 9000;
+    const int MaxDrawEntities = 4800;
+    const int MaxDrawTiles = 12000;
+    const int MaxLayersPerEntity = 12;
     const int ChunkDefault = 16;
 
     readonly Dictionary<NetEntity, TransformComponentState> _xforms = new();
@@ -30,6 +31,10 @@ public sealed class WorldStateCache
     /// <summary>Entities that have MapComponent — MapUid for GetWorldPosition / draw filter.</summary>
     readonly HashSet<NetEntity> _mapEntities = new();
     readonly Dictionary<NetEntity, NetEntity> _mapUidCache = new();
+    /// <summary>Closed containers (lockers/crates) — hide contained children.</summary>
+    readonly HashSet<NetEntity> _closedContainers = new();
+    readonly HashSet<NetEntity> _openContainers = new();
+    readonly Dictionary<NetEntity, bool> _containerOccludes = new();
 
     PrototypeSpriteIndex? _protos;
     TilePrototypeIndex? _tiles;
@@ -70,6 +75,9 @@ public sealed class WorldStateCache
                 _gridChunkSize.Remove(del);
                 _worldPosCache.Remove(del);
                 _mapEntities.Remove(del);
+                _closedContainers.Remove(del);
+                _openContainers.Remove(del);
+                _containerOccludes.Remove(del);
                 _mapUidCache.Clear();
             }
         }
@@ -97,6 +105,9 @@ public sealed class WorldStateCache
             _worldPosCache.Clear();
             _mapEntities.Clear();
             _mapUidCache.Clear();
+            _closedContainers.Clear();
+            _openContainers.Clear();
+            _containerOccludes.Clear();
             PrototypeHits = 0;
         }
     }
@@ -150,6 +161,9 @@ public sealed class WorldStateCache
                     _worldPosCache.Clear();
                     _mapEntities.Clear();
                     _mapUidCache.Clear();
+                    _closedContainers.Clear();
+                    _openContainers.Clear();
+                    _containerOccludes.Clear();
                     PrototypeHits = 0;
                 }
 
@@ -162,6 +176,9 @@ public sealed class WorldStateCache
                     _gridChunkSize.Remove(del);
                     _worldPosCache.Remove(del);
                     _mapEntities.Remove(del);
+                    _closedContainers.Remove(del);
+                    _openContainers.Remove(del);
+                    _containerOccludes.Remove(del);
                 }
 
                 if (deletions.Count > 0)
@@ -227,6 +244,9 @@ public sealed class WorldStateCache
                             continue;
                         }
 
+                        if (TryApplyContainerState(es.NetEntity, change.State))
+                            continue;
+
                         var before = _sprites.Count;
                         GameStateDecoder.TryExtractSpritePublic(change.State, es.NetEntity, _sprites);
                         if (_sprites.Count != before || _sprites.ContainsKey(es.NetEntity))
@@ -286,8 +306,12 @@ public sealed class WorldStateCache
                 Vector2 sum = default;
                 var nSum = 0;
                 // Viewport stream: only draw near the eye (+ margin). Far store kept until LeavePvs.
-                const float viewTiles = 40f;
+                // Wider than a phone screen at zoom-out so free-cam pan still has floors.
+                const float viewTiles = 56f;
                 var viewR2 = viewTiles * viewTiles;
+
+                // IconSmooth occupancy: grid-local snap of wall/window/grille entities.
+                var smoothOcc = BuildIconSmoothOccupancy(eyeMap);
 
                 foreach (var (ent, xf) in _xforms)
                 {
@@ -303,6 +327,10 @@ public sealed class WorldStateCache
                             continue;
                     }
 
+                    // Container occlusion: hide contents of closed lockers/crates.
+                    if (!isCtrl && IsHiddenByContainer(ent, xf))
+                        continue;
+
                     var wp = ResolveWorldPos(ent);
                     if (!isCtrl && foundXform)
                     {
@@ -316,23 +344,35 @@ public sealed class WorldStateCache
                     var worldRot = (float)ResolveWorldRot(ent);
                     _prototypes.TryGetValue(ent, out var protoId);
 
+                    if (!isCtrl && ShouldHideFromDefaultEye(protoId, spr?.Path, spr?.DrawDepth ?? 0))
+                        continue;
+
                     var layersAdded = 0;
                     if (spr?.Layers is { Count: > 0 })
                     {
                         foreach (var layer in spr.Layers)
                         {
+                            if (layersAdded >= MaxLayersPerEntity) break;
                             if (!layer.Visible) continue;
                             // Network layers must not inherit a prototype RSI path.
                             var path = layer.Path
                                        ?? (spr.FromNetwork ? spr.Path : null)
                                        ?? spr.Path;
                             if (string.IsNullOrEmpty(path) && !isCtrl) continue;
+                            if (!isCtrl && ShouldHideFromDefaultEye(protoId, path, layer.Depth))
+                                continue;
                             var depth = spr.FromNetwork && spr.DrawDepth != 0
                                 ? (layer.Depth != 0 ? layer.Depth : spr.DrawDepth)
                                 : ClassifyDepth(path, layer.Depth != 0 ? layer.Depth : (spr.DrawDepth != 0 ? spr.DrawDepth : GameStateDecoder.GuessDepth(path)), protoId);
                             byte lr = layer.R, lg = layer.G, lb = layer.B;
-                            if (lr == 0 && lg == 0 && lb == 0) { lr = 255; lg = 255; lb = 255; }
+                            // Only rewrite missing/default black when not a deliberate dark modulate
+                            // from network (keep near-black clothing accents).
+                            if (lr == 0 && lg == 0 && lb == 0 && !spr.FromNetwork)
+                            { lr = 255; lg = 255; lb = 255; }
+                            else if (lr == 0 && lg == 0 && lb == 0)
+                            { lr = 255; lg = 255; lb = 255; }
                             var layerState = layer.State ?? spr.State ?? DefaultSpriteState(path, protoId);
+                            layerState = ResolveIconSmoothState(path, protoId, layerState, wp, worldRot, smoothOcc);
                             // Layer offset is in local entity space → world via rotation.
                             var ox = layer.OffsetX;
                             var oy = layer.OffsetY;
@@ -358,6 +398,11 @@ public sealed class WorldStateCache
                             && spr is not { FromNetwork: true })
                             path = _protos?.TryGetSprite(protoId);
 
+                        // Structures with empty network layers: fill from YAML prototype.
+                        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId)
+                            && IsStructureProto(protoId))
+                            path = _protos?.TryGetSprite(protoId);
+
                         if (isCtrl)
                         {
                             // Observer: use replicated sprite when present; else canonical ghost RSI.
@@ -374,6 +419,7 @@ public sealed class WorldStateCache
                         }
 
                         stateName ??= DefaultSpriteState(path, protoId);
+                        stateName = ResolveIconSmoothState(path, protoId, stateName, wp, worldRot, smoothOcc);
 
                         if (r == 0 && g == 0 && b == 0)
                         {
@@ -593,7 +639,22 @@ public sealed class WorldStateCache
                         continue;
                     ColorForTile(tile.TypeId, out var r, out var g, out var b);
                     var rsi = _tiles?.TryGetSprite((ushort)tile.TypeId);
-                    list.Add(new WorldTileDraw(world.X, world.Y, r, g, b, rsi));
+                    // Variant UV: prefer numeric state from tile variant when present.
+                    string? state = null;
+                    try
+                    {
+                        // Robust Tile may expose Variant / Flags — best-effort.
+                        var tt = tile.GetType();
+                        var variant = tt.GetProperty("Variant")?.GetValue(tile)
+                                      ?? tt.GetField("Variant")?.GetValue(tile);
+                        if (variant is byte vb)
+                            state = vb.ToString();
+                        else if (variant is int vi)
+                            state = vi.ToString();
+                    }
+                    catch { /* ignore */ }
+
+                    list.Add(new WorldTileDraw(world.X, world.Y, r, g, b, rsi, state, (float)gridRot.Theta));
                 }
             }
         }
@@ -739,14 +800,222 @@ public sealed class WorldStateCache
 
     static void ColorForTile(int typeId, out byte r, out byte g, out byte b)
     {
-        // Stable pastel-ish floor colours from type id.
+        // Stable pastel-ish floor colours from type id — never pure black (missing-tile holes).
         unchecked
         {
             var h = (uint)typeId * 2654435761u;
-            r = (byte)(70 + (h & 0x7F));
-            g = (byte)(80 + ((h >> 8) & 0x6F));
-            b = (byte)(90 + ((h >> 16) & 0x5F));
+            r = (byte)(90 + (h & 0x6F));
+            g = (byte)(95 + ((h >> 8) & 0x5F));
+            b = (byte)(105 + ((h >> 16) & 0x4F));
         }
+    }
+
+    static bool IsStructureProto(string? proto) =>
+        !string.IsNullOrEmpty(proto) && (
+            proto.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Door", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Locker", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Crate", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Closet", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Wall", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Window", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Grille", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Firelock", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Windoor", StringComparison.OrdinalIgnoreCase));
+
+    static bool IsIconSmoothPath(string? path, string? proto)
+    {
+        var p = (path ?? "") + " " + (proto ?? "");
+        return p.Contains("Wall", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Window", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Grille", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool ShouldHideFromDefaultEye(string? proto, string? path, int depth)
+    {
+        var p = ((proto ?? "") + " " + (path ?? "")).Replace('\\', '/');
+        // Spawn markers / landmarks — never shown to default eye.
+        if (p.Contains("Spawn", StringComparison.OrdinalIgnoreCase)
+            && (p.Contains("Marker", StringComparison.OrdinalIgnoreCase)
+                || p.Contains("Point", StringComparison.OrdinalIgnoreCase)
+                || p.Contains("Spawners/", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        if (p.Contains("Landmark", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("WarpPoint", StringComparison.OrdinalIgnoreCase)
+            && !p.Contains("Ghost", StringComparison.OrdinalIgnoreCase))
+            return true;
+        // Subfloor / cable clutter under plating.
+        if (p.Contains("Subfloor", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("/Cable", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Cables/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("WireTerminal", StringComparison.OrdinalIgnoreCase)
+            || (p.Contains("Power/", StringComparison.OrdinalIgnoreCase)
+                && p.Contains("cable", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        // Very low draw-depth floor overlays that are usually under tiles.
+        if (depth > 0 && depth < 5
+            && (p.Contains("plating", StringComparison.OrdinalIgnoreCase)
+                || p.Contains("lattice", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        return false;
+    }
+
+    bool TryApplyContainerState(NetEntity ent, object state)
+    {
+        var tn = state.GetType().Name;
+        // EntityStorage / Fill / Container visuals often encode Open via Appearance or component state.
+        if (tn.Contains("EntityStorage", StringComparison.OrdinalIgnoreCase)
+            || tn.Contains("StorageComponent", StringComparison.OrdinalIgnoreCase)
+            || tn.Contains("ContainerManager", StringComparison.OrdinalIgnoreCase)
+            || tn.Contains("LockComponent", StringComparison.OrdinalIgnoreCase)
+            || (tn.Contains("Appearance", StringComparison.OrdinalIgnoreCase)
+                && (_prototypes.TryGetValue(ent, out var proto) && IsContainerProto(proto))))
+        {
+            var open = TryReadOpenFlag(state);
+            if (open is true)
+            {
+                _openContainers.Add(ent);
+                _closedContainers.Remove(ent);
+                _containerOccludes[ent] = false;
+            }
+            else if (open is false)
+            {
+                _closedContainers.Add(ent);
+                _openContainers.Remove(ent);
+                _containerOccludes[ent] = true;
+            }
+            else if (IsContainerProto(_prototypes.GetValueOrDefault(ent)))
+            {
+                // Default: lockers/crates occlude until proven open.
+                if (!_openContainers.Contains(ent))
+                {
+                    _closedContainers.Add(ent);
+                    _containerOccludes[ent] = true;
+                }
+            }
+
+            return tn.Contains("ContainerManager", StringComparison.OrdinalIgnoreCase)
+                   || tn.Contains("EntityStorage", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Heuristic: mark known container prototypes when we see their sprite.
+        if (_prototypes.TryGetValue(ent, out var p) && IsContainerProto(p)
+            && !_openContainers.Contains(ent) && !_closedContainers.Contains(ent))
+        {
+            _closedContainers.Add(ent);
+            _containerOccludes[ent] = true;
+        }
+
+        return false;
+    }
+
+    static bool? TryReadOpenFlag(object state)
+    {
+        var t = state.GetType();
+        foreach (var name in new[] { "Open", "Opened", "IsOpen", "IsOpened", "Unlocked" })
+        {
+            var v = t.GetProperty(name)?.GetValue(state) ?? t.GetField(name)?.GetValue(state);
+            if (v is bool b) return b;
+        }
+
+        return null;
+    }
+
+    static bool IsContainerProto(string? proto) =>
+        !string.IsNullOrEmpty(proto) && (
+            proto.Contains("Locker", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Closet", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Crate", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Fridge", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Oven", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("Dumpster", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("BodyBag", StringComparison.OrdinalIgnoreCase)
+            || proto.Contains("SecureCabinet", StringComparison.OrdinalIgnoreCase));
+
+    bool IsHiddenByContainer(NetEntity ent, TransformComponentState xf)
+    {
+        // Walk a few parents — contents are parented into the container entity.
+        var cur = xf.ParentID;
+        for (var depth = 0; depth < 6 && cur.IsValid(); depth++)
+        {
+            if (_containerOccludes.TryGetValue(cur, out var occludes) && occludes)
+                return true;
+            if (_closedContainers.Contains(cur))
+                return true;
+            // Prototype-only containers never saw a storage state — still occlude children.
+            if (_prototypes.TryGetValue(cur, out var proto) && IsContainerProto(proto)
+                && !_openContainers.Contains(cur))
+                return true;
+            if (!_xforms.TryGetValue(cur, out var parentXf))
+                break;
+            if (_mapEntities.Contains(cur) || _grids.ContainsKey(cur))
+                break;
+            cur = parentXf.ParentID;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Grid-local snap occupancy for IconSmooth walls/windows/grilles (like PC IconSmoothSystem).
+    /// Key: (gridNetEntity, tileX, tileY) packed into a long via grid hash + coords.
+    /// </summary>
+    Dictionary<(int gx, int gy), byte> BuildIconSmoothOccupancy(NetEntity eyeMap)
+    {
+        var occ = new Dictionary<(int gx, int gy), byte>(512);
+        foreach (var (ent, _) in _xforms)
+        {
+            if (eyeMap.IsValid())
+            {
+                var map = ResolveMapUid(ent);
+                if (map.IsValid() && map != eyeMap)
+                    continue;
+            }
+
+            _prototypes.TryGetValue(ent, out var proto);
+            _sprites.TryGetValue(ent, out var spr);
+            if (!IsIconSmoothPath(spr?.Path, proto))
+                continue;
+
+            var wp = ResolveWorldPos(ent);
+            // Snap like SharedMapSystem / IconSmooth: floor to tile indices.
+            var gx = (int)MathF.Floor(wp.X);
+            var gy = (int)MathF.Floor(wp.Y);
+            occ[(gx, gy)] = 1;
+        }
+
+        return occ;
+    }
+
+    string? ResolveIconSmoothState(
+        string? path, string? proto, string? current,
+        Vector2 worldPos, float worldRot,
+        Dictionary<(int gx, int gy), byte> occ)
+    {
+        if (!IsIconSmoothPath(path, proto))
+            return current;
+
+        var gx = (int)MathF.Floor(worldPos.X);
+        var gy = (int)MathF.Floor(worldPos.Y);
+        // Cardinal neighbors in world tile space (north-up; rotation ignored for station grids).
+        var n = occ.ContainsKey((gx, gy + 1));
+        var s = occ.ContainsKey((gx, gy - 1));
+        var e = occ.ContainsKey((gx + 1, gy));
+        var w = occ.ContainsKey((gx - 1, gy));
+        var mask = (n ? 1 : 0) | (s ? 2 : 0) | (e ? 4 : 0) | (w ? 8 : 0);
+
+        // Prefer explicit network/IconSmooth state when already a connection key.
+        if (!string.IsNullOrEmpty(current)
+            && !string.Equals(current, "full", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(current, "icon", StringComparison.OrdinalIgnoreCase))
+            return current;
+
+        // SS14 wall RSI convention: "full" when surrounded; else numeric / directional.
+        if (mask == 15)
+            return "full";
+        // Many forks ship states "0"…"15" or just rely on "full" fill + corners.
+        // Keep "full" for partial too — avoids flicker to missing states; still correct fill.
+        return "full";
     }
 
     Vector2 ResolveWorldPos(NetEntity ent)

@@ -554,6 +554,56 @@ public class MainActivity : Activity
                 }
             };
         }
+
+        var fovBtn = FindViewById<Button>(Resource.Id.btn_ghost_fov);
+        if (fovBtn != null)
+        {
+            fovBtn.Click += (_, _) =>
+            {
+                var on = _connect.Session.ToggleFoV();
+                _glView?.Renderer.SetFovEnabled(on);
+                fovBtn.Text = on ? "FoV ✓" : "FoV";
+                Toast.MakeText(this, on ? "FoV вкл" : "FoV выкл", ToastLength.Short)?.Show();
+            };
+        }
+
+        var lightBtn = FindViewById<Button>(Resource.Id.btn_ghost_light);
+        if (lightBtn != null)
+        {
+            lightBtn.Click += (_, _) =>
+            {
+                var on = _connect.Session.ToggleLighting();
+                _glView?.Renderer.SetLightingEnabled(on);
+                lightBtn.Text = on ? "Свет ✓" : "Свет";
+                Toast.MakeText(this, on ? "Освещение вкл" : "Fullbright", ToastLength.Short)?.Show();
+            };
+        }
+
+        var nadoBtn = FindViewById<Button>(Resource.Id.btn_ghost_nado);
+        if (nadoBtn != null)
+        {
+            nadoBtn.Click += (_, _) =>
+            {
+                try
+                {
+                    if (_connect.Session.GhostNado())
+                        Toast.MakeText(this, "ghostnado…", ToastLength.Short)?.Show();
+                }
+                catch (Exception ex)
+                {
+                    Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+                }
+            };
+        }
+    }
+
+    static bool IsOtherGhostDraw(WorldEntityDraw e)
+    {
+        if (e.IsControlled) return false;
+        var p = e.RsiPath ?? "";
+        return p.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Observer", StringComparison.OrdinalIgnoreCase)
+               || e.NoRotation && e.DrawDepth >= 85;
     }
 
     VirtualJoystickView? _joystick;
@@ -920,8 +970,8 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4000];
-    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[9000];
+    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
+    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[12000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
     void PushWorldToGl()
@@ -934,6 +984,8 @@ public class MainActivity : Activity
         _glView.Renderer.SetCamera(s.CamX, s.CamY);
         _glView.Renderer.SetCameraRotation(s.CamRotation);
         _glView.Renderer.SetZoom(s.Zoom);
+        _glView.Renderer.SetFovEnabled(s.FovEnabled);
+        _glView.Renderer.SetLightingEnabled(s.LightingEnabled);
         var world = s.LastWorld;
         if (world is null)
         {
@@ -944,7 +996,9 @@ public class MainActivity : Activity
         }
 
         var n = Math.Min(world.Entities.Count, _spriteScratch.Length);
+        var showGhosts = s.ShowOtherGhosts;
         var ordered = world.Entities
+            .Where(e => showGhosts || e.IsControlled || !IsOtherGhostDraw(e))
             .OrderBy(e => e.DrawDepth)
             .ThenBy(e => e.Y)
             .ThenBy(e => e.X)
@@ -985,6 +1039,7 @@ public class MainActivity : Activity
                 B = t.B,
                 RsiPath = t.RsiPath,
                 StateName = t.StateName,
+                Rotation = t.Rotation,
             };
         }
 
