@@ -401,8 +401,6 @@ public class MainActivity : Activity
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_warps));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_follow));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_roles));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_fov));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_light));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_vis));
     }
 
@@ -572,16 +570,6 @@ public class MainActivity : Activity
             };
         }
 
-        FindViewById<Button>(Resource.Id.btn_ghost_fov)!.Click += (_, _) =>
-        {
-            _connect.Session.ToggleFov();
-            RefreshGhostActionButtons();
-        };
-        FindViewById<Button>(Resource.Id.btn_ghost_light)!.Click += (_, _) =>
-        {
-            _connect.Session.ToggleLighting();
-            RefreshGhostActionButtons();
-        };
         FindViewById<Button>(Resource.Id.btn_ghost_vis)!.Click += (_, _) =>
         {
             _connect.Session.ToggleOtherGhosts();
@@ -727,14 +715,6 @@ public class MainActivity : Activity
             roles.Alpha = s.CanTakeGhostRoles ? 1f : 0.45f;
             roles.Text = s.GhostRoleCount > 0 ? $"Роли ({s.GhostRoleCount})" : "Роли";
         }
-
-        var fov = FindViewById<Button>(Resource.Id.btn_ghost_fov);
-        if (fov != null)
-            fov.Text = s.DrawFov ? "FoV●" : "FoV○";
-
-        var light = FindViewById<Button>(Resource.Id.btn_ghost_light);
-        if (light != null)
-            light.Text = s.LightingModeLabel;
 
         var vis = FindViewById<Button>(Resource.Id.btn_ghost_vis);
         if (vis != null)
@@ -1236,8 +1216,8 @@ public class MainActivity : Activity
         _glView.Renderer.SetCamera(s.CamX, s.CamY);
         _glView.Renderer.SetCameraRotation(s.CamRotation);
         _glView.Renderer.SetZoom(s.Zoom);
-        _glView.Renderer.SetFullbright(!s.DrawLighting);
-        _glView.Renderer.SetDrawFov(s.DrawFov);
+        _glView.Renderer.SetFullbright(true);
+        _glView.Renderer.SetDrawFov(false);
         var world = s.LastWorld;
         if (world is null)
         {

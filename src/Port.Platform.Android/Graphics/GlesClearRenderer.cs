@@ -123,8 +123,12 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     readonly Dictionary<string, long> _texRetryAtFrame = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> _texEvictScratch = new();
 
-    /// <summary>Soft GPU budget — refuse loads when full instead of thrashing.</summary>
-    const int MaxTexCache = 768;
+    /// <summary>Soft GPU budget — large enough for full station view without hoarding all tiles forever.</summary>
+    const int MaxTexCache = 4096;
+    const int MaxPendingTex = 12000;
+    const int PendingTrimAt = 10000;
+    const int PendingKeepAfterTrim = 6000;
+    const int LoadsPerFrame = 256;
 
     // Clyde-style texture batching: one draw call per RSI bind.
     readonly List<TexQuad> _texQuads = new(2048);
@@ -426,9 +430,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             b = _b;
             pulse = _pulse;
             ghost = _ghostMode;
-            fovOn = _fovEnabled && _drawFov && !_fullbright;
-            lightOn = _lightingEnabled && !_fullbright;
-            ambient = _ambientLight;
+            // Temporarily force ghost rendering to fullbright without FoV/shadows.
+            fovOn = false;
+            lightOn = false;
+            ambient = 1f;
             camX = _camX;
             camY = _camY;
             camRot = _camRot;
@@ -617,7 +622,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 continue;
             }
 
-            // Keep a faint placeholder while RSI loads — skipping caused blink / "missing" ents.
+            // Avoid colored debug squares for missing RSI; better to hide until loaded.
+            if (!string.IsNullOrEmpty(e.RsiPath))
+                continue;
+
+            // Keep a faint placeholder only for color-only entities.
             if (vert + 6 > MaxVerts)
                 continue;
 
@@ -804,14 +813,15 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     void EnsureBatchBuffers()
     {
-        var posBytes = MaxBatchQuads * 12 * sizeof(float);
-        var colBytes = MaxBatchQuads * 24 * sizeof(float);
-        if (_batchPosBuf is null || _batchPosBuf.Capacity() < posBytes)
-            _batchPosBuf = ByteBuffer.AllocateDirect(posBytes).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
-        if (_batchUvBuf is null || _batchUvBuf.Capacity() < posBytes)
-            _batchUvBuf = ByteBuffer.AllocateDirect(posBytes).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
-        if (_batchColBuf is null || _batchColBuf.Capacity() < colBytes)
-            _batchColBuf = ByteBuffer.AllocateDirect(colBytes).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        // FloatBuffer.Capacity() returns float element count, not bytes.
+        var posFloats = MaxBatchQuads * 12;
+        var colFloats = MaxBatchQuads * 24;
+        if (_batchPosBuf is null || _batchPosBuf.Capacity() < posFloats)
+            _batchPosBuf = ByteBuffer.AllocateDirect(posFloats * sizeof(float)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        if (_batchUvBuf is null || _batchUvBuf.Capacity() < posFloats)
+            _batchUvBuf = ByteBuffer.AllocateDirect(posFloats * sizeof(float)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        if (_batchColBuf is null || _batchColBuf.Capacity() < colFloats)
+            _batchColBuf = ByteBuffer.AllocateDirect(colFloats * sizeof(float)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
     }
 
     void DrawNameplate(float sx, float sy, string label, bool emphasize)
@@ -1149,7 +1159,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                           + (t.RotationMirroring % 4) * (MathF.PI * 0.5f);
 
             if (!string.IsNullOrEmpty(t.RsiPath) && contentRoot is not null)
-                QueueTexture(t.RsiPath!, pin: true);
+                QueueTexture(t.RsiPath!, pin: IsPinnedPath(t.RsiPath!));
 
             var hasTex = false;
             TexEntry tex = default;
@@ -1164,12 +1174,16 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     if (tex.AtlasKey is not null)
                         _atlasMeta.Remove(tex.AtlasKey);
                     _queuedTex.Remove(t.RsiPath!);
-                    QueueTexture(t.RsiPath!, pin: true);
+                    QueueTexture(t.RsiPath!, pin: IsPinnedPath(t.RsiPath!));
                 }
                 else
                 {
                     hasTex = true;
-                    _texCache[t.RsiPath!] = tex with { LastUsedFrame = _frames, Pinned = true };
+                    _texCache[t.RsiPath!] = tex with
+                    {
+                        LastUsedFrame = _frames,
+                        Pinned = tex.Pinned || IsPinnedPath(t.RsiPath!)
+                    };
                     _texLastUsed[t.RsiPath!] = _frames;
                 }
             }
@@ -1187,7 +1201,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 continue;
             }
 
-            // Colored fallback — never leave black holes for missing tile textures.
+            // Avoid noisy placeholder quads for missing tile textures.
+            if (!string.IsNullOrEmpty(t.RsiPath))
+                continue;
+
+            // Colored fallback — only for truly color-only tiles.
             if (_program == 0 || vert + 6 > MaxVerts)
                 continue;
 
@@ -1383,8 +1401,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         _uvScratch[8] = u1; _uvScratch[9] = v1;
         _uvScratch[10] = u0; _uvScratch[11] = v1;
 
-        if (_posBuf is null || _posBuf.Capacity() < 12 * sizeof(float))
-            _posBuf = ByteBuffer.AllocateDirect(12 * sizeof(float) * 4).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        if (_posBuf is null || _posBuf.Capacity() < 12)
+            _posBuf = ByteBuffer.AllocateDirect(12 * sizeof(float)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
         _posBuf.Position(0);
         _posBuf.Put(_texPosScratch, 0, 12);
         _posBuf.Position(0);
@@ -1441,19 +1459,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     static bool IsPinnedPath(string path)
     {
-        // Never thrash structure / floor / actor textures — refuse loads instead.
-        if (path.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
-            || path.StartsWith("Tiles/", StringComparison.OrdinalIgnoreCase)
-            || path.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && path.Contains("Tile", StringComparison.OrdinalIgnoreCase))
-            return true;
+        // Keep critical structures and actor art resident; floor tiles can evict when off-screen.
         if (path.Contains("Wall", StringComparison.OrdinalIgnoreCase)
             || path.Contains("Window", StringComparison.OrdinalIgnoreCase)
             || path.Contains("Grille", StringComparison.OrdinalIgnoreCase)
             || path.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
             || path.Contains("Door", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Mobs/", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Species/", StringComparison.OrdinalIgnoreCase))
+            || path.Contains("Ghost", StringComparison.OrdinalIgnoreCase))
             return true;
         return false;
     }
@@ -1479,7 +1491,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
         if (rsiPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
         {
-            if (_pendingTexLoad.Count > 400)
+            if (_pendingTexLoad.Count > MaxPendingTex)
                 return;
             if (_texCache.Count >= MaxTexCache && !pin && !TryEvictTextures(8))
                 return;
@@ -1488,7 +1500,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             return;
         }
 
-        if (_pendingTexLoad.Count > 400)
+        if (_pendingTexLoad.Count > MaxPendingTex)
             return;
         // Soft budget: when full, still allow pinned/needed paths after eviction attempt.
         if (_texCache.Count >= MaxTexCache && !pin && !_texNeeded.Contains(rsiPath))
@@ -1567,7 +1579,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         if (contentRoot is null)
             return;
 
-        for (var n = 0; n < 16 && _pendingTexLoad.Count > 0; n++)
+        if (_pendingTexLoad.Count > PendingTrimAt)
+            TrimPendingQueue(_pendingTexLoad, PendingKeepAfterTrim);
+
+        for (var n = 0; n < LoadsPerFrame && _pendingTexLoad.Count > 0; n++)
         {
             var path = _pendingTexLoad.Dequeue();
             try
@@ -1579,7 +1594,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     {
                         // Refuse load rather than thrash — keep queued for a later frame.
                         _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 45;
+                        _texRetryAtFrame[path] = _frames + 20;
                         continue;
                     }
                 }
@@ -1596,7 +1611,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                                 ? path
                                 : "Textures/" + path.TrimStart('/'));
                         _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 30;
+                        _texRetryAtFrame[path] = _frames + 12;
                         continue;
                     }
 
@@ -1614,7 +1629,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     else
                     {
                         _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 90;
+                        _texRetryAtFrame[path] = _frames + 36;
                     }
 
                     continue;
@@ -1625,7 +1640,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 {
                     _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(contentRoot, path, fetcher);
                     _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 30;
+                    _texRetryAtFrame[path] = _frames + 12;
                     continue;
                 }
 
@@ -1635,7 +1650,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 if (frame is null)
                 {
                     _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 60;
+                    _texRetryAtFrame[path] = _frames + 24;
                     continue;
                 }
 
@@ -1655,13 +1670,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 else
                 {
                     _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 90;
+                    _texRetryAtFrame[path] = _frames + 36;
                 }
             }
             catch
             {
                 _queuedTex.Remove(path);
-                _texRetryAtFrame[path] = _frames + 45;
+                _texRetryAtFrame[path] = _frames + 20;
             }
         }
     }
@@ -1726,22 +1741,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         }
     }
 
-    static bool IsPinnedTexture(string path) =>
-        path.Contains("/Walls/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Structures/Walls", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Windows/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Structures/Windows", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Doors/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Structures/Doors", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Closets/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Lockers/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Structures/Storage", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Ghosts/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("ghost_human", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Mobs/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
-        || path.Contains("Tiles/", StringComparison.OrdinalIgnoreCase);
+    static bool IsPinnedTexture(string path) => IsPinnedPath(path);
 
     void LoadOnePng(string contentRoot, string path, Port.Content.AczOnDemandFetcher? fetcher)
     {
@@ -1948,12 +1948,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     void EnsureBuffers(int verts)
     {
-        var posBytes = verts * 2 * sizeof(float);
-        var colBytes = verts * 4 * sizeof(float);
-        if (_posBuf is null || _posBuf.Capacity() < posBytes)
-            _posBuf = ByteBuffer.AllocateDirect(Math.Max(posBytes, 4096)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
-        if (_colBuf is null || _colBuf.Capacity() < colBytes)
-            _colBuf = ByteBuffer.AllocateDirect(Math.Max(colBytes, 8192)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        // FloatBuffer.Capacity() is element count.
+        var posFloats = verts * 2;
+        var colFloats = verts * 4;
+        if (_posBuf is null || _posBuf.Capacity() < posFloats)
+            _posBuf = ByteBuffer.AllocateDirect(Math.Max(posFloats * sizeof(float), 4096)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
+        if (_colBuf is null || _colBuf.Capacity() < colFloats)
+            _colBuf = ByteBuffer.AllocateDirect(Math.Max(colFloats * sizeof(float), 8192)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
     }
 
     /// <summary>

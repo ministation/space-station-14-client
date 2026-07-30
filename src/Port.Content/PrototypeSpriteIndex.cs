@@ -232,6 +232,7 @@ public sealed class PrototypeSpriteIndex
         var smoothMode = IconSmoothMode.Corners;
         var inParentList = false;
         var entityIndent = -1;
+        var spriteComponentIndent = -1;
 
         void FlushSmooth()
         {
@@ -257,6 +258,7 @@ public sealed class PrototypeSpriteIndex
                 smoothMode = IconSmoothMode.Corners;
                 inParentList = false;
                 entityIndent = line.TakeWhile(c => c == ' ' || c == '\t').Count();
+                spriteComponentIndent = -1;
                 continue;
             }
 
@@ -285,6 +287,7 @@ public sealed class PrototypeSpriteIndex
                 smoothMode = IconSmoothMode.Corners;
                 inParentList = false;
                 entityIndent = indent;
+                spriteComponentIndent = -1;
                 continue;
             }
 
@@ -294,6 +297,36 @@ public sealed class PrototypeSpriteIndex
                 inEntity = false;
                 inParentList = false;
                 inIconSmooth = false;
+                sawSpriteComponent = false;
+                spriteComponentIndent = -1;
+                continue;
+            }
+
+            // Component boundary inside one entity: keep Sprite/Icon and IconSmooth scopes strict.
+            if (line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase)
+                && indent > entityIndent)
+            {
+                if (inIconSmooth)
+                    FlushSmooth();
+                inIconSmooth = false;
+                sawSpriteComponent = false;
+                spriteComponentIndent = indent;
+                inParentList = false;
+
+                if (line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
+                {
+                    inIconSmooth = true;
+                    smoothKey = null;
+                    smoothBase = null;
+                    smoothMode = IconSmoothMode.Corners;
+                }
+                else if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
+                         || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
+                         || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase))
+                {
+                    sawSpriteComponent = true;
+                }
+
                 continue;
             }
 
@@ -344,31 +377,6 @@ public sealed class PrototypeSpriteIndex
                 }
             }
 
-            if (line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
-            {
-                FlushSmooth();
-                inIconSmooth = true;
-                smoothKey = null;
-                smoothBase = null;
-                smoothMode = IconSmoothMode.Corners;
-                inParentList = false;
-            }
-            else if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
-                     || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
-                     || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase))
-            {
-                if (inIconSmooth)
-                    FlushSmooth();
-                inIconSmooth = false;
-                sawSpriteComponent = true;
-                inParentList = false;
-            }
-            else if (inIconSmooth && line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase))
-            {
-                FlushSmooth();
-                inIconSmooth = false;
-            }
-
             if (inIconSmooth && currentId is not null)
             {
                 var sk = SmoothKey.Match(line);
@@ -390,7 +398,8 @@ public sealed class PrototypeSpriteIndex
                 }
             }
 
-            if (sawSpriteComponent && !inIconSmooth && currentId is not null)
+            if (sawSpriteComponent && !inIconSmooth && currentId is not null
+                && (spriteComponentIndent < 0 || indent > spriteComponentIndent))
             {
                 var st = StateName.Match(line);
                 if (st.Success)

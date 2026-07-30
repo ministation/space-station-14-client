@@ -661,10 +661,10 @@ public sealed class WorldStateCache
                     var layersAdded = 0;
                     if (spr?.Layers is { Count: > 0 })
                     {
-                        // Mobs: full clothing stack. Doors/airlocks/machines: a few layers.
+                        // Mobs: full clothing stack. Structures: keep enough layers for base+door/overlay visuals.
                         var maxLayers = IsPlayerLike(protoId, spr) || isCtrl
                             ? MaxLayersPerEntity
-                            : (LooksLikeDoorOrMachine(protoId, spr.Path) ? 4 : 2);
+                            : (LooksLikeDoorOrMachine(protoId, spr.Path) ? 8 : 4);
                         var baseDepth = spr.FromNetwork && spr.HasDrawDepth
                             ? spr.DrawDepth
                             : ClassifyDepth(spr.Path, spr.DrawDepth != 0 ? spr.DrawDepth : GameStateDecoder.GuessDepth(spr.Path), protoId);
@@ -759,6 +759,30 @@ public sealed class WorldStateCache
                             : (spr is { FromNetwork: true, HasDrawDepth: true }
                                 ? spr.DrawDepth
                                 : ClassifyDepth(path, spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path), protoId));
+                        // Lockers/closets often rely on base+door layered states.
+                        if (!isCtrl && !string.IsNullOrEmpty(path) && LooksLikeLockerOrCloset(protoId, path))
+                        {
+                            var noRot = spr?.NoRotation == true
+                                        || (protoId?.Contains("Observer", StringComparison.OrdinalIgnoreCase) ?? false)
+                                        || (protoId?.Contains("Ghost", StringComparison.OrdinalIgnoreCase) ?? false);
+                            var topState = stateName;
+                            if (string.Equals(topState, "base", StringComparison.OrdinalIgnoreCase))
+                                topState = "door";
+                            topState ??= "door";
+
+                            drawList.Add(new WorldEntityDraw(
+                                ent, wp.X, wp.Y, worldRot,
+                                path, r, g, b, false, depth * 16, "base",
+                                true, 0, 0, noRot, null, -1, isGhost));
+                            drawList.Add(new WorldEntityDraw(
+                                ent, wp.X, wp.Y, worldRot,
+                                path, r, g, b, false, depth * 16 + 1, topState,
+                                true, 0, 0, noRot, null, -1, isGhost));
+                            sum += wp;
+                            nSum++;
+                            continue;
+                        }
+
                         drawList.Add(new WorldEntityDraw(
                             ent, wp.X, wp.Y, worldRot,
                             path, r, g, b, isCtrl, depth, stateName,
@@ -1120,6 +1144,17 @@ public sealed class WorldStateCache
                || p.Contains("Closet", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/Closets/", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/Lockers/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool LooksLikeLockerOrCloset(string? proto, string? path)
+    {
+        var p = (proto ?? "") + " " + (path ?? "");
+        return p.Contains("Locker", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Closet", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Cabinet", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("/Closets/", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("/Lockers/", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Structures/Storage", StringComparison.OrdinalIgnoreCase);
     }
 
     static float Dist2(float x, float y, float fx, float fy)

@@ -108,12 +108,12 @@ public sealed class GameSessionClient : IDisposable
     public bool CanReturnToBody { get; private set; } = true;
     public bool CanTakeGhostRoles { get; private set; } = true;
 
-    /// <summary>Local ghost eye toggles (PC GhostSystem client-side).</summary>
-    public bool DrawFov { get; private set; } = true;
-    public bool DrawLighting { get; private set; } = true;
+    /// <summary>Ghost eye is forced fullbright/no-FoV on Android for now.</summary>
+    public bool DrawFov { get; private set; } = false;
+    public bool DrawLighting { get; private set; } = false;
     public bool ShowOtherGhosts { get; private set; } = true;
 
-    int _lightingMode; // 0 normal, 1 fullbright
+    int _lightingMode = 1; // 0 normal, 1 fullbright
 
     public string LightingModeLabel => _lightingMode switch
     {
@@ -396,12 +396,13 @@ public sealed class GameSessionClient : IDisposable
 
     void SyncMoveKeysFromStick()
     {
-        // CamRotation is north-up (0): stick axes = screen = world cardinals for Move*.
+        // Server mover axes are effectively mirrored against our on-screen stick.
+        // Keep this inversion here so stick direction matches visible movement.
         const float dead = 0.28f;
-        SetMoveKey(ref _keyRight, EngineKeyFunctions.MoveRight, _flightX > dead);
-        SetMoveKey(ref _keyLeft, EngineKeyFunctions.MoveLeft, _flightX < -dead);
-        SetMoveKey(ref _keyUp, EngineKeyFunctions.MoveUp, _flightY > dead);
-        SetMoveKey(ref _keyDown, EngineKeyFunctions.MoveDown, _flightY < -dead);
+        SetMoveKey(ref _keyRight, EngineKeyFunctions.MoveRight, _flightX < -dead);
+        SetMoveKey(ref _keyLeft, EngineKeyFunctions.MoveLeft, _flightX > dead);
+        SetMoveKey(ref _keyUp, EngineKeyFunctions.MoveUp, _flightY < -dead);
+        SetMoveKey(ref _keyDown, EngineKeyFunctions.MoveDown, _flightY > dead);
     }
 
     void SetMoveKey(ref bool held, BoundKeyFunction function, bool wantDown)
@@ -1702,17 +1703,17 @@ public sealed class GameSessionClient : IDisposable
     /// <summary>PC GhostSystem.OnToggleFoV — local eye DrawFov.</summary>
     public void ToggleFov()
     {
-        DrawFov = !DrawFov;
-        Note($"ToggleFoV → {DrawFov}");
+        DrawFov = false;
+        Note("ToggleFoV ignored: forced off");
         try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
     }
 
     /// <summary>PC GhostSystem.OnToggleLighting — normal ↔ fullbright.</summary>
     public void ToggleLighting()
     {
-        _lightingMode = (_lightingMode + 1) % 2;
-        DrawLighting = _lightingMode == 0;
-        Note($"ToggleLighting → {_lightingMode} ({LightingModeLabel})");
+        _lightingMode = 1;
+        DrawLighting = false;
+        Note("ToggleLighting ignored: forced fullbright");
         try { GhostUiChanged?.Invoke(); } catch { /* UI */ }
     }
 
@@ -2796,9 +2797,9 @@ public sealed class GameSessionClient : IDisposable
         CamRotation = 0;
         EyeWorldRotation = 0;
         Zoom = 1f;
-        DrawFov = true;
-        DrawLighting = true;
-        _lightingMode = 0;
+        DrawFov = false;
+        DrawLighting = false;
+        _lightingMode = 1;
         ShowOtherGhosts = true;
         _panOffX = 0;
         _panOffY = 0;
