@@ -39,7 +39,10 @@ public readonly record struct WorldEntityDraw(
     string? Label = null,
     /// <summary>RSI direction index override (−1 = derive from Rotation). Used by IconSmooth corners.</summary>
     int DirOverride = -1,
-    bool IsGhost = false);
+    bool IsGhost = false,
+    float ScaleX = 1f,
+    float ScaleY = 1f,
+    float RotationOffset = 0f);
 
 public sealed record WorldSnapshot(
     EyeSnapshot? Eye,
@@ -335,7 +338,11 @@ public static class GameStateDecoder
         byte B,
         float OffsetX = 0,
         float OffsetY = 0,
-        bool HasDepth = false);
+        bool HasDepth = false,
+        float ScaleX = 1f,
+        float ScaleY = 1f,
+        float RotationOffset = 0f,
+        string? MapKey = null);
 
     static void TryExtractSprite(
         object state,
@@ -352,7 +359,7 @@ public static class GameStateDecoder
             return;
 
         sprites.TryGetValue(ent, out var prev);
-        var vis = prev is { FromNetwork: true } ? prev : new SpriteVisual();
+        SpriteVisual vis;
         var t = state.GetType();
 
         // Probe fields first — empty SpriteComponentState must not wipe prototype art (mobs/players).
@@ -385,12 +392,20 @@ public static class GameStateDecoder
             return;
         }
 
-        vis.FromNetwork = true;
+        // Prototype-first (PC netsync:false): never wipe a good YAML layer stack with an
+        // empty/incomplete SpriteComponentState. Network only overlays present fields.
         if (prev is { FromNetwork: false })
         {
-            vis.Path = null;
-            vis.State = null;
-            vis.Layers.Clear();
+            vis = CloneVisual(prev);
+            vis.FromNetwork = true; // mark that network touched it, but keep proto layers
+        }
+        else if (prev is { FromNetwork: true })
+        {
+            vis = prev;
+        }
+        else
+        {
+            vis = new SpriteVisual { FromNetwork = true };
         }
 
         if (netPath is not null)
@@ -467,18 +482,20 @@ public static class GameStateDecoder
                      ?? t.GetField("Layers")?.GetValue(state);
         if (layers is System.Collections.IEnumerable en)
         {
-            vis.Layers.Clear();
+            var parsed = new List<LayerVis>();
             foreach (var layer in en)
             {
                 if (layer is null) continue;
                 var lt = layer.GetType();
                 string? path = null;
                 string? stName = null;
-                var visible = true;
+                string? mapKey = null;
+                bool? visibleExplicit = null;
                 byte lr = r, lg = g, lb = b;
                 var depth = vis.DrawDepth;
                 var hasDepth = false;
                 float ox = 0, oy = 0;
+                float sx = 1, sy = 1, rotationOffset = 0;
 
                 foreach (var name in new[] { "RsiPath", "RSI", "Path", "ActualRsi", "Rsi", "Sprite" })
                 {
@@ -501,9 +518,22 @@ public static class GameStateDecoder
                     }
                 }
 
+                foreach (var name in new[] { "MapKey", "Shader", "Name" })
+                {
+                    // Map keys sometimes live on layer copy as string; skip Shader misuse.
+                    if (name.Equals("Shader", StringComparison.Ordinal)) continue;
+                    var v = lt.GetProperty(name)?.GetValue(layer)
+                            ?? lt.GetField(name)?.GetValue(layer);
+                    if (v is string mk && !string.IsNullOrWhiteSpace(mk) && mk.Length < 96)
+                    {
+                        mapKey = mk;
+                        break;
+                    }
+                }
+
                 var visProp = lt.GetProperty("Visible")?.GetValue(layer)
                               ?? lt.GetField("Visible")?.GetValue(layer);
-                if (visProp is bool vb) visible = vb;
+                if (visProp is bool vb) visibleExplicit = vb;
 
                 foreach (var name in new[] { "DrawDepth", "DrawDepthSet" })
                 {
@@ -512,7 +542,7 @@ public static class GameStateDecoder
                     if (v is null) continue;
                     if (v is int di) { depth = di; hasDepth = true; break; }
                     if (v is Enum) { depth = Convert.ToInt32(v); hasDepth = true; break; }
-                    if (int.TryParse(v.ToString(), out var parsed)) { depth = parsed; hasDepth = true; break; }
+                    if (int.TryParse(v.ToString(), out var parsedDepth)) { depth = parsedDepth; hasDepth = true; break; }
                 }
 
                 foreach (var name in new[] { "Color", "ColorOverride" })
@@ -531,22 +561,70 @@ public static class GameStateDecoder
                     oy = ov.Y;
                 }
 
-                // Layer without own RSI must use THIS component's base RSI (network), never a stale proto guess.
+                var scale = lt.GetProperty("Scale")?.GetValue(layer)
+                            ?? lt.GetField("Scale")?.GetValue(layer);
+                if (scale is Vector2 sv)
+                {
+                    sx = sv.X;
+                    sy = sv.Y;
+                }
+
+                var rotation = lt.GetProperty("Rotation")?.GetValue(layer)
+                               ?? lt.GetField("Rotation")?.GetValue(layer);
+                if (rotation is Angle angle)
+                    rotationOffset = (float)angle.Theta;
+                else if (rotation is float rf)
+                    rotationOffset = rf;
+                else if (rotation is double rd)
+                    rotationOffset = (float)rd;
+
+                // Layer without own RSI uses component base path (proto or network).
+                // Do NOT promote root State onto layers — that turns every computer into one screen.
                 path ??= vis.Path;
-                stName ??= vis.State;
                 if (path is null && stName is null)
                     continue;
 
-                vis.Layers.Add(new LayerVis(path, stName, depth, visible, lr, lg, lb, ox, oy, hasDepth));
+                var visible = visibleExplicit
+                              ?? !Port.Content.PrototypeSpriteIndex.IsDefaultHiddenOverlay(mapKey, stName);
+
+                parsed.Add(new LayerVis(
+                    path, stName, depth, visible, lr, lg, lb, ox, oy, hasDepth,
+                    sx, sy, rotationOffset, mapKey));
                 if (vis.Path is null && path is not null)
                     vis.Path = path;
-                if (vis.State is null && stName is not null)
-                    vis.State = stName;
+            }
+
+            // Never shrink a richer prototype stack with a sparse/wrong network layer list
+            // (one "virology" layer used to wipe computer body+keyboard).
+            if (parsed.Count > 0 && (vis.Layers.Count == 0 || parsed.Count >= vis.Layers.Count))
+            {
+                vis.Layers.Clear();
+                vis.Layers.AddRange(parsed);
             }
         }
 
         if (vis.Path is not null || vis.Layers.Count > 0 || vis.HasColor || !vis.Visible)
             sprites[ent] = vis;
+    }
+
+    static SpriteVisual CloneVisual(SpriteVisual src)
+    {
+        var clone = new SpriteVisual
+        {
+            FromNetwork = src.FromNetwork,
+            Path = src.Path,
+            State = src.State,
+            R = src.R,
+            G = src.G,
+            B = src.B,
+            HasColor = src.HasColor,
+            HasDrawDepth = src.HasDrawDepth,
+            Visible = src.Visible,
+            DrawDepth = src.DrawDepth,
+            NoRotation = src.NoRotation,
+        };
+        clone.Layers.AddRange(src.Layers);
+        return clone;
     }
 
     static bool TryReadColor(object c, out byte r, out byte g, out byte b)

@@ -1,168 +1,126 @@
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
+using System.Globalization;
+using System.Linq;
+using YamlDotNet.RepresentationModel;
 
 namespace Port.Content;
 
 /// <summary>
-/// Entity prototype → RSI path index from content Prototypes/*.yml.
-/// Resolves parent chains (including YAML list parents) so walls/floors/mobs get sprites.
+/// Authoritative entity prototype sprite index. Parses YAML structurally, resolves
+/// parent inheritance, and preserves the complete ordered Sprite layer definition.
 /// </summary>
 public sealed class PrototypeSpriteIndex
 {
-    static readonly Regex IdLine = new(
-        @"^\s*id:\s*[""']?([A-Za-z0-9_.\-]+)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    public readonly record struct SpriteLayer(
+        string? Path,
+        string? State,
+        bool Visible,
+        byte R,
+        byte G,
+        byte B,
+        float OffsetX,
+        float OffsetY,
+        float ScaleX,
+        float ScaleY,
+        float Rotation,
+        string? Shader,
+        string? MapKey);
 
-    static readonly Regex SpritePath = new(
-        @"^\s*sprite:\s*[""']?([^\s#""']+)",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    public sealed record ResolvedSprite(
+        string? Path,
+        string? State,
+        bool NoRotation,
+        int? DrawDepth,
+        IReadOnlyList<SpriteLayer> Layers);
 
-    static readonly Regex StateName = new(
-        @"^\s*state:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    /// <summary>PC EntityStorageVisuals — locker/crate door art from YAML, not network.</summary>
+    public readonly record struct StorageVisuals(
+        string? StateBaseClosed,
+        string? StateBaseOpen,
+        string? StateDoorClosed,
+        string? StateDoorOpen);
 
-    static readonly Regex TypeEntity = new(
-        @"^\s*-\s*type:\s*entity\b",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    sealed class RawPrototype
+    {
+        public required string Id;
+        public readonly List<string> Parents = new();
+        public SpritePatch? Sprite;
+        public IconSmoothData? Smooth;
+        public StorageVisuals? Storage;
+    }
 
-    static readonly Regex ParentScalar = new(
-        @"^\s*parent:\s*[""']?([A-Za-z0-9_.\-]+)[""']?\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    sealed class SpritePatch
+    {
+        public string? Path;
+        public bool HasPath;
+        public string? State;
+        public bool HasState;
+        public bool? NoRotation;
+        public int? DrawDepth;
+        public bool HasLayers;
+        public readonly List<SpriteLayer> Layers = new();
+    }
 
-    static readonly Regex ParentListItem = new(
-        @"^\s*-\s*[""']?([A-Za-z0-9_.\-]+)[""']?\s*$",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant);
-
-    static readonly Regex ParentInlineList = new(
-        @"^\s*parent:\s*\[([^\]]+)\]",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    static readonly Regex SmoothKey = new(
-        @"^\s*key:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    static readonly Regex SmoothBase = new(
-        @"^\s*base:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    static readonly Regex SmoothMode = new(
-        @"^\s*mode:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
-        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-
-    readonly ConcurrentDictionary<string, string> _spriteByProto =
+    readonly ConcurrentDictionary<string, RawPrototype> _raw =
         new(StringComparer.OrdinalIgnoreCase);
-    readonly ConcurrentDictionary<string, string> _stateByProto =
+    readonly ConcurrentDictionary<string, ResolvedSprite?> _resolved =
         new(StringComparer.OrdinalIgnoreCase);
-    readonly ConcurrentDictionary<string, IconSmoothData> _smoothByProto =
+    readonly ConcurrentDictionary<string, IconSmoothData?> _smooth =
         new(StringComparer.OrdinalIgnoreCase);
-    readonly ConcurrentDictionary<string, List<string>> _parentsByProto =
+    readonly ConcurrentDictionary<string, StorageVisuals?> _storage =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public int Count => _spriteByProto.Count;
+    public int Count => _resolved.Count(kv => kv.Value is not null);
     public string? Root { get; private set; }
 
-    public string? TryGetSprite(string? prototypeId)
+    public ResolvedSprite? TryGetResolvedSprite(string? prototypeId)
     {
         if (string.IsNullOrWhiteSpace(prototypeId))
             return null;
-
-        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return Resolve(prototypeId!, visiting, 0);
+        return _resolved.TryGetValue(prototypeId, out var sprite) ? sprite : null;
     }
 
-    public string? TryGetState(string? prototypeId)
-    {
-        if (string.IsNullOrWhiteSpace(prototypeId))
-            return null;
+    public string? TryGetSprite(string? prototypeId) =>
+        TryGetResolvedSprite(prototypeId)?.Path
+        ?? TryGetResolvedSprite(prototypeId)?.Layers.FirstOrDefault(l => l.Path is not null).Path;
 
-        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return ResolveState(prototypeId!, visiting, 0);
-    }
+    public string? TryGetState(string? prototypeId) =>
+        TryGetResolvedSprite(prototypeId)?.State
+        ?? TryGetResolvedSprite(prototypeId)?.Layers.FirstOrDefault(l => l.State is not null).State;
 
     public IconSmoothData? TryGetIconSmooth(string? prototypeId)
     {
         if (string.IsNullOrWhiteSpace(prototypeId))
             return null;
-
-        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        return ResolveSmooth(prototypeId!, visiting, 0);
+        return _smooth.TryGetValue(prototypeId, out var value) ? value : null;
     }
 
-    string? Resolve(string id, HashSet<string> visiting, int depth)
+    public StorageVisuals? TryGetStorageVisuals(string? prototypeId)
     {
-        if (depth > 24 || !visiting.Add(id))
+        if (string.IsNullOrWhiteSpace(prototypeId))
             return null;
-        if (_spriteByProto.TryGetValue(id, out var path))
-            return path;
-        if (!_parentsByProto.TryGetValue(id, out var parents))
-            return null;
-        foreach (var parent in parents)
-        {
-            var got = Resolve(parent, visiting, depth + 1);
-            if (got is not null)
-                return got;
-        }
-
-        return null;
-    }
-
-    string? ResolveState(string id, HashSet<string> visiting, int depth)
-    {
-        if (depth > 24 || !visiting.Add(id))
-            return null;
-        if (_stateByProto.TryGetValue(id, out var st))
-            return st;
-        if (!_parentsByProto.TryGetValue(id, out var parents))
-            return null;
-        foreach (var parent in parents)
-        {
-            var got = ResolveState(parent, visiting, depth + 1);
-            if (got is not null)
-                return got;
-        }
-
-        return null;
-    }
-
-    IconSmoothData? ResolveSmooth(string id, HashSet<string> visiting, int depth)
-    {
-        if (depth > 24 || !visiting.Add(id))
-            return null;
-        if (_smoothByProto.TryGetValue(id, out var sm))
-            return sm;
-        if (!_parentsByProto.TryGetValue(id, out var parents))
-            return null;
-        foreach (var parent in parents)
-        {
-            var got = ResolveSmooth(parent, visiting, depth + 1);
-            if (got is not null)
-                return got;
-        }
-
-        return null;
+        return _storage.TryGetValue(prototypeId, out var value) ? value : null;
     }
 
     public void Invalidate()
     {
         Root = null;
-        _spriteByProto.Clear();
-        _stateByProto.Clear();
-        _smoothByProto.Clear();
-        _parentsByProto.Clear();
+        _raw.Clear();
+        _resolved.Clear();
+        _smooth.Clear();
+        _storage.Clear();
     }
 
     public void EnsureLoaded(string? contentFilesRoot, Action<string>? log = null)
     {
         if (string.IsNullOrWhiteSpace(contentFilesRoot) || !Directory.Exists(contentFilesRoot))
             return;
-        if (string.Equals(Root, contentFilesRoot, StringComparison.OrdinalIgnoreCase) && _spriteByProto.Count > 0)
+        if (string.Equals(Root, contentFilesRoot, StringComparison.OrdinalIgnoreCase)
+            && _resolved.Count > 0)
             return;
 
+        Invalidate();
         Root = contentFilesRoot;
-        _spriteByProto.Clear();
-        _stateByProto.Clear();
-        _smoothByProto.Clear();
-        _parentsByProto.Clear();
 
         var protoRoot = Path.Combine(contentFilesRoot, "Prototypes");
         if (!Directory.Exists(protoRoot))
@@ -177,285 +135,410 @@ public sealed class PrototypeSpriteIndex
             return;
         }
 
-        var files = Directory.EnumerateFiles(protoRoot, "*.yml", SearchOption.AllDirectories)
-            .Concat(Directory.EnumerateFiles(protoRoot, "*.yaml", SearchOption.AllDirectories))
-            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase);
         var scanned = 0;
-        foreach (var file in files)
+        var failed = 0;
+        foreach (var file in Directory.EnumerateFiles(protoRoot, "*.yml", SearchOption.AllDirectories)
+                     .Concat(Directory.EnumerateFiles(protoRoot, "*.yaml", SearchOption.AllDirectories))
+                     .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
             scanned++;
             try
             {
-                ScanFile(file);
+                ParseFile(file);
             }
-            catch
+            catch (Exception ex)
             {
-                /* skip bad yaml */
+                failed++;
+                if (failed <= 8)
+                    log?.Invoke($"prototype YAML FAIL {Path.GetFileName(file)}: {ex.Message}");
             }
         }
 
-        // Inherit sprite from parents when child has no explicit sprite (multi-pass BFS).
-        var resolved = 0;
-        for (var pass = 0; pass < 12; pass++)
+        foreach (var id in _raw.Keys)
         {
-            var added = 0;
-            foreach (var (id, parents) in _parentsByProto)
-            {
-                if (_spriteByProto.ContainsKey(id))
-                    continue;
-                foreach (var parent in parents)
-                {
-                    if (!_spriteByProto.TryGetValue(parent, out var path))
-                        continue;
-                    if (_spriteByProto.TryAdd(id, path))
-                        added++;
-                    break;
-                }
-            }
-
-            resolved += added;
-            if (added == 0)
-                break;
+            ResolveSprite(id, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            ResolveSmooth(id, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            ResolveStorage(id, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         }
 
-        log?.Invoke($"prototypes: indexed {_spriteByProto.Count} sprites ({resolved} via parent) from {scanned} files");
+        log?.Invoke(
+            $"prototypes: YAML parsed {_raw.Count} entities, {_resolved.Count(kv => kv.Value is not null)} sprites " +
+            $"from {scanned} files (failed={failed})");
     }
 
-    void ScanFile(string path)
+    void ParseFile(string path)
     {
-        string? currentId = null;
-        var inEntity = false;
-        var sawSpriteComponent = false;
-        var inIconSmooth = false;
-        string? smoothKey = null;
-        string? smoothBase = null;
-        var smoothMode = IconSmoothMode.Corners;
-        var inParentList = false;
-        var entityIndent = -1;
-        var spriteComponentIndent = -1;
-
-        void FlushSmooth()
+        using var reader = File.OpenText(path);
+        var stream = new YamlStream();
+        stream.Load(reader);
+        foreach (var doc in stream.Documents)
         {
-            if (currentId is null || !inIconSmooth)
-                return;
-            if (string.IsNullOrWhiteSpace(smoothKey) || string.IsNullOrWhiteSpace(smoothBase))
-                return;
-            _smoothByProto.TryAdd(currentId, new IconSmoothData(smoothKey!, smoothBase!, smoothMode));
-        }
-
-        foreach (var raw in File.ReadLines(path))
-        {
-            var line = raw;
-            if (TypeEntity.IsMatch(line))
+            if (doc.RootNode is YamlSequenceNode seq)
             {
-                FlushSmooth();
-                inEntity = true;
-                currentId = null;
-                sawSpriteComponent = false;
-                inIconSmooth = false;
-                smoothKey = null;
-                smoothBase = null;
-                smoothMode = IconSmoothMode.Corners;
-                inParentList = false;
-                entityIndent = line.TakeWhile(c => c == ' ' || c == '\t').Count();
-                spriteComponentIndent = -1;
-                continue;
+                foreach (var node in seq.Children.OfType<YamlMappingNode>())
+                    ParsePrototype(node);
             }
-
-            if (!inEntity)
-                continue;
-
-            var indent = line.TakeWhile(c => c == ' ' || c == '\t').Count();
-            if (line.Length > 0
-                && line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase)
-                && indent <= entityIndent)
+            else if (doc.RootNode is YamlMappingNode map)
             {
-                FlushSmooth();
-                if (!TypeEntity.IsMatch(line))
-                {
-                    inEntity = false;
-                    inParentList = false;
-                    inIconSmooth = false;
-                    continue;
-                }
-
-                currentId = null;
-                sawSpriteComponent = false;
-                inIconSmooth = false;
-                smoothKey = null;
-                smoothBase = null;
-                smoothMode = IconSmoothMode.Corners;
-                inParentList = false;
-                entityIndent = indent;
-                spriteComponentIndent = -1;
-                continue;
+                ParsePrototype(map);
             }
-
-            if (line.Length > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#')
-            {
-                FlushSmooth();
-                inEntity = false;
-                inParentList = false;
-                inIconSmooth = false;
-                sawSpriteComponent = false;
-                spriteComponentIndent = -1;
-                continue;
-            }
-
-            // Component boundary inside one entity: keep Sprite/Icon and IconSmooth scopes strict.
-            if (line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase)
-                && indent > entityIndent)
-            {
-                if (inIconSmooth)
-                    FlushSmooth();
-                inIconSmooth = false;
-                sawSpriteComponent = false;
-                spriteComponentIndent = indent;
-                inParentList = false;
-
-                if (line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
-                {
-                    inIconSmooth = true;
-                    smoothKey = null;
-                    smoothBase = null;
-                    smoothMode = IconSmoothMode.Corners;
-                }
-                else if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
-                         || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
-                         || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase))
-                {
-                    sawSpriteComponent = true;
-                }
-
-                continue;
-            }
-
-            var idMatch = IdLine.Match(line);
-            if (idMatch.Success && currentId is null)
-            {
-                currentId = idMatch.Groups[1].Value;
-                inParentList = false;
-                continue;
-            }
-
-            if (currentId is not null)
-            {
-                var inline = ParentInlineList.Match(line);
-                if (inline.Success)
-                {
-                    AddParents(currentId, SplitYamlList(inline.Groups[1].Value));
-                    inParentList = false;
-                    continue;
-                }
-
-                var scalar = ParentScalar.Match(line);
-                if (scalar.Success)
-                {
-                    AddParents(currentId, new[] { scalar.Groups[1].Value });
-                    inParentList = false;
-                    continue;
-                }
-
-                if (Regex.IsMatch(line, @"^\s*parent:\s*$", RegexOptions.IgnoreCase))
-                {
-                    inParentList = true;
-                    continue;
-                }
-
-                if (inParentList)
-                {
-                    var item = ParentListItem.Match(line);
-                    if (item.Success)
-                    {
-                        AddParents(currentId, new[] { item.Groups[1].Value });
-                        continue;
-                    }
-
-                    // left the parent list
-                    if (!string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
-                        inParentList = false;
-                }
-            }
-
-            if (inIconSmooth && currentId is not null)
-            {
-                var sk = SmoothKey.Match(line);
-                if (sk.Success)
-                    smoothKey = sk.Groups[1].Value;
-                var sb = SmoothBase.Match(line);
-                if (sb.Success)
-                    smoothBase = sb.Groups[1].Value;
-                var sm = SmoothMode.Match(line);
-                if (sm.Success)
-                {
-                    smoothMode = sm.Groups[1].Value.ToLowerInvariant() switch
-                    {
-                        "cardinalflags" => IconSmoothMode.CardinalFlags,
-                        "diagonal" => IconSmoothMode.Diagonal,
-                        "nosprite" => IconSmoothMode.NoSprite,
-                        _ => IconSmoothMode.Corners,
-                    };
-                }
-            }
-
-            if (sawSpriteComponent && !inIconSmooth && currentId is not null
-                && (spriteComponentIndent < 0 || indent > spriteComponentIndent))
-            {
-                var st = StateName.Match(line);
-                if (st.Success)
-                    _stateByProto.TryAdd(currentId, st.Groups[1].Value);
-            }
-
-            var spr = SpritePath.Match(line);
-            if (!spr.Success || currentId is null)
-                continue;
-
-            var rsi = spr.Groups[1].Value.Trim().Trim('"', '\'');
-            if (rsi.Length == 0 || rsi.Equals("null", StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (!rsi.Contains('/') && !rsi.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
-                && !rsi.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                continue;
-            // Keep .png as-is (tile/entity sheet). Only append .rsi when extension missing.
-            if (!rsi.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
-                && !rsi.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase)
-                && !rsi.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                rsi += ".rsi";
-
-            // First sprite under Sprite/Icon only — each entity keeps its own YAML sprite.
-            if (!sawSpriteComponent)
-                continue;
-            if (_spriteByProto.ContainsKey(currentId))
-            {
-                sawSpriteComponent = false;
-                continue;
-            }
-
-            if (_spriteByProto.TryAdd(currentId, rsi.Replace('\\', '/')))
-                sawSpriteComponent = false;
-        }
-
-        FlushSmooth();
-    }
-
-    void AddParents(string id, IEnumerable<string> parents)
-    {
-        var list = _parentsByProto.GetOrAdd(id, _ => new List<string>());
-        foreach (var p in parents)
-        {
-            if (string.IsNullOrWhiteSpace(p)) continue;
-            if (!list.Contains(p, StringComparer.OrdinalIgnoreCase))
-                list.Add(p);
         }
     }
 
-    static IEnumerable<string> SplitYamlList(string inner)
+    void ParsePrototype(YamlMappingNode map)
     {
-        foreach (var part in inner.Split(','))
+        if (!Scalar(map, "type").Equals("entity", StringComparison.OrdinalIgnoreCase))
+            return;
+        var id = Scalar(map, "id");
+        if (string.IsNullOrWhiteSpace(id))
+            return;
+
+        var raw = new RawPrototype { Id = id };
+        if (Get(map, "parent") is YamlScalarNode parentScalar)
         {
-            var s = part.Trim().Trim('"', '\'');
-            if (s.Length > 0)
-                yield return s;
+            if (!string.IsNullOrWhiteSpace(parentScalar.Value))
+                raw.Parents.Add(parentScalar.Value!);
         }
+        else if (Get(map, "parent") is YamlSequenceNode parentSeq)
+        {
+            foreach (var parent in parentSeq.Children.OfType<YamlScalarNode>())
+                if (!string.IsNullOrWhiteSpace(parent.Value))
+                    raw.Parents.Add(parent.Value!);
+        }
+
+        if (Get(map, "components") is YamlSequenceNode components)
+        {
+            foreach (var component in components.Children.OfType<YamlMappingNode>())
+            {
+                var type = Scalar(component, "type");
+                // Icon is editor-only on PC — never let it overwrite Sprite (was poisoning
+                // walls/windows with state:full and wiping layer stacks → wrong furniture).
+                if (type.Equals("Sprite", StringComparison.OrdinalIgnoreCase))
+                    raw.Sprite = ParseSprite(component);
+                else if (type.Equals("IconSmooth", StringComparison.OrdinalIgnoreCase))
+                    raw.Smooth = ParseSmooth(component);
+                else if (type.Equals("EntityStorageVisuals", StringComparison.OrdinalIgnoreCase))
+                    raw.Storage = ParseStorage(component);
+            }
+        }
+
+        _raw[id] = raw;
+    }
+
+    static SpritePatch ParseSprite(YamlMappingNode component)
+    {
+        var patch = new SpritePatch();
+        if (Has(component, "sprite"))
+        {
+            patch.HasPath = true;
+            patch.Path = NormalizeRsi(Scalar(component, "sprite"));
+        }
+        if (Has(component, "state"))
+        {
+            patch.HasState = true;
+            patch.State = NullIfBlank(Scalar(component, "state"));
+        }
+        if (TryBool(component, "noRot", out var noRot)
+            || TryBool(component, "noRotation", out noRot))
+            patch.NoRotation = noRot;
+        if (TryParseDrawDepth(component, out var depth))
+            patch.DrawDepth = depth;
+
+        if (Get(component, "layers") is YamlSequenceNode layers)
+        {
+            patch.HasLayers = true;
+            foreach (var child in layers.Children)
+            {
+                if (child is YamlScalarNode scalar)
+                {
+                    patch.Layers.Add(new SpriteLayer(
+                        null, NullIfBlank(scalar.Value), true, 255, 255, 255,
+                        0, 0, 1, 1, 0, null, null));
+                    continue;
+                }
+                if (child is not YamlMappingNode layer)
+                    continue;
+
+                var path = NormalizeRsi(Scalar(layer, "sprite"));
+                if (path is null)
+                    path = NormalizeRsi(Scalar(layer, "rsi"));
+                var state = NullIfBlank(Scalar(layer, "state"));
+                var mapKey = ReadMapKey(layer);
+                // PC Appearance visualizers default these overlays off until state says otherwise.
+                var visible = Has(layer, "visible")
+                    ? (!TryBool(layer, "visible", out var vis) || vis)
+                    : !IsDefaultHiddenOverlay(mapKey, state);
+                ReadColor(Scalar(layer, "color"), out var r, out var g, out var b);
+                ReadVector(Get(layer, "offset"), 0, 0, out var ox, out var oy);
+                ReadVector(Get(layer, "scale"), 1, 1, out var sx, out var sy);
+                TryFloat(layer, "rotation", out var rotation);
+                patch.Layers.Add(new SpriteLayer(
+                    path, state, visible, r, g, b, ox, oy, sx, sy, rotation,
+                    NullIfBlank(Scalar(layer, "shader")),
+                    mapKey));
+            }
+        }
+
+        return patch;
+    }
+
+    static StorageVisuals? ParseStorage(YamlMappingNode component)
+    {
+        var baseClosed = NullIfBlank(Scalar(component, "stateBaseClosed"));
+        var baseOpen = NullIfBlank(Scalar(component, "stateBaseOpen"));
+        var doorClosed = NullIfBlank(Scalar(component, "stateDoorClosed"));
+        var doorOpen = NullIfBlank(Scalar(component, "stateDoorOpen"));
+        if (baseClosed is null && baseOpen is null && doorClosed is null && doorOpen is null)
+            return null;
+        return new StorageVisuals(baseClosed, baseOpen, doorClosed, doorOpen);
+    }
+
+    static IconSmoothData? ParseSmooth(YamlMappingNode component)
+    {
+        var key = NullIfBlank(Scalar(component, "key"));
+        var stateBase = NullIfBlank(Scalar(component, "base"));
+        if (key is null || stateBase is null)
+            return null;
+        var mode = Scalar(component, "mode").ToLowerInvariant() switch
+        {
+            "cardinalflags" => IconSmoothMode.CardinalFlags,
+            "diagonal" => IconSmoothMode.Diagonal,
+            "nosprite" => IconSmoothMode.NoSprite,
+            _ => IconSmoothMode.Corners,
+        };
+        string[]? additional = null;
+        if (Get(component, "additionalKeys") is YamlSequenceNode seq)
+        {
+            var list = new List<string>();
+            foreach (var child in seq.Children)
+            {
+                if (child is YamlScalarNode s && !string.IsNullOrWhiteSpace(s.Value))
+                    list.Add(s.Value.Trim().Trim('"', '\''));
+            }
+            if (list.Count > 0)
+                additional = list.ToArray();
+        }
+
+        return new IconSmoothData(key, stateBase, mode, additional);
+    }
+
+    ResolvedSprite? ResolveSprite(string id, HashSet<string> visiting)
+    {
+        if (_resolved.TryGetValue(id, out var cached))
+            return cached;
+        if (!visiting.Add(id) || !_raw.TryGetValue(id, out var raw))
+            return null;
+
+        ResolvedSprite? result = null;
+        // Robust parent order: later parents overlay earlier parents, then the child overlays all.
+        foreach (var parent in raw.Parents)
+        {
+            var inherited = ResolveSprite(parent, visiting);
+            if (inherited is not null)
+                result = Merge(result, inherited);
+        }
+
+        if (raw.Sprite is not null)
+            result = Apply(result, raw.Sprite);
+        visiting.Remove(id);
+        if (result is not null)
+            _resolved[id] = result;
+        return result;
+    }
+
+    IconSmoothData? ResolveSmooth(string id, HashSet<string> visiting)
+    {
+        if (_smooth.TryGetValue(id, out var cached))
+            return cached;
+        if (!visiting.Add(id) || !_raw.TryGetValue(id, out var raw))
+            return null;
+        IconSmoothData? result = null;
+        foreach (var parent in raw.Parents)
+            result = ResolveSmooth(parent, visiting) ?? result;
+        result = raw.Smooth ?? result;
+        visiting.Remove(id);
+        if (result is not null)
+            _smooth[id] = result;
+        return result;
+    }
+
+    StorageVisuals? ResolveStorage(string id, HashSet<string> visiting)
+    {
+        if (_storage.TryGetValue(id, out var cached))
+            return cached;
+        if (!visiting.Add(id) || !_raw.TryGetValue(id, out var raw))
+            return null;
+        StorageVisuals? result = null;
+        foreach (var parent in raw.Parents)
+            result = MergeStorage(result, ResolveStorage(parent, visiting));
+        result = MergeStorage(result, raw.Storage);
+        visiting.Remove(id);
+        if (result is not null)
+            _storage[id] = result;
+        return result;
+    }
+
+    static StorageVisuals? MergeStorage(StorageVisuals? first, StorageVisuals? overlay)
+    {
+        if (overlay is null) return first;
+        if (first is null) return overlay;
+        return new StorageVisuals(
+            overlay.Value.StateBaseClosed ?? first.Value.StateBaseClosed,
+            overlay.Value.StateBaseOpen ?? first.Value.StateBaseOpen,
+            overlay.Value.StateDoorClosed ?? first.Value.StateDoorClosed,
+            overlay.Value.StateDoorOpen ?? first.Value.StateDoorOpen);
+    }
+
+    static ResolvedSprite Merge(ResolvedSprite? first, ResolvedSprite overlay) =>
+        new(
+            overlay.Path ?? first?.Path,
+            overlay.State ?? first?.State,
+            overlay.NoRotation || first?.NoRotation == true,
+            overlay.DrawDepth ?? first?.DrawDepth,
+            overlay.Layers.Count > 0 ? overlay.Layers : first?.Layers ?? Array.Empty<SpriteLayer>());
+
+    static ResolvedSprite Apply(ResolvedSprite? inherited, SpritePatch patch) =>
+        new(
+            patch.HasPath ? patch.Path : inherited?.Path,
+            patch.HasState ? patch.State : inherited?.State,
+            patch.NoRotation ?? inherited?.NoRotation ?? false,
+            patch.DrawDepth ?? inherited?.DrawDepth,
+            patch.HasLayers ? patch.Layers.ToArray() : inherited?.Layers ?? Array.Empty<SpriteLayer>());
+
+    static YamlNode? Get(YamlMappingNode map, string key)
+    {
+        foreach (var (nodeKey, value) in map.Children)
+            if (nodeKey is YamlScalarNode scalar
+                && scalar.Value?.Equals(key, StringComparison.OrdinalIgnoreCase) == true)
+                return value;
+        return null;
+    }
+
+    static bool Has(YamlMappingNode map, string key) => Get(map, key) is not null;
+    static string Scalar(YamlMappingNode map, string key) =>
+        (Get(map, key) as YamlScalarNode)?.Value?.Trim().Trim('"', '\'') ?? "";
+    static string? NullIfBlank(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value.Equals("null", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : value;
+
+    static string? NormalizeRsi(string? value)
+    {
+        value = NullIfBlank(value);
+        if (value is null)
+            return null;
+        value = value.Replace('\\', '/').TrimStart('/');
+        if (!value.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
+            && !value.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase)
+            && !value.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            value += ".rsi";
+        return value;
+    }
+
+    static bool TryBool(YamlMappingNode map, string key, out bool value) =>
+        bool.TryParse(Scalar(map, key), out value);
+    static bool TryInt(YamlMappingNode map, string key, out int value) =>
+        int.TryParse(Scalar(map, key), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    static bool TryFloat(YamlMappingNode map, string key, out float value) =>
+        float.TryParse(Scalar(map, key), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+
+    /// <summary>PC Content.Shared.DrawDepth-style enum names used in YAML.</summary>
+    static bool TryParseDrawDepth(YamlMappingNode component, out int depth)
+    {
+        if (TryInt(component, "drawdepth", out depth) || TryInt(component, "drawDepth", out depth))
+            return true;
+        var name = Scalar(component, "drawdepth");
+        if (string.IsNullOrWhiteSpace(name))
+            name = Scalar(component, "drawDepth");
+        depth = name.ToLowerInvariant() switch
+        {
+            "belowfloor" or "floortiles" => -13,
+            "floor" or "floors" => -12,
+            "deadmobs" => -5,
+            "walls" => -2,
+            "walltops" or "walltop" => -1,
+            "objects" or "items" => 0,
+            "doors" or "airlocks" => 1,
+            "mobs" => 4,
+            "overmobs" => 5,
+            "effects" => 6,
+            "ghosts" or "overlays" => 8,
+            _ => 0,
+        };
+        return !string.IsNullOrWhiteSpace(name);
+    }
+
+    static string? ReadMapKey(YamlMappingNode layer)
+    {
+        var mapNode = Get(layer, "map");
+        if (mapNode is YamlSequenceNode seq)
+        {
+            foreach (var child in seq.Children.OfType<YamlScalarNode>())
+                if (!string.IsNullOrWhiteSpace(child.Value))
+                    return child.Value!.Trim().Trim('"', '\'');
+        }
+        return NullIfBlank(Scalar(layer, "map"));
+    }
+
+    /// <summary>
+    /// Layers that PC visualizers keep hidden until Appearance says otherwise.
+    /// Without this, airlocks draw welded+bolted+panel on top of closed.
+    /// </summary>
+    public static bool IsDefaultHiddenOverlay(string? mapKey, string? state)
+    {
+        var key = (mapKey ?? "") + " " + (state ?? "");
+        if (key.Contains("Weldable", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("BaseBolted", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("BaseEmergency", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("MaintenancePanel", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("WiresVisual", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("Electrified", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("BaseUnlit", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (state is not null
+            && (state.Equals("welded", StringComparison.OrdinalIgnoreCase)
+                || state.Equals("bolted_unlit", StringComparison.OrdinalIgnoreCase)
+                || state.Equals("emergency_unlit", StringComparison.OrdinalIgnoreCase)
+                || state.Equals("panel_open", StringComparison.OrdinalIgnoreCase)
+                || state.EndsWith("_unlit", StringComparison.OrdinalIgnoreCase)
+                || state.Contains("electrified", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        return false;
+    }
+
+    static void ReadVector(YamlNode? node, float fallbackX, float fallbackY, out float x, out float y)
+    {
+        x = fallbackX;
+        y = fallbackY;
+        if (node is YamlSequenceNode seq && seq.Children.Count >= 2)
+        {
+            float.TryParse((seq.Children[0] as YamlScalarNode)?.Value, NumberStyles.Float,
+                CultureInfo.InvariantCulture, out x);
+            float.TryParse((seq.Children[1] as YamlScalarNode)?.Value, NumberStyles.Float,
+                CultureInfo.InvariantCulture, out y);
+        }
+        else if (node is YamlScalarNode scalar && scalar.Value is { } raw)
+        {
+            var parts = raw.Trim('(', ')', '[', ']').Split(',');
+            if (parts.Length >= 2)
+            {
+                float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out x);
+                float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out y);
+            }
+        }
+    }
+
+    static void ReadColor(string? value, out byte r, out byte g, out byte b)
+    {
+        r = g = b = 255;
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+        var s = value.Trim().Trim('"', '\'').TrimStart('#');
+        if (s.Length is not (6 or 8)
+            || !uint.TryParse(s[..6], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
+            return;
+        r = (byte)(rgb >> 16);
+        g = (byte)(rgb >> 8);
+        b = (byte)rgb;
     }
 }

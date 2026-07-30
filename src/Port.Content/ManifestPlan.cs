@@ -16,18 +16,25 @@ public sealed class ManifestPlan
     public required List<(int Index, string Path)> TexturesRsic { get; init; }
     /// <summary>Floor/wall tile PNGs (SS14 ContentTileDefinition.Sprite).</summary>
     public required List<(int Index, string Path)> TexturesTilePng { get; init; }
+    /// <summary>Metadata and state sheets for RSIs explicitly excluded from .rsic packing.</summary>
+    public required List<(int Index, string Path)> TexturesRsiFiles { get; init; }
 
-    public Dictionary<string, int> BuildRsicIndex()
+    public Dictionary<string, int> BuildTextureIndex()
     {
         var map = new Dictionary<string, int>(
-            TexturesRsic.Count + TexturesTilePng.Count,
+            TexturesRsic.Count + TexturesTilePng.Count + TexturesRsiFiles.Count,
             StringComparer.OrdinalIgnoreCase);
         foreach (var (index, path) in TexturesRsic)
             map[path.Replace('\\', '/')] = index;
         foreach (var (index, path) in TexturesTilePng)
             map[path.Replace('\\', '/')] = index;
+        foreach (var (index, path) in TexturesRsiFiles)
+            map[path.Replace('\\', '/')] = index;
         return map;
     }
+
+    [Obsolete("Use BuildTextureIndex; it also contains exploded RSI metadata/state sheets.")]
+    public Dictionary<string, int> BuildRsicIndex() => BuildTextureIndex();
 
     public static ManifestPlan Extract(ReadOnlySpan<byte> utf8Bytes)
     {
@@ -41,6 +48,7 @@ public sealed class ManifestPlan
         var prototypes = new List<(int, string)>(4096);
         var textures = new List<(int, string)>(16384);
         var tilePng = new List<(int, string)>(4096);
+        var rsiFiles = new List<(int, string)>(8192);
         string? line;
         var index = 0;
         while ((line = reader.ReadLine()) != null)
@@ -74,6 +82,13 @@ public sealed class ManifestPlan
             {
                 tilePng.Add((index, path));
             }
+            else if (path.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase)
+                     && path.Contains(".rsi/", StringComparison.OrdinalIgnoreCase)
+                     && (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                         || path.EndsWith("/meta.json", StringComparison.OrdinalIgnoreCase)))
+            {
+                rsiFiles.Add((index, path));
+            }
 
             index++;
         }
@@ -87,6 +102,7 @@ public sealed class ManifestPlan
             Prototypes = prototypes,
             TexturesRsic = textures,
             TexturesTilePng = tilePng,
+            TexturesRsiFiles = rsiFiles,
         };
     }
 }

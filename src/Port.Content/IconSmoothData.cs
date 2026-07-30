@@ -4,7 +4,8 @@ namespace Port.Content;
 public readonly record struct IconSmoothData(
     string Key,
     string StateBase,
-    IconSmoothMode Mode);
+    IconSmoothMode Mode,
+    string[]? AdditionalKeys = null);
 
 public enum IconSmoothMode : byte
 {

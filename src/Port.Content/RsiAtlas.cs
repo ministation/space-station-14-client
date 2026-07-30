@@ -204,25 +204,28 @@ public sealed class RsiAtlas
         float rotationRadians,
         double timeSeconds,
         bool folderPerStateSheet = false,
-        int dirOverride = -1)
+        int dirOverride = -1,
+        int overrideAtlasW = 0,
+        int overrideAtlasH = 0)
     {
-        StateInfo state;
-        if (!string.IsNullOrWhiteSpace(stateName) && atlas.States.TryGetValue(stateName, out var hit))
-            state = hit;
-        else if (!string.IsNullOrWhiteSpace(stateName) && TryFuzzyState(atlas, stateName, out var fuzzy))
-            state = fuzzy;
-        else if (TryPreferredState(atlas, out var preferred))
-            state = preferred;
-        else if (atlas.StateOrder.Length > 0 && atlas.States.TryGetValue(atlas.StateOrder[0], out var first))
-            state = first;
-        else
-            return FullFrame(atlas);
+        var atlasW = overrideAtlasW > 0 ? overrideAtlasW : atlas.AtlasW;
+        var atlasH = overrideAtlasH > 0 ? overrideAtlasH : atlas.AtlasH;
+
+        // World draws require an explicit RSI state — never substitute first/icon/full.
+        if (string.IsNullOrWhiteSpace(stateName))
+            return new UvRect(0, 0, 0, 0, 0, 0);
+        if (!atlas.States.TryGetValue(stateName, out var state))
+            return new UvRect(0, 0, 0, 0, 0, 0);
 
         var dir = dirOverride >= 0
             ? Math.Clamp(dirOverride, 0, Math.Max(0, state.DirCount - 1))
             : DirectionIndex(rotationRadians, state.DirCount);
         var delays = state.Delays[Math.Clamp(dir, 0, state.Delays.Length - 1)];
-        var frame = AnimatedFrame(delays, timeSeconds);
+        // IconSmooth / explicit dir sheets are static corner/cardinal cells — never animate.
+        // Also skip single-delay rows (NormalizeDelays pads missing dirs with {1f}).
+        var frame = dirOverride >= 0 || delays.Length <= 1
+            ? 0
+            : AnimatedFrame(delays, timeSeconds);
 
         // Frame index within state: all frames of dir0, then dir1, ...
         var indexInState = 0;
@@ -233,95 +236,73 @@ public sealed class RsiAtlas
         if (folderPerStateSheet)
         {
             // Single-state PNG layout (directions*frames left-to-right, wrap).
-            var dimX = Math.Max(1, atlas.AtlasW / atlas.FrameW);
+            var dimX = Math.Max(1, atlasW / atlas.FrameW);
             var col = indexInState % dimX;
             var row = indexInState / dimX;
-            return UvFromCell(atlas, col, row);
+            return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, col, row);
         }
 
         var sheetIndex = state.SheetOffset + indexInState;
-        var scol = sheetIndex % atlas.DimX;
-        var srow = sheetIndex / atlas.DimX;
-        return UvFromCell(atlas, scol, srow);
+        var dimPacked = Math.Max(1, atlasW / atlas.FrameW);
+        var scol = sheetIndex % dimPacked;
+        var srow = sheetIndex / dimPacked;
+        return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, scol, srow);
     }
 
-    static UvRect UvFromCell(Loaded atlas, int col, int row)
+    static UvRect UvFromCell(int frameW, int frameH, int atlasW, int atlasH, int col, int row)
     {
-        var u0 = (col * atlas.FrameW) / (float)Math.Max(1, atlas.AtlasW);
-        var v0 = (row * atlas.FrameH) / (float)Math.Max(1, atlas.AtlasH);
-        var u1 = ((col + 1) * atlas.FrameW) / (float)Math.Max(1, atlas.AtlasW);
-        var v1 = ((row + 1) * atlas.FrameH) / (float)Math.Max(1, atlas.AtlasH);
-        return new UvRect(u0, v0, Math.Min(1f, u1), Math.Min(1f, v1), atlas.FrameW, atlas.FrameH);
+        var u0 = (col * frameW) / (float)Math.Max(1, atlasW);
+        var v0 = (row * frameH) / (float)Math.Max(1, atlasH);
+        var u1 = ((col + 1) * frameW) / (float)Math.Max(1, atlasW);
+        var v1 = ((row + 1) * frameH) / (float)Math.Max(1, atlasH);
+        return new UvRect(u0, v0, Math.Min(1f, u1), Math.Min(1f, v1), frameW, frameH);
     }
 
-    static bool TryPreferredState(Loaded atlas, out StateInfo state)
-    {
-        foreach (var name in new[] { "full", "icon", "animated", "0", "default", "normal" })
-        {
-            if (atlas.States.TryGetValue(name, out state!))
-                return true;
-        }
-
-        state = null!;
-        return false;
-    }
-
-    static bool TryFuzzyState(Loaded atlas, string stateName, out StateInfo state)
-    {
-        // Exact already failed — try prefix/suffix matches from meta names.
-        foreach (var kv in atlas.States)
-        {
-            if (kv.Key.Equals(stateName, StringComparison.OrdinalIgnoreCase))
-            {
-                state = kv.Value;
-                return true;
-            }
-        }
-
-        foreach (var kv in atlas.States)
-        {
-            if (kv.Key.StartsWith(stateName, StringComparison.OrdinalIgnoreCase)
-                || stateName.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase))
-            {
-                state = kv.Value;
-                return true;
-            }
-        }
-
-        state = null!;
-        return false;
-    }
+    static UvRect UvFromCell(Loaded atlas, int col, int row) =>
+        UvFromCell(atlas.FrameW, atlas.FrameH, atlas.AtlasW, atlas.AtlasH, col, row);
 
     static UvRect FullFrame(Loaded atlas) =>
-        new(0, 0, Math.Min(1f, atlas.FrameW / (float)Math.Max(1, atlas.AtlasW)),
-            Math.Min(1f, atlas.FrameH / (float)Math.Max(1, atlas.AtlasH)),
-            atlas.FrameW, atlas.FrameH);
+        FullFrame(atlas.AtlasW, atlas.AtlasH, atlas.FrameW, atlas.FrameH);
+
+    static UvRect FullFrame(int atlasW, int atlasH, int frameW, int frameH) =>
+        new(0, 0, Math.Min(1f, frameW / (float)Math.Max(1, atlasW)),
+            Math.Min(1f, frameH / (float)Math.Max(1, atlasH)),
+            frameW, frameH);
+
+    /// <summary>
+    /// Matches PC <c>SpriteComponent.Layer.GetDirection</c> + <c>CVars.RenderSpriteDirectionBias</c>.
+    /// Robust Angle 0 = East; RSI dir0 = South. Bias prevents diagonal flicker.
+    /// </summary>
+    public const double DirectionBias = -0.05;
 
     public static int DirectionIndex(float theta, int dirCount)
     {
         if (dirCount <= 1) return 0;
-        // Robust Angle 0 = East (+X). RSI order: S, N, E, W [,SE,SW,NE,NW]
-        var twoPi = MathF.PI * 2f;
+
+        // Normalize like Angle.Reduced().FlipPositive().
+        var twoPi = Math.PI * 2.0;
         var a = theta % twoPi;
         if (a < 0) a += twoPi;
 
         if (dirCount == 4)
         {
-            // sectors centered on E,N,W,S
-            var sector = (int)MathF.Floor(((a + MathF.PI / 4f) % twoPi) / (MathF.PI / 2f));
+            // PC: mod is -0.5 for 0-90/180-270, +0.5 for 90-180/270-360.
+            var mod = (Math.Floor(a / (Math.PI / 2.0)) % 2) - 0.5;
+            var modTheta = a + mod * DirectionBias;
+            var sector = (int)Math.Round(modTheta / (Math.PI / 2.0)) % 4;
+            if (sector < 0) sector += 4;
+            // 0=South, 1=East, 2=North, 3=West (RSI indices 0,2,1,3)
             return sector switch
             {
-                0 => 2, // East
-                1 => 1, // North
-                2 => 3, // West
-                _ => 0, // South
+                0 => 0, // South
+                1 => 2, // East
+                2 => 1, // North
+                _ => 3, // West
             };
         }
 
-        // 8-dir
-        var sector8 = (int)MathF.Floor(((a + MathF.PI / 8f) % twoPi) / (MathF.PI / 4f));
-        // math: 0=E 1=NE 2=N 3=NW 4=W 5=SW 6=S 7=SE
-        // RSI: 0=S 1=N 2=E 3=W 4=SE 5=SW 6=NE 7=NW
+        // 8-dir: Angle.GetDir() sectors, RSI order S,N,E,W,SE,SW,NE,NW
+        var sector8 = (int)Math.Floor(((a + Math.PI / 8.0) % twoPi) / (Math.PI / 4.0));
         return sector8 switch
         {
             0 => 2, // E

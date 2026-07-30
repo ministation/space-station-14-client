@@ -140,8 +140,8 @@ public sealed class ContentProbeSession
             manifestBytes = Array.Empty<byte>();
             GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
 
-            Note($"plan OK — total={plan.TotalEntries:N0} asm={plan.Assemblies.Count} proto={plan.Prototypes.Count} rsic={plan.TexturesRsic.Count} tilePng={plan.TexturesTilePng.Count}");
-            TextureIndex = plan.BuildRsicIndex();
+            Note($"plan OK — total={plan.TotalEntries:N0} asm={plan.Assemblies.Count} proto={plan.Prototypes.Count} rsic={plan.TexturesRsic.Count} rsiFiles={plan.TexturesRsiFiles.Count} tilePng={plan.TexturesTilePng.Count}");
+            TextureIndex = plan.BuildTextureIndex();
 
             if (plan.Assemblies.Count == 0)
             {
@@ -222,11 +222,24 @@ public sealed class ContentProbeSession
                 Note($"textures done: {TexturesDownloaded}");
             }
 
+            // --- Exploded RSI metadata/state sheets (assets with meta.json rsic:false) ---
+            if (DownloadAllTextures && plan.TexturesRsiFiles.Count > 0)
+            {
+                Summary = $"Загрузка RSI meta/state 0/{plan.TexturesRsiFiles.Count}…";
+                Note($"exploded RSI files to sync: {plan.TexturesRsiFiles.Count}");
+                var explodedDone = await acz.DownloadIndexedPathsBatchedAsync(
+                    StatusBaseUrl, plan.TexturesRsiFiles, FilesRoot, progress,
+                    batchSize: 48, stage: "rsi-files", ct);
+                FilesDownloaded += explodedDone;
+                Note($"exploded RSI files done: {explodedDone}");
+            }
+
             // Drop heavy plan path lists after download (index kept separately).
             plan.Assemblies.Clear();
             plan.Prototypes.Clear();
             plan.TexturesRsic.Clear();
             plan.TexturesTilePng.Clear();
+            plan.TexturesRsiFiles.Clear();
             GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
 
             await File.WriteAllTextAsync(

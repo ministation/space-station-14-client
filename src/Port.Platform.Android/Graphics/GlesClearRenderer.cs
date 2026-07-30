@@ -25,6 +25,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         public bool NoRotation;
         public string? Label;
         public int DirOverride;
+        public float ScaleX;
+        public float ScaleY;
+        public float RotationOffset;
     }
 
     public struct TileSprite
@@ -123,12 +126,17 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     readonly Dictionary<string, long> _texRetryAtFrame = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> _texEvictScratch = new();
 
-    /// <summary>Soft GPU budget — large enough for full station view without hoarding all tiles forever.</summary>
-    const int MaxTexCache = 4096;
-    const int MaxPendingTex = 12000;
-    const int PendingTrimAt = 10000;
-    const int PendingKeepAfterTrim = 6000;
-    const int LoadsPerFrame = 256;
+    /// <summary>
+    /// Soft GPU budget. Disappearing sprites came from thrashing under a tight cap —
+    /// keep a large residency window and never evict currently/recently visible keys.
+    /// </summary>
+    const int MaxTexCache = 12288;
+    const int LoadsPerFrame = 384;
+    const string ParallaxLayerPath = "Textures/Parallaxes/layer1.png";
+    const float ParallaxSlowness = 0.998046875f;
+    readonly HashSet<string> _iconSmoothPrefetched = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, long> _recentlyVisibleUntil = new(StringComparer.OrdinalIgnoreCase);
+    const int RecentlyVisibleFrames = 1800; // ~30s at 60fps
 
     // Clyde-style texture batching: one draw call per RSI bind.
     readonly List<TexQuad> _texQuads = new(2048);
@@ -223,12 +231,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         {
             _ghostMode = enabled;
             if (enabled)
-            {
                 _pulse = false;
-                // Prefetch observer RSI so the ghost is visible ASAP.
-                QueueTexture("Mobs/Ghosts/ghost_human.rsi");
-            }
         }
+        // Do not QueueTexture here: UI thread races GL OnDrawFrame maps.
+        // Parallax/ghost RSI are queued on the GL thread in DrawParallaxBackground / DrawEntities.
     }
 
     public void SetFullbright(bool enabled)
@@ -454,14 +460,16 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             for (var i = 0; i < count; i++)
             {
                 var p = ents[i].RsiPath;
-                if (!string.IsNullOrEmpty(p))
-                    _texNeeded.Add(p);
+                if (string.IsNullOrEmpty(p)) continue;
+                _texNeeded.Add(MakeTexKey(p, ents[i].StateName));
+                _texNeeded.Add(p);
             }
             for (var i = 0; i < tileCount; i++)
             {
                 var p = tiles[i].RsiPath;
-                if (!string.IsNullOrEmpty(p))
-                    _texNeeded.Add(p);
+                if (string.IsNullOrEmpty(p)) continue;
+                _texNeeded.Add(MakeTexKey(p, tiles[i].StateName));
+                _texNeeded.Add(p);
             }
             var nowMs = Environment.TickCount64;
             if (_fpsWindowStartMs == 0)
@@ -502,7 +510,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var cosR = MathF.Cos(-camRot);
         var sinR = MathF.Sin(-camRot);
 
-        DrawWorldGrid(camX, camY, zoom, cosR, sinR);
+        // Space backdrop (PC Default parallax layer1 + starfield) instead of black grid.
+        DrawParallaxBackground(camX, camY, zoom, cosR, sinR, contentRoot, texFetcher);
         PumpTextureLoads(contentRoot, texFetcher);
         DrawTiles(tiles, tileCount, camX, camY, zoom, cosR, sinR, contentRoot, texFetcher, lightOn ? ambient : 1f);
 
@@ -534,15 +543,17 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
         // Prioritize own ghost + nearby mobs at front of load queue.
         string? controlledPath = null;
+        string? controlledState = null;
         for (var i = 0; i < count; i++)
         {
             if (!ents[i].IsControlled || string.IsNullOrEmpty(ents[i].RsiPath)) continue;
             controlledPath = ents[i].RsiPath;
+            controlledState = ents[i].StateName ?? "animated";
             break;
         }
 
         if (controlledPath is not null)
-            QueueTexturePriority(controlledPath);
+            QueueTexturePriority(controlledPath, controlledState);
 
         for (var i = 0; i < count; i++)
         {
@@ -564,52 +575,59 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     continue;
             }
 
+            var texKey = !string.IsNullOrEmpty(e.RsiPath) ? MakeTexKey(e.RsiPath!, e.StateName) : null;
             if (!string.IsNullOrEmpty(e.RsiPath))
             {
                 rsiPaths++;
                 if (contentRoot is not null)
-                    QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled));
+                {
+                    // Skip queue without explicit state — prevents first-meta PNG binding.
+                    if (!string.IsNullOrWhiteSpace(e.StateName) || e.IsControlled)
+                        QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled), e.StateName ?? "animated");
+                    if (e.DirOverride >= 0 && !string.IsNullOrWhiteSpace(e.StateName))
+                        PrefetchIconSmoothSheet(e.RsiPath!, e.StateName!, texFetcher);
+                }
             }
 
             TexEntry tex = default;
+            string? cacheKey = null;
             var hasTex = false;
-            if (!string.IsNullOrEmpty(e.RsiPath)
-                && _texCache.TryGetValue(e.RsiPath!, out tex)
+            if (texKey is not null
+                && TryGetCachedTex(texKey, e.RsiPath!, out tex, out cacheKey)
                 && tex.Id != 0)
             {
                 if (!GLES20.GlIsTexture(tex.Id))
                 {
-                    // Dead GL id after context loss / eviction race — fall back to solid color.
-                    _texCache.Remove(e.RsiPath!);
-                    _texLastUsed.Remove(e.RsiPath!);
-                    if (tex.AtlasKey is not null)
-                        _atlasMeta.Remove(tex.AtlasKey);
-                    _queuedTex.Remove(e.RsiPath!);
-                    QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled));
+                    // Dead GL id after context loss — remove only its canonical owner.
+                    _texCache.Remove(cacheKey!);
+                    _texLastUsed.Remove(cacheKey!);
+                    _queuedTex.Remove(texKey);
+                    QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled), e.StateName);
                 }
                 else
                 {
                     hasTex = true;
-                    _texCache[e.RsiPath!] = tex with { LastUsedFrame = _frames };
-                    _texLastUsed[e.RsiPath!] = _frames;
+                    _texCache[cacheKey!] = tex with { LastUsedFrame = _frames };
+                    _texLastUsed[cacheKey!] = _frames;
                 }
             }
 
-            // PC SpriteSystem: world rotation → RSI meta directions.
-            var eyeRelRot = e.NoRotation ? 0f : e.Rotation - camRot;
-            var drawRot = e.NoRotation ? 0f : e.Rotation - camRot;
+            // PC: NoRotation keeps the quad upright; RSI dir still follows entity world yaw
+            // (not camera). Using eyeRelRot for noRot wallmount lights smeared 4-dir sheets.
+            var dirRot = e.NoRotation ? e.Rotation : e.Rotation - camRot;
+            var drawRot = e.RotationOffset;
             if (hasTex)
             {
-                var uv = ResolveUv(tex, e.StateName, eyeRelRot, animTime, e.DirOverride);
-                var sizeX = Math.Max(8f, uv.FrameW) * zoom;
-                var sizeY = Math.Max(8f, uv.FrameH) * zoom;
-                if (e.IsControlled)
-                {
-                    sizeX *= 1.15f;
-                    sizeY *= 1.15f;
-                }
+                if (string.IsNullOrWhiteSpace(e.StateName) && !e.IsControlled)
+                    continue;
+                var stateForUv = e.StateName ?? (e.IsControlled ? "animated" : null);
+                var uv = ResolveUv(tex, stateForUv, dirRot, animTime, e.DirOverride);
+                if (uv.FrameW < 1f || uv.FrameH < 1f)
+                    continue; // missing IconSmooth/state — skip garbage draw
+                var sizeX = Math.Max(8f, uv.FrameW) * zoom * (e.ScaleX == 0 ? 1f : MathF.Abs(e.ScaleX));
+                var sizeY = Math.Max(8f, uv.FrameH) * zoom * (e.ScaleY == 0 ? 1f : MathF.Abs(e.ScaleY));
 
-                // PC GhostSystem translucency for observer sprites.
+                // PC GhostSystem translucency for observer sprites (no size hack — avoids crop look).
                 var alpha = e.IsControlled ? 0.92f : 1f;
                 if (LooksLikeGhostPath(e.RsiPath))
                     alpha = e.IsControlled ? 0.9f : 0.7f;
@@ -1074,10 +1092,14 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             && (_atlasMeta.TryGetValue(tex.AtlasKey, out var atlas)
                 || _atlasMeta.TryGetValue(tex.AtlasKey.Replace('\\', '/'), out atlas)))
         {
-            var animTime = ShouldAnimate(state) ? time : 0;
-            // Folder RSI: one state sheet PNG → UV inside that sheet. Packed .rsic → full atlas.
+            // Always prefer the GL texture pixel size for UV — LoadFolder seeds AtlasW from the
+            // first state PNG (often 32×32), which turns 4-dir 128×32 sheets into a full strip.
+            var ow = tex.AtlasPixelW > 0 ? tex.AtlasPixelW : 0;
+            var oh = tex.AtlasPixelH > 0 ? tex.AtlasPixelH : 0;
             return Port.Content.RsiAtlas.Sample(
-                atlas, state, rotation, animTime, folderPerStateSheet: tex.FolderMode, dirOverride);
+                atlas, state, rotation, time,
+                folderPerStateSheet: tex.FolderMode, dirOverride,
+                overrideAtlasW: ow, overrideAtlasH: oh);
         }
 
         // No meta: first cell only — never the whole packed sheet.
@@ -1159,32 +1181,32 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                           + (t.RotationMirroring % 4) * (MathF.PI * 0.5f);
 
             if (!string.IsNullOrEmpty(t.RsiPath) && contentRoot is not null)
-                QueueTexture(t.RsiPath!, pin: IsPinnedPath(t.RsiPath!));
+                QueueTexture(t.RsiPath!, pin: false, state: t.StateName);
 
             var hasTex = false;
             TexEntry tex = default;
-            if (!string.IsNullOrEmpty(t.RsiPath)
-                && _texCache.TryGetValue(t.RsiPath!, out tex)
+            string? cacheKey = null;
+            var texKey = !string.IsNullOrEmpty(t.RsiPath) ? MakeTexKey(t.RsiPath!, t.StateName) : null;
+            if (texKey is not null
+                && TryGetCachedTex(texKey, t.RsiPath!, out tex, out cacheKey)
                 && tex.Id != 0)
             {
                 if (!GLES20.GlIsTexture(tex.Id))
                 {
-                    _texCache.Remove(t.RsiPath!);
-                    _texLastUsed.Remove(t.RsiPath!);
-                    if (tex.AtlasKey is not null)
-                        _atlasMeta.Remove(tex.AtlasKey);
-                    _queuedTex.Remove(t.RsiPath!);
-                    QueueTexture(t.RsiPath!, pin: IsPinnedPath(t.RsiPath!));
+                    _texCache.Remove(cacheKey!);
+                    _texLastUsed.Remove(cacheKey!);
+                    _queuedTex.Remove(texKey);
+                    QueueTexture(t.RsiPath!, pin: false, state: t.StateName);
                 }
                 else
                 {
                     hasTex = true;
-                    _texCache[t.RsiPath!] = tex with
+                    _texCache[cacheKey!] = tex with
                     {
                         LastUsedFrame = _frames,
-                        Pinned = tex.Pinned || IsPinnedPath(t.RsiPath!)
+                        Pinned = tex.Pinned
                     };
-                    _texLastUsed[t.RsiPath!] = _frames;
+                    _texLastUsed[cacheKey!] = _frames;
                 }
             }
 
@@ -1193,6 +1215,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 var uv = string.IsNullOrEmpty(t.StateName)
                     ? ResolveTileUv(tex, t.Variant)
                     : ResolveUv(tex, t.StateName, 0, animTime);
+                if (uv.FrameW < 1f || uv.FrameH < 1f)
+                    continue;
                 _texQuads.Add(new TexQuad(
                     tex.Id, -100, sy, sx, sy, size, size, tileRot,
                     t.R / 255f * lightMul, t.G / 255f * lightMul, t.B / 255f * lightMul, 1f,
@@ -1264,9 +1288,125 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         lock (_gate) _tilesDrawnLast = drawn;
     }
 
-    void DrawWorldGrid(float camX, float camY, float zoom, float cosR, float sinR)
+    /// <summary>
+    /// PC Default parallax: tiled layer1.png at high slowness + lightweight starfield
+    /// stand-in for GeneratedParallax star layers.
+    /// </summary>
+    void DrawParallaxBackground(
+        float camX, float camY, float zoom, float cosR, float sinR,
+        string? contentRoot, Port.Content.AczOnDemandFetcher? texFetcher)
+    {
+        QueueTexture(ParallaxLayerPath, pin: true);
+        texFetcher?.EnsureFile(ParallaxLayerPath);
+
+        DrawStarfieldOverlay(camX, camY, zoom);
+
+        if (contentRoot is null)
+            return;
+        if (!TryGetCachedTex(ParallaxLayerPath, ParallaxLayerPath, out var tex, out var cacheKey)
+            || tex.Id == 0
+            || !GLES20.GlIsTexture(tex.Id))
+            return;
+
+        _texCache[cacheKey!] = tex with { LastUsedFrame = _frames, Pinned = true };
+        var tileW = Math.Max(256f, tex.AtlasPixelW > 0 ? tex.AtlasPixelW : tex.FrameW);
+        var tileH = Math.Max(256f, tex.AtlasPixelH > 0 ? tex.AtlasPixelH : tex.FrameH);
+        // PC: origin = eye * slowness (home=0); tiles cover the view AABB.
+        var originX = camX * ParallaxSlowness;
+        var originY = camY * ParallaxSlowness;
+        var halfW = _width * 0.5f / zoom;
+        var halfH = _height * 0.5f / zoom;
+        var reach = MathF.Max(halfW, halfH) * 1.6f;
+        var startX = MathF.Floor((originX - reach) / tileW) * tileW;
+        var startY = MathF.Floor((originY - reach) / tileH) * tileH;
+        var uv = new Port.Content.RsiAtlas.UvRect(0, 0, 1, 1, tileW, tileH);
+        var drawn = 0;
+        for (var wx = startX; wx < originX + reach + tileW && drawn < 48; wx += tileW)
+        for (var wy = startY; wy < originY + reach + tileH && drawn < 48; wy += tileH)
+        {
+            var cx = wx + tileW * 0.5f;
+            var cy = wy + tileH * 0.5f;
+            var dx = cx - camX;
+            var dy = cy - camY;
+            var sx = (dx * cosR - dy * sinR) * zoom;
+            var sy = (dx * sinR + dy * cosR) * zoom;
+            DrawTexturedQuad(sx, sy, tileW * zoom, tileH * zoom, tex.Id, uv, 0,
+                0.55f, 0.55f, 0.65f, 0.85f);
+            drawn++;
+        }
+    }
+
+    void DrawStarfieldOverlay(float camX, float camY, float zoom)
     {
         if (_program == 0 || _width <= 0 || _height <= 0)
+            return;
+
+        // Cheap GeneratedParallax stand-in: deterministic stars drifting with camera.
+        var halfW = _width * 0.5f;
+        var halfH = _height * 0.5f;
+        var seed = unchecked(
+            (int)MathF.Floor(camX * 0.02f) * 73856093
+            ^ (int)MathF.Floor(camY * 0.02f) * 19349663);
+        var vert = 0;
+        for (var i = 0; i < 120 && vert + 6 <= MaxVerts; i++)
+        {
+            seed = unchecked(seed * 1103515245 + 12345);
+            var nx = ((seed >> 16) & 0x7FFF) / 32768f;
+            seed = unchecked(seed * 1103515245 + 12345);
+            var ny = ((seed >> 16) & 0x7FFF) / 32768f;
+            seed = unchecked(seed * 1103515245 + 12345);
+            var bright = 0.35f + 0.65f * (((seed >> 16) & 0x7FFF) / 32768f);
+            var sx = (nx * 2f - 1f) * halfW;
+            var sy = (ny * 2f - 1f) * halfH;
+            // Slow drift vs camera for depth cue.
+            sx -= (camX * (1f - 0.996f) * zoom) % (halfW * 2f);
+            sy -= (camY * (1f - 0.989f) * zoom) % (halfH * 2f);
+            var size = 1.2f + bright * 1.8f;
+            vert = AppendSolidQuad(vert, sx - size, sy - size, sx + size, sy + size,
+                bright, bright, bright * 0.95f, 0.55f + bright * 0.35f);
+        }
+
+        if (vert <= 0) return;
+        // DrawTexturedQuad may have left a tiny (12-float) _posBuf — grow before Put.
+        EnsureBuffers(vert);
+        GLES20.GlUseProgram(_program);
+        GLES20.GlUniform2f(_uScreen, _width, _height);
+        _posBuf!.Position(0);
+        _posBuf.Put(_posScratch, 0, vert * 2);
+        _posBuf.Position(0);
+        _colBuf!.Position(0);
+        _colBuf.Put(_colScratch, 0, vert * 4);
+        _colBuf.Position(0);
+        GLES20.GlEnableVertexAttribArray(_aPos);
+        GLES20.GlEnableVertexAttribArray(_aColor);
+        GLES20.GlVertexAttribPointer(_aPos, 2, GLES20.GlFloat, false, 0, _posBuf);
+        GLES20.GlVertexAttribPointer(_aColor, 4, GLES20.GlFloat, false, 0, _colBuf);
+        GLES20.GlDrawArrays(GLES20.GlTriangles, 0, vert);
+        GLES20.GlDisableVertexAttribArray(_aPos);
+        GLES20.GlDisableVertexAttribArray(_aColor);
+    }
+
+    int AppendSolidQuad(int vert, float x0, float y0, float x1, float y1, float r, float g, float b, float a)
+    {
+        if (vert + 6 > MaxVerts) return vert;
+        void Put(int idx, float x, float y)
+        {
+            _posScratch[idx * 2] = x;
+            _posScratch[idx * 2 + 1] = y;
+            _colScratch[idx * 4] = r;
+            _colScratch[idx * 4 + 1] = g;
+            _colScratch[idx * 4 + 2] = b;
+            _colScratch[idx * 4 + 3] = a;
+        }
+        Put(vert, x0, y0); Put(vert + 1, x1, y0); Put(vert + 2, x1, y1);
+        Put(vert + 3, x0, y0); Put(vert + 4, x1, y1); Put(vert + 5, x0, y1);
+        return vert + 6;
+    }
+
+    void DrawWorldGrid(float camX, float camY, float zoom, float cosR, float sinR)
+    {
+        // Ghost mode uses parallax instead of the black tiled grid.
+        if (_ghostMode || _program == 0 || _width <= 0 || _height <= 0)
             return;
 
         var halfW = _width * 0.5f;
@@ -1401,9 +1541,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         _uvScratch[8] = u1; _uvScratch[9] = v1;
         _uvScratch[10] = u0; _uvScratch[11] = v1;
 
-        if (_posBuf is null || _posBuf.Capacity() < 12)
-            _posBuf = ByteBuffer.AllocateDirect(12 * sizeof(float)).Order(ByteOrder.NativeOrder())!.AsFloatBuffer();
-        _posBuf.Position(0);
+        // Grow shared solid buffers if needed; never replace a large buffer with a 12-float one.
+        EnsureBuffers(6);
+        _posBuf!.Position(0);
         _posBuf.Put(_texPosScratch, 0, 12);
         _posBuf.Position(0);
         _uvBuf.Position(0);
@@ -1439,81 +1579,173 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         for (var i = 0; i < tileCount; i++)
         {
             var p = tiles[i].RsiPath;
-            if (!string.IsNullOrEmpty(p))
-                _texNeeded.Add(p!);
+            if (string.IsNullOrEmpty(p)) continue;
+            _texNeeded.Add(MakeTexKey(p!, tiles[i].StateName));
+            _texNeeded.Add(p!);
         }
 
         for (var i = 0; i < count; i++)
         {
             var p = ents[i].RsiPath;
-            if (!string.IsNullOrEmpty(p))
-                _texNeeded.Add(p!);
+            if (string.IsNullOrEmpty(p)) continue;
+            _texNeeded.Add(MakeTexKey(p!, ents[i].StateName));
+            _texNeeded.Add(p!);
         }
+    }
+
+    static string MakeTexKey(string rsiPath, string? state)
+    {
+        if (string.IsNullOrWhiteSpace(state))
+            return rsiPath;
+        // Packed .rsic / plain PNG already contain all cells — one GPU texture per path.
+        if (rsiPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            || rsiPath.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
+            return rsiPath;
+        return rsiPath + "|" + state;
+    }
+
+    static void SplitTexKey(string key, out string path, out string? state)
+    {
+        var i = key.LastIndexOf('|');
+        if (i > 0 && i < key.Length - 1)
+        {
+            var maybeState = key[(i + 1)..];
+            if (maybeState.IndexOf('/') < 0 && maybeState.IndexOf('\\') < 0
+                && !maybeState.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
+                && !maybeState.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase)
+                && !maybeState.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+            {
+                path = key[..i];
+                state = maybeState;
+                return;
+            }
+        }
+
+        path = key;
+        state = null;
+    }
+
+    bool TryGetCachedTex(string texKey, string rsiPath, out TexEntry tex, out string? cacheKey)
+    {
+        if (_texCache.TryGetValue(texKey, out tex) && tex.Id != 0)
+        {
+            cacheKey = texKey;
+            return true;
+        }
+        // A bare-path fallback is valid only for a packed .rsic atlas. Folder RSIs
+        // own one GPU texture per exact state and must never cross-hit another sheet.
+        if (texKey != rsiPath
+            && _texCache.TryGetValue(rsiPath, out tex)
+            && tex.Id != 0
+            && !tex.FolderMode)
+        {
+            cacheKey = rsiPath;
+            return true;
+        }
+        tex = default;
+        cacheKey = null;
+        return false;
     }
 
     static bool PreferPinPath(string path, bool isControlled)
     {
-        if (isControlled) return true;
-        return IsPinnedPath(path);
+        return isControlled;
     }
 
-    static bool IsPinnedPath(string path)
-    {
-        // Keep critical structures and actor art resident; floor tiles can evict when off-screen.
-        if (path.Contains("Wall", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Window", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Grille", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Door", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("Ghost", StringComparison.OrdinalIgnoreCase))
-            return true;
-        return false;
-    }
-
-    void QueueTexture(string rsiPath, bool pin = false)
+    void QueueTexture(string rsiPath, bool pin = false, string? state = null)
     {
         if (string.IsNullOrWhiteSpace(rsiPath))
             return;
+        var key = MakeTexKey(rsiPath, state);
+        _texNeeded.Add(key);
         _texNeeded.Add(rsiPath);
-        if (_texCache.TryGetValue(rsiPath, out var existing))
+        _recentlyVisibleUntil[key] = _frames + RecentlyVisibleFrames;
+
+        if (_texCache.TryGetValue(key, out var existing))
         {
-            if (pin && !existing.Pinned)
-                _texCache[rsiPath] = existing with { Pinned = true };
-            _texLastUsed[rsiPath] = _frames;
-            _texCache[rsiPath] = _texCache[rsiPath] with { LastUsedFrame = _frames };
+            _texCache[key] = existing with
+            {
+                LastUsedFrame = _frames,
+                Pinned = existing.Pinned || pin,
+            };
+            _texLastUsed[key] = _frames;
             return;
         }
 
-        if (_queuedTex.Contains(rsiPath))
+        // Packed .rsic only: bare path shares one atlas. Folder RSI must never cross-hit.
+        if (key != rsiPath
+            && _texCache.TryGetValue(rsiPath, out existing)
+            && !existing.FolderMode)
+        {
+            _texCache[rsiPath] = existing with
+            {
+                LastUsedFrame = _frames,
+                Pinned = existing.Pinned || pin,
+            };
+            _texLastUsed[rsiPath] = _frames;
             return;
-        if (_texRetryAtFrame.TryGetValue(rsiPath, out var retryAt) && _frames < retryAt)
+        }
+
+        if (_queuedTex.Contains(key))
+            return;
+        if (_texRetryAtFrame.TryGetValue(key, out var retryAt) && _frames < retryAt)
             return;
 
         if (rsiPath.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
         {
-            if (_pendingTexLoad.Count > MaxPendingTex)
-                return;
-            if (_texCache.Count >= MaxTexCache && !pin && !TryEvictTextures(8))
-                return;
-            _queuedTex.Add(rsiPath);
-            _pendingTexLoad.Enqueue(rsiPath);
+            if (_texCache.Count >= MaxTexCache && !pin)
+                TryEvictTextures(16);
+            _queuedTex.Add(key);
+            if (pin)
+                PrependPending(_pendingTexLoad, key);
+            else
+                _pendingTexLoad.Enqueue(key);
             return;
         }
 
-        if (_pendingTexLoad.Count > MaxPendingTex)
-            return;
-        // Soft budget: when full, still allow pinned/needed paths after eviction attempt.
-        if (_texCache.Count >= MaxTexCache && !pin && !_texNeeded.Contains(rsiPath))
-        {
-            if (!TryEvictTextures(8))
-                return;
-        }
+        if (_texCache.Count >= MaxTexCache && !pin && !_texNeeded.Contains(key))
+            TryEvictTextures(16);
 
-        _queuedTex.Add(rsiPath);
-        _pendingTexLoad.Enqueue(rsiPath);
+        _queuedTex.Add(key);
+        if (pin)
+            PrependPending(_pendingTexLoad, key);
+        else
+            _pendingTexLoad.Enqueue(key);
     }
 
-    void QueueTexturePriority(string rsiPath) => QueueTexture(rsiPath, pin: true);
+    void PrefetchIconSmoothSheet(string rsiPath, string stateName, Port.Content.AczOnDemandFetcher? fetcher)
+    {
+        // state like solid3 / riveted0 → base "solid" / "riveted"
+        var i = stateName.Length - 1;
+        while (i >= 0 && char.IsDigit(stateName[i]))
+            i--;
+        if (i < 0 || i >= stateName.Length - 1)
+            return;
+        var stateBase = stateName[..(i + 1)];
+        var prefetchKey = rsiPath + "|" + stateBase;
+        if (!_iconSmoothPrefetched.Add(prefetchKey))
+            return;
+        fetcher?.EnsureIconSmoothSheet(rsiPath, stateBase, Port.Content.IconSmoothMode.Corners);
+        for (var n = 0; n <= 7; n++)
+            QueueTexture(rsiPath, pin: false, state: stateBase + n);
+    }
+
+    static void PrependPending(Queue<string> q, string key)
+    {
+        if (q.Count == 0)
+        {
+            q.Enqueue(key);
+            return;
+        }
+
+        var rest = q.ToArray();
+        q.Clear();
+        q.Enqueue(key);
+        foreach (var item in rest)
+            q.Enqueue(item);
+    }
+
+    void QueueTexturePriority(string rsiPath, string? state = null) => QueueTexture(rsiPath, pin: true, state: state);
 
     void TrimPendingQueue(Queue<string> q, int keep)
     {
@@ -1536,7 +1768,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         {
             if (entry.Pinned) continue;
             if (_texNeeded.Contains(path)) continue;
-            if (IsPinnedPath(path)) continue;
+            if (IsFloorTileKey(path)) continue;
+            if (_recentlyVisibleUntil.TryGetValue(path, out var until) && _frames <= until)
+                continue;
             _texEvictScratch.Add(path);
         }
 
@@ -1552,26 +1786,59 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
         var n = Math.Min(maxEvict, _texEvictScratch.Count);
         for (var i = 0; i < n; i++)
-        {
-            var path = _texEvictScratch[i];
-            if (!_texCache.TryGetValue(path, out var e))
-                continue;
-            // Never delete currently-needed paths (even if race added them).
-            if (_texNeeded.Contains(path))
-                continue;
-            if (e.Id != 0)
-            {
-                var ids = new[] { e.Id };
-                GLES20.GlDeleteTextures(1, ids, 0);
-            }
-
-            _texCache.Remove(path);
-            _queuedTex.Remove(path);
-            if (e.AtlasKey is not null)
-                _atlasMeta.Remove(e.AtlasKey);
-        }
+            EvictOne(_texEvictScratch[i]);
 
         return n > 0;
+    }
+
+    static bool IsFloorTileKey(string path) =>
+        path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+        && (path.Contains("Tiles/", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("Textures/Tiles", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Last resort when cache is full of recently-visible entries but a must-load needs a slot.
+    /// Still never touches pinned or currently-needed keys.
+    /// </summary>
+    void ForceEvictOldestUnneeded(int maxEvict)
+    {
+        _texEvictScratch.Clear();
+        foreach (var (path, entry) in _texCache)
+        {
+            if (entry.Pinned) continue;
+            if (_texNeeded.Contains(path)) continue;
+            if (IsFloorTileKey(path)) continue;
+            _texEvictScratch.Add(path);
+        }
+
+        if (_texEvictScratch.Count == 0)
+            return;
+
+        _texEvictScratch.Sort((a, b) =>
+        {
+            var la = _texCache.TryGetValue(a, out var ea) ? ea.LastUsedFrame : 0;
+            var lb = _texCache.TryGetValue(b, out var eb) ? eb.LastUsedFrame : 0;
+            return la.CompareTo(lb);
+        });
+
+        var n = Math.Min(maxEvict, _texEvictScratch.Count);
+        for (var i = 0; i < n; i++)
+            EvictOne(_texEvictScratch[i]);
+    }
+
+    void EvictOne(string path)
+    {
+        if (!_texCache.TryGetValue(path, out var e))
+            return;
+        if (e.Pinned || _texNeeded.Contains(path))
+            return;
+        if (e.Id != 0)
+            GLES20.GlDeleteTextures(1, new[] { e.Id }, 0);
+        _texCache.Remove(path);
+        _texLastUsed.Remove(path);
+        _queuedTex.Remove(path);
+        _recentlyVisibleUntil.Remove(path);
     }
 
     void PumpTextureLoads(string? contentRoot, Port.Content.AczOnDemandFetcher? fetcher)
@@ -1579,39 +1846,44 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         if (contentRoot is null)
             return;
 
-        if (_pendingTexLoad.Count > PendingTrimAt)
-            TrimPendingQueue(_pendingTexLoad, PendingKeepAfterTrim);
-
         for (var n = 0; n < LoadsPerFrame && _pendingTexLoad.Count > 0; n++)
         {
-            var path = _pendingTexLoad.Dequeue();
+            var key = _pendingTexLoad.Dequeue();
+            SplitTexKey(key, out var path, out var preferredState);
             try
             {
+                var mustLoad = _texNeeded.Contains(key) || _texNeeded.Contains(path)
+                               || (_recentlyVisibleUntil.TryGetValue(key, out var until) && _frames <= until);
                 if (_texCache.Count >= MaxTexCache)
                 {
-                    var mustLoad = _texNeeded.Contains(path) || IsPinnedPath(path);
-                    if (!mustLoad || !TryEvictTextures(12))
+                    // Aggressive room-making for visible keys; never refuse a must-load.
+                    TryEvictTextures(mustLoad ? 96 : 32);
+                    if (_texCache.Count >= MaxTexCache && mustLoad)
+                        ForceEvictOldestUnneeded(48);
+                    if (_texCache.Count >= MaxTexCache && !mustLoad)
                     {
-                        // Refuse load rather than thrash — keep queued for a later frame.
-                        _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 20;
+                        _pendingTexLoad.Enqueue(key);
                         continue;
                     }
                 }
 
-                // Floor tiles are plain PNGs (Textures/Tiles/*.png), not RSI/rsic.
+                var wantPin = mustLoad && (path.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
+                                           || path.Contains("Parallax", StringComparison.OrdinalIgnoreCase)
+                                           || string.Equals(path, ParallaxLayerPath, StringComparison.OrdinalIgnoreCase)
+                                           || IsFloorTileKey(path));
+
+                // Floor tiles / parallax are plain PNGs, not RSI/rsic.
                 if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                 {
                     var pngFull = ResolvePngPath(contentRoot, path);
                     if (pngFull is null)
                     {
-                        // Ask ACZ for Textures/<path> if indexed.
                         fetcher?.EnsureFile(
                             path.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase)
                                 ? path
                                 : "Textures/" + path.TrimStart('/'));
-                        _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 12;
+                        _queuedTex.Remove(key);
+                        _texRetryAtFrame[key] = _frames + 12;
                         continue;
                     }
 
@@ -1621,62 +1893,85 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                         _texCache[path] = entry with
                         {
                             LastUsedFrame = _frames,
-                            Pinned = IsPinnedPath(path) || _texNeeded.Contains(path),
+                            Pinned = wantPin,
                         };
-                        _queuedTex.Remove(path);
-                        _texRetryAtFrame.Remove(path);
+                        _queuedTex.Remove(key);
+                        _texRetryAtFrame.Remove(key);
                     }
                     else
                     {
-                        _queuedTex.Remove(path);
-                        _texRetryAtFrame[path] = _frames + 36;
+                        _queuedTex.Remove(key);
+                        _texRetryAtFrame[key] = _frames + 36;
                     }
 
                     continue;
                 }
 
-                var src = Port.Content.RsiMeta.FindRsiSource(contentRoot, path);
+                // Folder RSI requires an explicit state — never load first meta PNG.
+                if (string.IsNullOrWhiteSpace(preferredState))
+                {
+                    _queuedTex.Remove(key);
+                    continue;
+                }
+
+                var src = Port.Content.RsiMeta.FindRsiSource(contentRoot, path, preferredState);
                 if (src is null)
                 {
-                    _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(contentRoot, path, fetcher);
-                    _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 12;
+                    _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(
+                        contentRoot, path, fetcher, preferredState: preferredState);
+                    _queuedTex.Remove(key);
+                    _texRetryAtFrame[key] = _frames + 12;
                     continue;
                 }
 
-                // Prefer state-specific PNG for exploded folder RSIs when possible.
+                // Folder RSI: load the PNG for the requested IconSmooth/sprite state.
+                // Packed .rsic: one atlas texture shared by all states (cache under path).
                 var atlas = Port.Content.RsiAtlas.TryLoad(src.Value.Path);
-                var frame = Port.Content.RsiMeta.TryGetPreviewFrame(src.Value.Path);
+                var frame = Port.Content.RsiMeta.TryGetPreviewFrame(src.Value.Path, preferredState);
                 if (frame is null)
                 {
-                    _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 24;
+                    if (fetcher is not null && fetcher.IsReady)
+                    {
+                        foreach (var cand in Port.Content.AczOnDemandFetcher.CandidateTexturePaths(path, preferredState))
+                            fetcher.EnsureFile(cand);
+                    }
+
+                    _queuedTex.Remove(key);
+                    _texRetryAtFrame[key] = _frames + 24;
                     continue;
                 }
 
-                var rsiEntry = LoadTextureEntry(frame.Value, atlas, src.Value.Path, folderMode: !src.Value.IsRsic);
+                var folderMode = !src.Value.IsRsic;
+                var storeKey = src.Value.IsRsic ? path : key;
+                var rsiEntry = LoadTextureEntry(frame.Value, atlas, src.Value.Path, folderMode: folderMode);
                 if (rsiEntry.Id != 0)
                 {
-                    _texCache[path] = rsiEntry with
+                    var pinned = wantPin
+                                 || LooksLikeGhostPath(path)
+                                 || (_recentlyVisibleUntil.TryGetValue(key, out var pinUntil) && _frames <= pinUntil);
+                    _texCache[storeKey] = rsiEntry with
                     {
                         LastUsedFrame = _frames,
-                        Pinned = IsPinnedPath(path) || _texNeeded.Contains(path),
+                        Pinned = pinned,
                     };
                     if (atlas is not null)
+                    {
                         _atlasMeta[src.Value.Path] = atlas;
-                    _queuedTex.Remove(path);
-                    _texRetryAtFrame.Remove(path);
+                        _atlasMeta[path] = atlas;
+                    }
+                    _queuedTex.Remove(key);
+                    _texRetryAtFrame.Remove(key);
                 }
                 else
                 {
-                    _queuedTex.Remove(path);
-                    _texRetryAtFrame[path] = _frames + 36;
+                    _queuedTex.Remove(key);
+                    _texRetryAtFrame[key] = _frames + 36;
                 }
             }
             catch
             {
-                _queuedTex.Remove(path);
-                _texRetryAtFrame[path] = _frames + 20;
+                _queuedTex.Remove(key);
+                _texRetryAtFrame[key] = _frames + 20;
             }
         }
     }
@@ -1697,14 +1992,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         _texEvictScratch.Clear();
         foreach (var kv in _texCache)
         {
-            // Never delete textures still required by the current frame.
-            if (_texNeeded.Contains(kv.Key))
-                continue;
-            if (IsPinnedTexture(kv.Key))
+            if (kv.Value.Pinned) continue;
+            if (_texNeeded.Contains(kv.Key)) continue;
+            if (_recentlyVisibleUntil.TryGetValue(kv.Key, out var until) && _frames <= until)
                 continue;
             _texLastUsed.TryGetValue(kv.Key, out var last);
-            // Soft-age only — refuse new loads rather than thrashing live sprites.
-            if (_frames - last < 900)
+            // Keep off-screen textures longer so pan/return doesn't blank the station.
+            if (_frames - last < 2400)
                 continue;
             _texEvictScratch.Add(kv.Key);
         }
@@ -1722,26 +2016,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var need = _texCache.Count - MaxTexCache + 8;
         for (var i = 0; i < _texEvictScratch.Count && need > 0; i++)
         {
-            var key = _texEvictScratch[i];
-            if (!_texCache.TryGetValue(key, out var tex))
-                continue;
-            if (_texNeeded.Contains(key))
-                continue;
-            if (tex.Id != 0)
-                GLES20.GlDeleteTextures(1, new[] { tex.Id }, 0);
-            if (tex.AtlasKey is not null)
-            {
-                _atlasMeta.Remove(tex.AtlasKey);
-                _atlasMeta.Remove(key);
-            }
-            _texCache.Remove(key);
-            _texLastUsed.Remove(key);
-            _queuedTex.Remove(key);
+            EvictOne(_texEvictScratch[i]);
             need--;
         }
     }
-
-    static bool IsPinnedTexture(string path) => IsPinnedPath(path);
 
     void LoadOnePng(string contentRoot, string path, Port.Content.AczOnDemandFetcher? fetcher)
     {
@@ -1778,23 +2056,31 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         }
     }
 
-    void LoadOneRsi(string contentRoot, string path, Port.Content.AczOnDemandFetcher? fetcher)
+    void LoadOneRsi(string contentRoot, string pathOrKey, Port.Content.AczOnDemandFetcher? fetcher)
     {
-        var src = Port.Content.RsiMeta.FindRsiSource(contentRoot, path);
+        SplitTexKey(pathOrKey, out var path, out var preferredState);
+        var src = Port.Content.RsiMeta.FindRsiSource(contentRoot, path, preferredState);
         if (src is null)
         {
-            _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(contentRoot, path, fetcher);
-            _queuedTex.Remove(path);
-            _texRetryAtFrame[path] = _frames + 30;
+            _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(
+                contentRoot, path, fetcher, preferredState: preferredState);
+            _queuedTex.Remove(pathOrKey);
+            _texRetryAtFrame[pathOrKey] = _frames + 30;
             return;
         }
 
         var atlas = Port.Content.RsiAtlas.TryLoad(src.Value.Path);
-        var frame = Port.Content.RsiMeta.TryGetPreviewFrame(src.Value.Path);
+        var frame = Port.Content.RsiMeta.TryGetPreviewFrame(src.Value.Path, preferredState);
         if (frame is null)
         {
-            _queuedTex.Remove(path);
-            _texRetryAtFrame[path] = _frames + 60;
+            if (fetcher is not null && fetcher.IsReady)
+            {
+                foreach (var cand in Port.Content.AczOnDemandFetcher.CandidateTexturePaths(path, preferredState))
+                    fetcher.EnsureFile(cand);
+            }
+
+            _queuedTex.Remove(pathOrKey);
+            _texRetryAtFrame[pathOrKey] = _frames + 60;
             return;
         }
 
@@ -1802,29 +2088,30 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         // single-state sheet (folder RSI), not that we should ignore meta directions.
         var folderMode = !src.Value.IsRsic;
         var atlasKey = src.Value.Path;
+        var storeKey = src.Value.IsRsic ? path : pathOrKey;
         if (!TryMakeRoomForTexture())
         {
-            _queuedTex.Remove(path);
-            _texRetryAtFrame[path] = _frames + 90;
+            _queuedTex.Remove(pathOrKey);
+            _texRetryAtFrame[pathOrKey] = _frames + 90;
             return;
         }
 
         var rsiEntry = LoadTextureEntry(frame.Value, atlas, atlasKey, folderMode);
         if (rsiEntry.Id != 0)
         {
-            _texCache[path] = rsiEntry;
+            _texCache[storeKey] = rsiEntry;
             if (atlas is not null)
             {
                 _atlasMeta[atlasKey] = atlas;
                 _atlasMeta[path] = atlas;
             }
-            _texLastUsed[path] = _frames;
-            _texRetryAtFrame.Remove(path);
+            _texLastUsed[storeKey] = _frames;
+            _texRetryAtFrame.Remove(pathOrKey);
         }
         else
         {
-            _queuedTex.Remove(path);
-            _texRetryAtFrame[path] = _frames + 60;
+            _queuedTex.Remove(pathOrKey);
+            _texRetryAtFrame[pathOrKey] = _frames + 60;
         }
     }
 

@@ -12,7 +12,6 @@ public sealed class AczOnDemandFetcher
 {
     readonly object _gate = new();
     readonly ConcurrentDictionary<string, byte> _inFlight = new(StringComparer.OrdinalIgnoreCase);
-    readonly ConcurrentDictionary<string, byte> _failed = new(StringComparer.OrdinalIgnoreCase);
     readonly ConcurrentQueue<string> _queue = new();
     int _active;
     const int MaxConcurrent = 4;
@@ -51,7 +50,13 @@ public sealed class AczOnDemandFetcher
             var isTilePng = p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
                             && (p.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
                                 || p.Contains("/tiles/", StringComparison.OrdinalIgnoreCase));
-            if (!isRsic && !isTilePng)
+            var isParallaxPng = p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                               && p.Contains("/Parallaxes/", StringComparison.OrdinalIgnoreCase);
+            // Exploded RSI folders — needed for IconSmooth state PNGs / meta on mobile ACZ.
+            var isRsiFolderAsset = p.Contains(".rsi/", StringComparison.OrdinalIgnoreCase)
+                                   && (p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                                       || p.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase));
+            if (!isRsic && !isTilePng && !isParallaxPng && !isRsiFolderAsset)
                 continue;
             map[p] = i;
         }
@@ -90,14 +95,13 @@ public sealed class AczOnDemandFetcher
         if (local is not null)
             return local;
 
-        if (_failed.ContainsKey(relativePath) || !_inFlight.TryAdd(relativePath, 0))
+        if (!_inFlight.TryAdd(relativePath, 0))
             return null;
 
         Dictionary<string, int>? map;
         lock (_gate) map = _rsicByPath;
         if (map is null || !map.ContainsKey(relativePath))
         {
-            _failed[relativePath] = 0;
             _inFlight.TryRemove(relativePath, out _);
             return null;
         }
@@ -149,7 +153,6 @@ public sealed class AczOnDemandFetcher
                 }
                 catch (Exception ex)
                 {
-                    _failed[pathCopy] = 0;
                     log?.Invoke($"ondemand FAIL {pathCopy}: {ex.Message}");
                 }
                 finally
@@ -162,7 +165,7 @@ public sealed class AczOnDemandFetcher
         }
     }
 
-    public static IEnumerable<string> CandidateTexturePaths(string rsiRelative)
+    public static IEnumerable<string> CandidateTexturePaths(string rsiRelative, string? preferredState = null)
     {
         var rel = rsiRelative.Replace('\\', '/').TrimStart('/');
         if (rel.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
@@ -174,7 +177,33 @@ public sealed class AczOnDemandFetcher
         else if (noExt.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
             noExt = noExt[..^5];
 
+        // Packed atlas first (most SS14 content), then only the exact exploded state.
         yield return $"Textures/{noExt}.rsic";
+        yield return $"Textures/{noExt}.rsi/meta.json";
+        if (!string.IsNullOrWhiteSpace(preferredState))
+            yield return $"Textures/{noExt}.rsi/{preferredState}.png";
+    }
+
+    /// <summary>
+    /// Prefetch IconSmooth corner/cardinal state PNGs (solid0..7 / riveted0..7 / flags 0..15).
+    /// </summary>
+    public void EnsureIconSmoothSheet(string rsiRelative, string stateBase, IconSmoothMode mode, Action<string>? log = null)
+    {
+        if (string.IsNullOrWhiteSpace(rsiRelative) || string.IsNullOrWhiteSpace(stateBase))
+            return;
+        foreach (var path in CandidateTexturePaths(rsiRelative))
+            EnsureFile(path, log);
+        var max = mode switch
+        {
+            IconSmoothMode.CardinalFlags => 15,
+            IconSmoothMode.Diagonal => 1,
+            _ => 7,
+        };
+        for (var i = 0; i <= max; i++)
+        {
+            foreach (var path in CandidateTexturePaths(rsiRelative, stateBase + i))
+                EnsureFile(path, log);
+        }
     }
 }
 

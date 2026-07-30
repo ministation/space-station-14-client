@@ -59,7 +59,8 @@ public static class RsiMeta
 
     public readonly record struct RsiSource(string Path, bool IsRsic);
 
-    public static RsiSource? FindRsiSource(string contentFilesRoot, string rsiRelative)
+    public static RsiSource? FindRsiSource(
+        string contentFilesRoot, string rsiRelative, string? preferredState = null)
     {
         if (string.IsNullOrWhiteSpace(contentFilesRoot) || string.IsNullOrWhiteSpace(rsiRelative))
             return null;
@@ -95,7 +96,35 @@ public static class RsiMeta
         };
         foreach (var c in dirCandidates)
         {
-            if (Directory.Exists(c) && File.Exists(Path.Combine(c, "meta.json")))
+            if (!Directory.Exists(c) || !File.Exists(Path.Combine(c, "meta.json")))
+                continue;
+
+            // Prefer packed .rsic when the folder is a partial ACZ stub (often only full.png).
+            // IconSmooth needs solid0..7 — accepting incomplete folders traps us forever.
+            if (!string.IsNullOrWhiteSpace(preferredState))
+            {
+                var exact = Path.Combine(c, preferredState + ".png");
+                if (!File.Exists(exact))
+                    continue;
+                return new RsiSource(c, IsRsic: false);
+            }
+
+            var pngCount = 0;
+            try
+            {
+                foreach (var _ in Directory.EnumerateFiles(c, "*.png"))
+                {
+                    pngCount++;
+                    if (pngCount >= 2) break;
+                }
+            }
+            catch
+            {
+                /* ignore */
+            }
+
+            // Single-PNG folders are almost always editor "full" stubs — wait for .rsic.
+            if (pngCount >= 2)
                 return new RsiSource(c, IsRsic: false);
         }
 
@@ -137,39 +166,21 @@ public static class RsiMeta
 
         var fw = doc.Size?.X > 0 ? doc.Size.X : 32;
         var fh = doc.Size?.Y > 0 ? doc.Size.Y : 32;
-        // Prefer requested / canonical states for multi-state folder RSIs.
-        State? state = null;
-        if (!string.IsNullOrWhiteSpace(preferredState))
-            state = doc.States.FirstOrDefault(s =>
-                string.Equals(s.Name, preferredState, StringComparison.OrdinalIgnoreCase));
-        state ??= doc.States.FirstOrDefault(s =>
-                      string.Equals(s.Name, "full", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(s.Name, "icon", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(s.Name, "animated", StringComparison.OrdinalIgnoreCase)
-                      || string.Equals(s.Name, "default", StringComparison.OrdinalIgnoreCase))
-                  ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name)
-                                                    && File.Exists(Path.Combine(rsiPathOrDirectory, s.Name + ".png")))
-                  ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
-                  ?? doc.States.FirstOrDefault();
-        if (state is null)
+        // Preferred state is required for folder RSI — never pick the first PNG (chairs→sofa).
+        if (string.IsNullOrWhiteSpace(preferredState))
             return null;
+        var preferred = doc.States.FirstOrDefault(s =>
+            string.Equals(s.Name, preferredState, StringComparison.OrdinalIgnoreCase));
+        if (preferred is null)
+            return null;
+        var preferredPng = Path.Combine(rsiPathOrDirectory, preferred.Name + ".png");
+        if (!File.Exists(preferredPng))
+            return null;
+        var state = preferred;
 
         var png = Path.Combine(rsiPathOrDirectory, state.Name + ".png");
         if (!File.Exists(png))
-        {
-            var sheet = Path.Combine(
-                rsiPathOrDirectory,
-                Path.GetFileNameWithoutExtension(rsiPathOrDirectory.TrimEnd('/', '\\')) + ".png");
-            if (File.Exists(sheet))
-                png = sheet;
-            else
-            {
-                var any = Directory.GetFiles(rsiPathOrDirectory, "*.png").FirstOrDefault();
-                if (any is null)
-                    return null;
-                png = any;
-            }
-        }
+            return null;
 
         return new FrameInfo(png, fw, fh, 0);
     }
@@ -181,26 +192,50 @@ public static class RsiMeta
         string contentFilesRoot,
         string rsiRelative,
         AczOnDemandFetcher? fetcher,
-        Action<string>? log = null)
+        Action<string>? log = null,
+        string? preferredState = null)
     {
-        var src = FindRsiSource(contentFilesRoot, rsiRelative);
+        var src = FindRsiSource(contentFilesRoot, rsiRelative, preferredState);
         if (src is { } s)
-            return TryGetPreviewFrame(s.Path);
+            return TryGetPreviewFrame(s.Path, preferredState);
 
         if (fetcher is null || !fetcher.IsReady)
             return null;
 
-        foreach (var candidate in AczOnDemandFetcher.CandidateTexturePaths(rsiRelative))
+        foreach (var candidate in AczOnDemandFetcher.CandidateTexturePaths(rsiRelative, preferredState))
         {
             var local = fetcher.EnsureFile(candidate, log);
             if (local is null)
                 continue;
-            var frame = TryGetPreviewFrame(local);
+            var frame = TryGetPreviewFrame(local, preferredState);
             if (frame is not null)
                 return frame;
             // meta.json alone — wait for folder pngs; ignore
         }
 
         return null;
+    }
+
+    /// <summary>IconSmooth connection keys like wall12 / window3 — must not load under the wrong PNG.</summary>
+    public static bool LooksLikeIconSmoothStateName(string? stateName)
+    {
+        if (string.IsNullOrWhiteSpace(stateName) || stateName.Length < 2)
+            return false;
+        var i = stateName.Length - 1;
+        while (i >= 0 && char.IsDigit(stateName[i]))
+            i--;
+        if (i < 0 || i == stateName.Length - 1)
+            return false;
+        var digits = stateName.Length - 1 - i;
+        if (digits is < 1 or > 2)
+            return false;
+        var bas = stateName[..(i + 1)];
+        return bas.Equals("wall", StringComparison.OrdinalIgnoreCase)
+               || bas.Equals("window", StringComparison.OrdinalIgnoreCase)
+               || bas.Equals("reinforced", StringComparison.OrdinalIgnoreCase)
+               || bas.Equals("reinforced_window", StringComparison.OrdinalIgnoreCase)
+               || bas.Equals("grille", StringComparison.OrdinalIgnoreCase)
+               || bas.Equals("diagonal", StringComparison.OrdinalIgnoreCase)
+               || bas.StartsWith("diagonal_", StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -24,10 +24,10 @@
             android:layout_height="match_parent"
             android:orientation="horizontal"
             android:gravity="center"
-            android:paddingLeft="36dp"
-            android:paddingRight="36dp"
-            android:paddingTop="24dp"
-            android:paddingBottom="24dp">
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -555,7 +555,7 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="vertical"
-            android:paddingTop="6dp">
+            android:paddingTop="0dp">
 
             <!-- Top bar -->
             <LinearLayout
@@ -901,37 +901,20 @@
             android:fontFamily="@font/exo2_semibold"
             android:stateListAnimator="@null" />
 
-        <!-- Ghost visibility toggle -->
-        <LinearLayout
-            android:id="@+id/ghost_toggles"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="104dp"
-            android:orientation="horizontal"
-            android:gravity="center">
+        <!-- Hidden: ghost visibility toggle removed from UI (id kept for FindViewById safety). -->
+        <Button
+            android:id="@+id/btn_ghost_vis"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone" />
 
-            <Button
-                android:id="@+id/btn_ghost_vis"
-                android:layout_width="64dp"
-                android:layout_height="28dp"
-                android:background="@drawable/hub_btn"
-                android:text="Духи"
-                android:textColor="@color/hub_text"
-                android:textAllCaps="false"
-                android:textSize="9sp"
-                android:fontFamily="@font/exo2_semibold"
-                android:stateListAnimator="@null"
-                android:padding="0dp" />
-        </LinearLayout>
-
-        <!-- Ghost actions — bottom center, compact -->
+        <!-- Ghost actions — bottom center, lower over chat bar -->
         <LinearLayout
             android:id="@+id/ghost_actions"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="68dp"
+            android:layout_marginBottom="10dp"
             android:orientation="horizontal"
             android:gravity="center">
 

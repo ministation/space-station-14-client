@@ -239,7 +239,8 @@ public class MainActivity : Activity
         }
 
         root.SetOnApplyWindowInsetsListener(new SafeAreaInsetsListener(() =>
-            _uiObserving || _connect.Observing || s_uiObserving));
+            _uiObserving || _connect.Observing || s_uiObserving
+            || _connect.InLobby || _connect.Busy));
         root.RequestApplyInsets();
     }
 
@@ -401,7 +402,6 @@ public class MainActivity : Activity
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_warps));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_follow));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_roles));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_vis));
     }
 
     void WireButtons()
@@ -570,12 +570,6 @@ public class MainActivity : Activity
             };
         }
 
-        FindViewById<Button>(Resource.Id.btn_ghost_vis)!.Click += (_, _) =>
-        {
-            _connect.Session.ToggleOtherGhosts();
-            RefreshGhostActionButtons();
-        };
-
         _connect.Session.GhostUiChanged += () => RunOnUiThread(() =>
         {
             RefreshGhostActionButtons();
@@ -715,10 +709,6 @@ public class MainActivity : Activity
             roles.Alpha = s.CanTakeGhostRoles ? 1f : 0.45f;
             roles.Text = s.GhostRoleCount > 0 ? $"Роли ({s.GhostRoleCount})" : "Роли";
         }
-
-        var vis = FindViewById<Button>(Resource.Id.btn_ghost_vis);
-        if (vis != null)
-            vis.Text = s.ShowOtherGhosts ? "Духи●" : "Духи○";
     }
 
     void WireObserveChat()
@@ -1150,8 +1140,8 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
-    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[12000];
+    GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
+    GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[12000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
     void UpdateObserveOverlay()
@@ -1239,6 +1229,8 @@ public class MainActivity : Activity
 
         // WorldStateCache already sorts by DrawDepth — avoid re-OrderBy on UI thread.
         var showGhosts = s.ShowOtherGhosts;
+        if (_spriteScratch.Length < world.Entities.Count)
+            Array.Resize(ref _spriteScratch, Math.Min(32_000, Math.Max(world.Entities.Count, _spriteScratch.Length * 2)));
         var n = 0;
         var limit = Math.Min(world.Entities.Count, _spriteScratch.Length);
         for (var i = 0; i < world.Entities.Count && n < limit; i++)
@@ -1261,6 +1253,9 @@ public class MainActivity : Activity
                 NoRotation = e.NoRotation,
                 Label = e.Label,
                 DirOverride = e.DirOverride,
+                ScaleX = e.ScaleX,
+                ScaleY = e.ScaleY,
+                RotationOffset = e.RotationOffset,
             };
         }
 
@@ -1566,13 +1561,14 @@ public class MainActivity : Activity
             _connect.Session.IsObserving = true;
 
         var observing = _uiObserving || _connect.Observing;
-        if (observing != _immersiveApplied)
-        {
-            _immersiveApplied = observing;
-            ApplyObserveImmersive(observing);
-        }
         var lobby = _connect.InLobby && !observing;
         var loading = _connect.Busy && !lobby && !observing;
+        var fullscreenChrome = observing || lobby || loading;
+        if (fullscreenChrome != _immersiveApplied)
+        {
+            _immersiveApplied = fullscreenChrome;
+            ApplyObserveImmersive(fullscreenChrome);
+        }
 
         if (_screenLoading != null)
             _screenLoading.Visibility = loading ? ViewStates.Visible : ViewStates.Gone;

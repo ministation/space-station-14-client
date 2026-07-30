@@ -17,15 +17,14 @@ namespace Port.Net;
 /// </summary>
 public sealed class WorldStateCache
 {
-    const int MaxDrawEntities = 4800;
     const int MaxDrawTiles = 12000;
-    const int MaxLayersPerEntity = 12;
     const int ChunkDefault = 16;
     /// <summary>PC DrawDepth.BelowFloor (Default=0).</summary>
     const int BelowFloorDepth = -13;
 
     readonly Dictionary<NetEntity, TransformComponentState> _xforms = new();
     readonly Dictionary<NetEntity, GameStateDecoder.SpriteVisual> _sprites = new();
+    readonly Dictionary<NetEntity, (NetEntity RelativeEntity, float RelativeRotation, float TargetRelativeRotation)> _movers = new();
     readonly Dictionary<NetEntity, string> _prototypes = new();
     readonly Dictionary<NetEntity, string> _names = new();
     readonly Dictionary<NetEntity, Dictionary<Vector2i, ChunkDatum>> _grids = new();
@@ -44,6 +43,10 @@ public sealed class WorldStateCache
     readonly List<WorldEntityDraw> _drawListScratch = new(4096);
     readonly HashSet<NetEntity> _ghostEntities = new();
     readonly Dictionary<NetEntity, AudioVisual> _audio = new();
+    /// <summary>DoorComponent.State — Open/Closed/Opening/Closing (PC DoorSystem visualizer).</summary>
+    readonly Dictionary<NetEntity, string> _doorStates = new();
+    /// <summary>Last non-empty floor draw — keep across LeavePvs/warp until new chunks arrive.</summary>
+    IReadOnlyList<WorldTileDraw> _lastTiles = Array.Empty<WorldTileDraw>();
     Vector2 _lastEyeOffset;
     bool _lastDrawFov = true;
 
@@ -103,6 +106,7 @@ public sealed class WorldStateCache
             {
                 _xforms.Remove(del);
                 _sprites.Remove(del);
+                _movers.Remove(del);
                 _prototypes.Remove(del);
                 _names.Remove(del);
                 _grids.Remove(del);
@@ -114,6 +118,7 @@ public sealed class WorldStateCache
                 _containerOccludes.Remove(del);
                 _ghostEntities.Remove(del);
                 _audio.Remove(del);
+                _doorStates.Remove(del);
                 _mapUidCache.Clear();
             }
         }
@@ -126,10 +131,13 @@ public sealed class WorldStateCache
         {
             _worldPosCache.Clear();
             if (!_lastControlled.IsValid() || !_xforms.ContainsKey(_lastControlled))
-                return Array.Empty<WorldTileDraw>();
+                return _lastTiles; // keep prior floors until eye/grid data returns
             var focus = ResolveWorldPos(_lastControlled);
             var eyeMap = ResolveMapUid(_lastControlled);
-            return BuildTileDrawList(focus, viewTiles, eyeMap);
+            var tiles = BuildTileDrawList(focus, viewTiles, eyeMap);
+            if (tiles.Count > 0)
+                _lastTiles = tiles;
+            return tiles.Count > 0 ? tiles : _lastTiles;
         }
     }
 
@@ -149,6 +157,7 @@ public sealed class WorldStateCache
         {
             _xforms.Clear();
             _sprites.Clear();
+            _movers.Clear();
             _prototypes.Clear();
             _names.Clear();
             _grids.Clear();
@@ -161,9 +170,11 @@ public sealed class WorldStateCache
             _containerOccludes.Clear();
             _ghostEntities.Clear();
             _audio.Clear();
+            _doorStates.Clear();
             _lastEyeOffset = default;
             _lastDrawFov = true;
             _lastControlled = default;
+            _lastTiles = Array.Empty<WorldTileDraw>();
             PrototypeHits = 0;
         }
     }
@@ -217,6 +228,7 @@ public sealed class WorldStateCache
                 {
                     _xforms.Clear();
                     _sprites.Clear();
+                    _movers.Clear();
                     _prototypes.Clear();
                     _names.Clear();
                     _grids.Clear();
@@ -239,6 +251,7 @@ public sealed class WorldStateCache
                 {
                     _xforms.Remove(del);
                     _sprites.Remove(del);
+                    _movers.Remove(del);
                     _prototypes.Remove(del);
                     _names.Remove(del);
                     _grids.Remove(del);
@@ -277,6 +290,7 @@ public sealed class WorldStateCache
                             {
                                 _xforms.Remove(es.NetEntity);
                                 _sprites.Remove(es.NetEntity);
+                                _movers.Remove(es.NetEntity);
                                 _prototypes.Remove(es.NetEntity);
                                 _names.Remove(es.NetEntity);
                                 _grids.Remove(es.NetEntity);
@@ -305,9 +319,7 @@ public sealed class WorldStateCache
                             if (!string.IsNullOrWhiteSpace(meta.PrototypeId))
                             {
                                 _prototypes[es.NetEntity] = meta.PrototypeId!;
-                                // Only attach prototype art if we have no network SpriteComponent yet.
-                                if (!_sprites.TryGetValue(es.NetEntity, out var existing) || !existing.FromNetwork)
-                                    TryAttachPrototypeSprite(es.NetEntity, meta.PrototypeId!);
+                                TryAttachPrototypeSprite(es.NetEntity, meta.PrototypeId!);
                             }
                             continue;
                         }
@@ -328,6 +340,12 @@ public sealed class WorldStateCache
                             continue;
                         }
 
+                        if (TryReadInputMover(change.State, out var mover))
+                        {
+                            _movers[es.NetEntity] = mover;
+                            continue;
+                        }
+
                         if (ctrlScan.IsValid() && es.NetEntity == ctrlScan)
                             TryApplyGhostFlags(change.State);
 
@@ -339,6 +357,9 @@ public sealed class WorldStateCache
 
                         if (TryExtractAudio(change.State, es.NetEntity))
                             continue;
+
+                        if (TryReadDoorState(change.State, out var doorState))
+                            _doorStates[es.NetEntity] = doorState;
 
                         var before = _sprites.Count;
                         GameStateDecoder.TryExtractSpritePublic(change.State, es.NetEntity, _sprites);
@@ -353,12 +374,25 @@ public sealed class WorldStateCache
                     _mapUidCache.Clear();
                 }
 
-                // Late bind sprites for entities that never got a SpriteComponentState.
+                // Late bind: structures/furniture always take YAML states (PC netsync:false).
+                // Network Sprite often ships a partial/wrong layer list (one screen, wrong door).
                 foreach (var (ent, proto) in _prototypes)
                 {
-                    if (_sprites.TryGetValue(ent, out var spr) && spr.FromNetwork)
+                    if (!_sprites.TryGetValue(ent, out var spr))
+                    {
+                        TryAttachPrototypeSprite(ent, proto);
                         continue;
-                    if (!_sprites.TryGetValue(ent, out spr) || string.IsNullOrEmpty(spr.Path))
+                    }
+
+                    if (!IsPlayerLike(proto, spr))
+                    {
+                        ForcePrototypeSprite(ent, proto, spr);
+                        continue;
+                    }
+
+                    if (spr.Layers.Count == 0)
+                        EnsurePrototypeLayers(ent, proto, spr);
+                    else if (!spr.FromNetwork && string.IsNullOrEmpty(spr.Path))
                         TryAttachPrototypeSprite(ent, proto);
                 }
 
@@ -432,8 +466,8 @@ public sealed class WorldStateCache
 
                 var drawList = _drawListScratch;
                 drawList.Clear();
-                if (drawList.Capacity < Math.Min(_xforms.Count * 2, MaxDrawEntities * 2))
-                    drawList.Capacity = Math.Min(_xforms.Count * 2, MaxDrawEntities * 2);
+                if (drawList.Capacity < Math.Min(_xforms.Count * 2, 20_000))
+                    drawList.Capacity = Math.Min(_xforms.Count * 2, 20_000);
                 Vector2 sum = default;
                 var nSum = 0;
                 // Viewport stream: only draw near the eye (+ margin). Far store kept until LeavePvs.
@@ -442,6 +476,8 @@ public sealed class WorldStateCache
                 var viewR2 = viewTiles * viewTiles;
 
                 // IconSmooth occupancy: parent/grid-local lookup matching PC Snapgrid.
+                // Include NoSprite contributors; keep all same-map smoothers (no distance
+                // cull) so edge walls don't flicker connection states while walking.
                 var smoothTiles = _smoothTilesScratch;
                 smoothTiles.Clear();
                 var smoothByEnt = _smoothByEntScratch;
@@ -450,35 +486,35 @@ public sealed class WorldStateCache
                 {
                     if (!xf0.ParentID.IsValid() || _grids.ContainsKey(ent))
                         continue;
-
-                    var wp0 = ResolveWorldPos(ent);
-                    var dx0 = wp0.X - worldEye.X;
-                    var dy0 = wp0.Y - worldEye.Y;
-                    if (dx0 * dx0 + dy0 * dy0 > viewR2 * 1.35f)
-                        continue;
+                    if (eyeMap.IsValid())
+                    {
+                        var entMap0 = ResolveMapUid(ent);
+                        if (entMap0.IsValid() && entMap0 != eyeMap)
+                            continue;
+                    }
 
                     _prototypes.TryGetValue(ent, out var proto0);
                     _sprites.TryGetValue(ent, out var spr0);
-                    var path0 = spr0?.Path;
-                    if (string.IsNullOrEmpty(path0) && proto0 is not null)
-                        path0 = _protos?.TryGetSprite(proto0);
-                    if (string.IsNullOrEmpty(path0)
-                        || !TryResolveIconSmooth(proto0, path0, out var smooth0)
-                        || smooth0.Mode == IconSmoothMode.NoSprite)
+                    var path0 = ResolveSpritePath(spr0, proto0);
+                    if (!TryResolveIconSmooth(proto0, path0, out var smooth0))
                         continue;
 
                     var tx0 = (int)MathF.Floor(xf0.LocalPosition.X);
                     var ty0 = (int)MathF.Floor(xf0.LocalPosition.Y);
                     var parentKey = xf0.ParentID.Id;
+                    // Occupancy is always by the entity's own SmoothKey (PC MatchingEntity).
                     smoothTiles.Add((parentKey, tx0, ty0, smooth0.Key));
+
+                    // NoSprite only contributes to neighbors — never draws its own smooth.
+                    if (smooth0.Mode == IconSmoothMode.NoSprite || string.IsNullOrEmpty(path0))
+                        continue;
+
                     var depth0 = spr0 is { FromNetwork: true, HasDrawDepth: true }
                         ? spr0.DrawDepth
                         : ClassifyDepth(path0, spr0?.DrawDepth ?? GameStateDecoder.GuessDepth(path0), proto0);
                     smoothByEnt[ent] = (smooth0, path0!, depth0, parentKey, tx0, ty0);
                 }
 
-                const int maxCornerSmooth = 480;
-                var cornerSmoothCount = 0;
                 foreach (var (ent, xf) in _xforms)
                 {
                     if (_grids.ContainsKey(ent) && !_sprites.ContainsKey(ent) && !_prototypes.ContainsKey(ent))
@@ -553,9 +589,21 @@ public sealed class WorldStateCache
                         var tx = smoothEnt.Tx;
                         var ty = smoothEnt.Ty;
                         var parent = smoothEnt.Parent;
-                        var key = smoothEnt.Data.Key;
                         var bas = smoothEnt.Data.StateBase;
-                        bool Has(int ox, int oy) => smoothTiles.Contains((parent, tx + ox, ty + oy, key));
+                        // PC MatchingEntity: neighbor.SmoothKey == us.Key || us.AdditionalKeys.contains(neighbor.Key)
+                        bool Has(int ox, int oy)
+                        {
+                            if (smoothTiles.Contains((parent, tx + ox, ty + oy, smoothEnt.Data.Key)))
+                                return true;
+                            var extra = smoothEnt.Data.AdditionalKeys;
+                            if (extra is null) return false;
+                            for (var i = 0; i < extra.Length; i++)
+                            {
+                                if (smoothTiles.Contains((parent, tx + ox, ty + oy, extra[i])))
+                                    return true;
+                            }
+                            return false;
+                        }
 
                         if (smoothEnt.Data.Mode == IconSmoothMode.CardinalFlags)
                         {
@@ -570,48 +618,58 @@ public sealed class WorldStateCache
                         }
                         else if (smoothEnt.Data.Mode == IconSmoothMode.Diagonal)
                         {
-                            var d = Has(1, 0) && Has(1, -1) && Has(0, -1) ? 1 : 0;
+                            // PC CalculateNewSpriteDiagonal: neighbor offsets rotated by LocalRotation.
+                            var diagRot = (float)xf.Rotation.Theta;
+                            var cosA = MathF.Cos(diagRot);
+                            var sinA = MathF.Sin(diagRot);
+                            bool HasRotated(float lx, float ly)
+                            {
+                                var rx = lx * cosA - ly * sinA;
+                                var ry = lx * sinA + ly * cosA;
+                                return Has((int)MathF.Round(rx), (int)MathF.Round(ry));
+                            }
+                            var d = HasRotated(1, 0) && HasRotated(1, -1) && HasRotated(0, -1) ? 1 : 0;
                             drawList.Add(new WorldEntityDraw(
                                 ent, wp.X, wp.Y, worldRot, path, r, g, b, false, depth,
                                 $"{bas}{d}", true, 0, 0, true, null, -1, isGhost));
                         }
-                        else if (cornerSmoothCount < maxCornerSmooth)
+                        else
                         {
                             var n = Has(0, 1);
                             var ne = Has(1, 1);
                             var e = Has(1, 0);
                             var se = Has(1, -1);
-                            var s = Has(0, -1);
+                            var south = Has(0, -1);
                             var sw = Has(-1, -1);
                             var w = Has(-1, 0);
                             var nw = Has(-1, 1);
 
+                            // CornerFill bits match Content.Client IconSmoothSystem (Baystation12).
                             byte cNE = 0, cNW = 0, cSW = 0, cSE = 0;
                             if (n) { cNE |= 1; cNW |= 4; }
                             if (ne) cNE |= 2;
                             if (e) { cNE |= 4; cSE |= 1; }
                             if (se) cSE |= 2;
-                            if (s) { cSE |= 4; cSW |= 1; }
+                            if (south) { cSE |= 4; cSW |= 1; }
                             if (sw) cSW |= 2;
                             if (w) { cSW |= 4; cNW |= 1; }
                             if (nw) cNW |= 2;
 
+                            // Remap fills by local cardinal facing (same switch as PC CalculateCornerFill).
+                            var cornerLocalRot = (float)xf.Rotation.Theta;
+                            RemapIconSmoothCorners(cornerLocalRot, ref cNE, ref cNW, ref cSW, ref cSE);
+
+                            // RSI dir indices with base = South (Angle 0 → South on PC):
+                            // SE=None→S=0, NE=CCW→E=2, NW=Flip→N=1, SW=CW→W=3.
                             void AddCorner(byte fill, int dir) =>
                                 drawList.Add(new WorldEntityDraw(
                                     ent, wp.X, wp.Y, worldRot, path, r, g, b, false, depth,
                                     $"{bas}{fill}", true, 0, 0, true, null, dir, isGhost));
 
-                            AddCorner(cSE, 2);
-                            AddCorner(cNE, 1);
-                            AddCorner(cNW, 3);
-                            AddCorner(cSW, 0);
-                            cornerSmoothCount++;
-                        }
-                        else
-                        {
-                            drawList.Add(new WorldEntityDraw(
-                                ent, wp.X, wp.Y, worldRot, path, r, g, b, false, depth,
-                                "full", true, 0, 0, true, null, -1, isGhost));
+                            AddCorner(cSE, 0);
+                            AddCorner(cNE, 2);
+                            AddCorner(cNW, 1);
+                            AddCorner(cSW, 3);
                         }
 
                         sum += wp;
@@ -619,59 +677,23 @@ public sealed class WorldStateCache
                         continue;
                     }
 
-                    // Non-mob structures without network layers: YAML sprite+state fill-in.
-                    // Airlocks/doors/machines keep networked layers below (open/closed etc.).
-                    if (!isCtrl && !IsPlayerLike(protoId, spr)
-                        && spr is not { FromNetwork: true, Layers.Count: > 0 })
+                    // Empty layer stack → expand full YAML layers (computers: base+keyboard+screen).
+                    if ((spr?.Layers.Count ?? 0) == 0 && !string.IsNullOrEmpty(protoId))
                     {
-                        var yamlPath = !string.IsNullOrEmpty(protoId) ? _protos?.TryGetSprite(protoId) : null;
-                        var yamlState = !string.IsNullOrEmpty(protoId) ? _protos?.TryGetState(protoId) : null;
-                        var path = (!string.IsNullOrEmpty(spr?.Path) ? spr!.Path : null) ?? yamlPath;
-                        if (string.IsNullOrEmpty(path) && spr?.Layers is { Count: > 0 })
-                            path = spr.Layers[0].Path ?? spr.Path;
-                        if (!string.IsNullOrEmpty(path))
-                        {
-                            var stateName = (!string.IsNullOrEmpty(spr?.State) ? spr!.State : null)
-                                            ?? yamlState
-                                            ?? (spr?.Layers is { Count: > 0 } ? spr.Layers[0].State : null)
-                                            ?? DefaultSpriteState(path, protoId);
-                            byte r = 255, g = 255, b = 255;
-                            if (spr is { HasColor: true })
-                            {
-                                r = spr.R;
-                                g = spr.G;
-                                b = spr.B;
-                            }
-
-                            var depth = spr is { FromNetwork: true, HasDrawDepth: true }
-                                ? spr.DrawDepth
-                                : ClassifyDepth(path, spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path), protoId);
-                            if (!IsHiddenFromDefaultEye(protoId, path, depth, spr?.FromNetwork == true))
-                            {
-                                drawList.Add(new WorldEntityDraw(
-                                    ent, wp.X, wp.Y, worldRot, path, r, g, b, false, depth,
-                                    stateName, true, 0, 0, spr?.NoRotation == true, null, -1, isGhost));
-                                sum += wp;
-                                nSum++;
-                                continue;
-                            }
-                        }
+                        EnsurePrototypeLayers(ent, protoId!, spr);
+                        _sprites.TryGetValue(ent, out spr);
                     }
 
                     var layersAdded = 0;
                     if (spr?.Layers is { Count: > 0 })
                     {
-                        // Mobs: full clothing stack. Structures: keep enough layers for base+door/overlay visuals.
-                        var maxLayers = IsPlayerLike(protoId, spr) || isCtrl
-                            ? MaxLayersPerEntity
-                            : (LooksLikeDoorOrMachine(protoId, spr.Path) ? 8 : 4);
+                        // Preserve the complete authoritative Sprite layer stack.
                         var baseDepth = spr.FromNetwork && spr.HasDrawDepth
                             ? spr.DrawDepth
                             : ClassifyDepth(spr.Path, spr.DrawDepth != 0 ? spr.DrawDepth : GameStateDecoder.GuessDepth(spr.Path), protoId);
 
                         foreach (var layer in spr.Layers)
                         {
-                            if (layersAdded >= maxLayers) break;
                             if (!layer.Visible) continue;
                             var path = layer.Path
                                        ?? (spr.FromNetwork ? spr.Path : null)
@@ -696,8 +718,14 @@ public sealed class WorldStateCache
                                 lb = 255;
                             }
 
-                            var layerState = layer.State ?? spr.State
-                                             ?? (isCtrl ? "animated" : DefaultSpriteState(path, protoId));
+                            var layerState = layer.State ?? spr.State;
+                            // PC DoorSystem: base layer follows DoorComponent.State (closed/open).
+                            if (_doorStates.TryGetValue(ent, out var doorSt)
+                                && IsDoorBaseLayerState(layerState))
+                                layerState = DoorVisualState(doorSt);
+                            // Never draw without an explicit RSI state — null Sample substitutes wrong cells.
+                            if (string.IsNullOrWhiteSpace(layerState) && !isCtrl)
+                                continue;
                             // Layer offset is in local entity space → world via rotation.
                             var ox = layer.OffsetX;
                             var oy = layer.OffsetY;
@@ -710,7 +738,8 @@ public sealed class WorldStateCache
                             drawList.Add(new WorldEntityDraw(
                                 ent, wxL, wyL, worldRot,
                                 path, lr, lg, lb, isCtrl, sortDepth, layerState,
-                                true, 0, 0, spr.NoRotation || isCtrl, null, -1, isGhost));
+                                true, 0, 0, spr.NoRotation || isCtrl, null, -1, isGhost,
+                                layer.ScaleX, layer.ScaleY, layer.RotationOffset));
                             layersAdded++;
                         }
                     }
@@ -720,23 +749,14 @@ public sealed class WorldStateCache
                         byte r = spr?.R ?? 0, g = spr?.G ?? 0, b = spr?.B ?? 0;
                         var path = spr?.Path;
                         var stateName = spr?.State;
-                        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId)
-                            && spr is not { FromNetwork: true })
+                        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId))
                             path = _protos?.TryGetSprite(protoId);
-
-                        // Structures with empty network layers: fill from YAML prototype.
-                        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId)
-                            && IsStructureProto(protoId))
-                            path = _protos?.TryGetSprite(protoId);
+                        if (string.IsNullOrEmpty(stateName) && !string.IsNullOrEmpty(protoId))
+                            stateName = _protos?.TryGetState(protoId);
 
                         if (isCtrl)
                         {
-                            path = _protos?.TryGetSprite("MobObserver")
-                                   ?? _protos?.TryGetSprite("MobObserverBase")
-                                   ?? path
-                                   ?? "Mobs/Ghosts/ghost_human.rsi";
-                            if (string.IsNullOrEmpty(path) || path.Contains("null", StringComparison.OrdinalIgnoreCase))
-                                path = "Mobs/Ghosts/ghost_human.rsi";
+                            path = "Mobs/Ghosts/ghost_human.rsi";
                             stateName = "animated";
                             r = 255;
                             g = 248;
@@ -744,14 +764,14 @@ public sealed class WorldStateCache
                             isGhost = true;
                         }
 
-                        stateName ??= DefaultSpriteState(path, protoId);
+                        // Skip unknown furniture/items rather than drawing the wrong RSI cell.
+                        if (!isCtrl && (string.IsNullOrEmpty(path) || string.IsNullOrWhiteSpace(stateName)))
+                            continue;
 
                         if (spr is not { HasColor: true } && r == 0 && g == 0 && b == 0)
                         {
                             if (isCtrl) { r = 255; g = 248; b = 240; }
-                            else if (!string.IsNullOrEmpty(path)) { r = 255; g = 255; b = 255; }
-                            else if (!string.IsNullOrEmpty(protoId)) { r = 140; g = 160; b = 120; }
-                            else { continue; }
+                            else { r = 255; g = 255; b = 255; }
                         }
 
                         var depth = isCtrl
@@ -759,30 +779,6 @@ public sealed class WorldStateCache
                             : (spr is { FromNetwork: true, HasDrawDepth: true }
                                 ? spr.DrawDepth
                                 : ClassifyDepth(path, spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path), protoId));
-                        // Lockers/closets often rely on base+door layered states.
-                        if (!isCtrl && !string.IsNullOrEmpty(path) && LooksLikeLockerOrCloset(protoId, path))
-                        {
-                            var noRot = spr?.NoRotation == true
-                                        || (protoId?.Contains("Observer", StringComparison.OrdinalIgnoreCase) ?? false)
-                                        || (protoId?.Contains("Ghost", StringComparison.OrdinalIgnoreCase) ?? false);
-                            var topState = stateName;
-                            if (string.Equals(topState, "base", StringComparison.OrdinalIgnoreCase))
-                                topState = "door";
-                            topState ??= "door";
-
-                            drawList.Add(new WorldEntityDraw(
-                                ent, wp.X, wp.Y, worldRot,
-                                path, r, g, b, false, depth * 16, "base",
-                                true, 0, 0, noRot, null, -1, isGhost));
-                            drawList.Add(new WorldEntityDraw(
-                                ent, wp.X, wp.Y, worldRot,
-                                path, r, g, b, false, depth * 16 + 1, topState,
-                                true, 0, 0, noRot, null, -1, isGhost));
-                            sum += wp;
-                            nSum++;
-                            continue;
-                        }
-
                         drawList.Add(new WorldEntityDraw(
                             ent, wp.X, wp.Y, worldRot,
                             path, r, g, b, isCtrl, depth, stateName,
@@ -854,20 +850,6 @@ public sealed class WorldStateCache
                     worldEye = sum / nSum;
 
                 var focus = worldEye;
-                // Prefer entities near the eye if still over budget (avoid LINQ alloc thrash).
-                if (drawList.Count > MaxDrawEntities)
-                {
-                    drawList.Sort((a, b) =>
-                    {
-                        var da = Dist2(a.X, a.Y, focus.X, focus.Y);
-                        var db = Dist2(b.X, b.Y, focus.X, focus.Y);
-                        if (a.IsControlled != b.IsControlled)
-                            return a.IsControlled ? -1 : 1;
-                        return da.CompareTo(db);
-                    });
-                    drawList.RemoveRange(MaxDrawEntities, drawList.Count - MaxDrawEntities);
-                }
-
                 // Stable depth sort preserves multi-layer clothing order.
                 drawList.Sort((a, b) =>
                 {
@@ -879,6 +861,12 @@ public sealed class WorldStateCache
                 });
 
                 var tiles = BuildTileDrawList(focus, viewTiles, eyeMap);
+                if (tiles.Count > 0)
+                    _lastTiles = tiles;
+                else if (_lastTiles.Count > 0)
+                    tiles = _lastTiles is List<WorldTileDraw> list
+                        ? list
+                        : _lastTiles.ToList();
                 var audio = BuildAudioCueList(focus, viewTiles, eyeMap);
 
                 var detail =
@@ -923,33 +911,183 @@ public sealed class WorldStateCache
 
     void TryAttachPrototypeSprite(NetEntity ent, string prototypeId)
     {
-        if (_sprites.TryGetValue(ent, out var existing) && existing.FromNetwork)
-            return;
-
-        var path = _protos?.TryGetSprite(prototypeId);
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        if (existing is not null && !string.IsNullOrEmpty(existing.Path))
+        if (_sprites.TryGetValue(ent, out var existing) && existing.FromNetwork && IsPlayerLike(prototypeId, existing))
         {
-            if (string.IsNullOrEmpty(existing.State))
-                existing.State = _protos?.TryGetState(prototypeId) ?? DefaultSpriteState(existing.Path, prototypeId);
+            if (existing.Layers.Count == 0)
+                EnsurePrototypeLayers(ent, prototypeId, existing);
             return;
         }
 
-        _sprites[ent] = new GameStateDecoder.SpriteVisual
+        ForcePrototypeSprite(ent, prototypeId, _sprites.TryGetValue(ent, out var prev) ? prev : null);
+    }
+
+    /// <summary>
+    /// Rebuild sprite from YAML for furniture/machines/doors. Keeps network color/visibility.
+    /// </summary>
+    void ForcePrototypeSprite(NetEntity ent, string prototypeId, GameStateDecoder.SpriteVisual? existing)
+    {
+        var resolved = _protos?.TryGetResolvedSprite(prototypeId);
+        if (resolved is null)
         {
-            FromNetwork = false,
-            Path = path,
-            State = _protos?.TryGetState(prototypeId) ?? DefaultSpriteState(path, prototypeId),
-            R = 255,
-            G = 255,
-            B = 255,
-            DrawDepth = ClassifyDepth(path, GameStateDecoder.GuessDepth(path), prototypeId),
-            NoRotation = prototypeId.Contains("Observer", StringComparison.OrdinalIgnoreCase)
-                         || prototypeId.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
-                         || path.Contains("Ghost", StringComparison.OrdinalIgnoreCase),
-        };
+            if (existing is not null && existing.Layers.Count == 0)
+                EnsurePrototypeLayers(ent, prototypeId, existing);
+            return;
+        }
+
+        var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
+        // Authoritative path/state from prototype — stop sticky wrong network states.
+        visual.Path = resolved.Path ?? visual.Path;
+        visual.State = resolved.State ?? visual.State;
+        if (resolved.DrawDepth is { } dd)
+        {
+            visual.DrawDepth = dd;
+            visual.HasDrawDepth = true;
+        }
+        else if (!visual.HasDrawDepth)
+        {
+            visual.DrawDepth = ClassifyDepth(visual.Path, GameStateDecoder.GuessDepth(visual.Path), prototypeId);
+        }
+
+        visual.NoRotation = resolved.NoRotation || visual.NoRotation;
+        visual.Layers.Clear();
+        AppendResolvedLayers(visual, resolved);
+        ApplyStorageVisuals(visual, prototypeId, ent);
+
+        if (visual.Layers.Count == 0
+            && !string.IsNullOrEmpty(resolved.Path)
+            && !string.IsNullOrEmpty(resolved.State)
+            && !IsEditorOnlySpriteState(resolved.State))
+        {
+            visual.Layers.Add(new GameStateDecoder.LayerVis(
+                resolved.Path, resolved.State, visual.DrawDepth, true,
+                255, 255, 255, 0, 0, visual.HasDrawDepth));
+        }
+
+        // IconSmooth walls: path-only Sprite — leave layers empty so smooth path owns drawing.
+        if (visual.Layers.Count == 0
+            && TryResolveIconSmooth(prototypeId, resolved.Path, out _)
+            && !string.IsNullOrEmpty(resolved.Path))
+        {
+            visual.Path = resolved.Path;
+        }
+
+        _sprites[ent] = visual;
         PrototypeHits++;
+    }
+
+    /// <summary>
+    /// Fill empty SpriteVisual.Layers from YAML while preserving network Path/State/Color/Depth.
+    /// </summary>
+    void EnsurePrototypeLayers(NetEntity ent, string prototypeId, GameStateDecoder.SpriteVisual? existing)
+    {
+        var resolved = _protos?.TryGetResolvedSprite(prototypeId);
+        if (resolved is null)
+            return;
+
+        var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
+        if (string.IsNullOrEmpty(visual.Path))
+            visual.Path = resolved.Path;
+        if (string.IsNullOrEmpty(visual.State))
+            visual.State = resolved.State;
+        if (!visual.HasDrawDepth && resolved.DrawDepth is { } dd)
+        {
+            visual.DrawDepth = dd;
+            visual.HasDrawDepth = true;
+        }
+        visual.NoRotation = visual.NoRotation || resolved.NoRotation;
+
+        if (visual.Layers.Count == 0)
+        {
+            if (resolved.Layers.Count > 0)
+            {
+                AppendResolvedLayers(visual, resolved);
+                ApplyStorageVisuals(visual, prototypeId, ent);
+            }
+            else if (!string.IsNullOrEmpty(resolved.Path)
+                     && !string.IsNullOrEmpty(resolved.State)
+                     && !IsEditorOnlySpriteState(resolved.State))
+            {
+                // Single-state Sprite (not Icon editor full/icon). IconSmooth walls often
+                // have path-only Sprite — leave layers empty so IconSmooth path owns drawing.
+                visual.Layers.Add(new GameStateDecoder.LayerVis(
+                    resolved.Path, resolved.State, visual.DrawDepth, true,
+                    255, 255, 255, 0, 0, visual.HasDrawDepth));
+            }
+        }
+
+        _sprites[ent] = visual;
+        PrototypeHits++;
+    }
+
+    void ApplyStorageVisuals(GameStateDecoder.SpriteVisual visual, string prototypeId, NetEntity ent)
+    {
+        var storage = _protos?.TryGetStorageVisuals(prototypeId);
+        if (storage is null || visual.Layers.Count == 0)
+            return;
+
+        var open = _openContainers.Contains(ent)
+                   || (_containerOccludes.TryGetValue(ent, out var occludes) && !occludes);
+        for (var i = 0; i < visual.Layers.Count; i++)
+        {
+            var layer = visual.Layers[i];
+            var map = layer.MapKey ?? "";
+            var state = layer.State;
+            if (map.Contains("StorageVisualLayers.Base", StringComparison.OrdinalIgnoreCase))
+            {
+                state = open
+                    ? storage.Value.StateBaseOpen ?? storage.Value.StateBaseClosed ?? state
+                    : storage.Value.StateBaseClosed ?? state;
+            }
+            else if (map.Contains("StorageVisualLayers.Door", StringComparison.OrdinalIgnoreCase))
+            {
+                state = open
+                    ? storage.Value.StateDoorOpen ?? state
+                    : storage.Value.StateDoorClosed ?? state;
+            }
+            else if (map.Length == 0 && i == 0 && storage.Value.StateBaseClosed is not null)
+            {
+                // ClosetBase layout without map keys: layer0 body, layer1 door.
+                state = open
+                    ? storage.Value.StateBaseOpen ?? storage.Value.StateBaseClosed
+                    : storage.Value.StateBaseClosed;
+            }
+            else if (map.Length == 0 && i == 1 && storage.Value.StateDoorClosed is not null)
+            {
+                state = open
+                    ? storage.Value.StateDoorOpen ?? storage.Value.StateDoorClosed
+                    : storage.Value.StateDoorClosed;
+            }
+
+            if (!string.Equals(state, layer.State, StringComparison.Ordinal))
+                visual.Layers[i] = layer with { State = state };
+        }
+    }
+
+    static void AppendResolvedLayers(
+        GameStateDecoder.SpriteVisual visual,
+        PrototypeSpriteIndex.ResolvedSprite resolved)
+    {
+        foreach (var layer in resolved.Layers)
+        {
+            var state = layer.State ?? resolved.State;
+            if (string.IsNullOrWhiteSpace(state))
+                continue;
+            visual.Layers.Add(new GameStateDecoder.LayerVis(
+                layer.Path ?? resolved.Path,
+                state,
+                visual.DrawDepth,
+                layer.Visible,
+                layer.R,
+                layer.G,
+                layer.B,
+                layer.OffsetX,
+                layer.OffsetY,
+                resolved.DrawDepth is not null,
+                layer.ScaleX,
+                layer.ScaleY,
+                layer.Rotation,
+                layer.MapKey));
+        }
     }
 
     static int ClassifyDepth(string? path, int fallback, string? proto)
@@ -988,6 +1126,11 @@ public sealed class WorldStateCache
     static bool IsPlayerLike(string? proto, string? path)
     {
         var p = (proto ?? "") + " " + (path ?? "");
+        // Never treat spawn markers as "mobs" (MobSpawner etc. would skip YAML repair + hide).
+        if (p.Contains("Spawner", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("SpawnPoint", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Markers/", StringComparison.OrdinalIgnoreCase))
+            return false;
         return p.Contains("Mob", StringComparison.OrdinalIgnoreCase)
                || p.Contains("Human", StringComparison.OrdinalIgnoreCase)
                || p.Contains("Humanoid", StringComparison.OrdinalIgnoreCase)
@@ -1007,14 +1150,21 @@ public sealed class WorldStateCache
             return true;
 
         var p = (proto ?? "") + " " + (path ?? "");
+        // Spawn markers / RandomSpawner / job green circles (Markers/jobs.rsi state:green).
         if (p.Contains("SpawnPoint", StringComparison.OrdinalIgnoreCase)
             || p.Contains("SpawnMarker", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("TimedSpawner", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Spawner", StringComparison.OrdinalIgnoreCase)
             || p.Contains("WarpPoint", StringComparison.OrdinalIgnoreCase)
             || p.Contains("MarkerBase", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Marker", StringComparison.OrdinalIgnoreCase)
+                && (p.Contains("Spawn", StringComparison.OrdinalIgnoreCase)
+                    || p.Contains("Jobs", StringComparison.OrdinalIgnoreCase)
+                    || p.Contains("green", StringComparison.OrdinalIgnoreCase))
+            || p.Contains("Markers/", StringComparison.OrdinalIgnoreCase)
             || p.Contains("/Markers/", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("/Spawners/", StringComparison.OrdinalIgnoreCase)
             || p.Contains("Spawners/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("/Spawners/", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("jobs.rsi", StringComparison.OrdinalIgnoreCase)
             || p.Contains("Placement", StringComparison.OrdinalIgnoreCase)
                 && p.Contains("Ghost", StringComparison.OrdinalIgnoreCase))
             return true;
@@ -1041,90 +1191,108 @@ public sealed class WorldStateCache
     bool TryResolveIconSmooth(string? proto, string? path, out IconSmoothData data)
     {
         data = default;
-        // Mobile ghost viewport: IconSmooth ONLY for station walls + windows.
-        // Floors, grilles, tables, lockers, pipes, etc. must use normal Sprite states.
-        if (!IsWallOrWindowForSmooth(proto, path))
-            return false;
-
         var fromProto = _protos?.TryGetIconSmooth(proto);
-        if (fromProto is { } sm && sm.Mode != IconSmoothMode.NoSprite)
+        if (fromProto is { } sm)
         {
-            // Keep YAML key/base/mode when present (PC IconSmoothComponent).
             data = sm;
             return true;
         }
+        return false;
+    }
 
-        var p = path ?? "";
-        if (IsWindowForSmooth(proto, p))
+    string? ResolveSpritePath(GameStateDecoder.SpriteVisual? spr, string? proto)
+    {
+        if (!string.IsNullOrEmpty(spr?.Path))
+            return spr!.Path;
+        if (spr?.Layers is { Count: > 0 })
         {
-            data = new IconSmoothData("windows", "window", IconSmoothMode.Corners);
+            foreach (var layer in spr.Layers)
+            {
+                if (!string.IsNullOrEmpty(layer.Path))
+                    return layer.Path;
+            }
+        }
+        return !string.IsNullOrEmpty(proto) ? _protos?.TryGetSprite(proto) : null;
+    }
+
+    static bool IsEditorOnlySpriteState(string? state) =>
+        state is not null
+        && (state.Equals("full", StringComparison.OrdinalIgnoreCase)
+            || state.Equals("icon", StringComparison.OrdinalIgnoreCase));
+
+    static bool IsDoorBaseLayerState(string? state) =>
+        state is not null
+        && (state.Equals("closed", StringComparison.OrdinalIgnoreCase)
+            || state.Equals("open", StringComparison.OrdinalIgnoreCase)
+            || state.Equals("opening", StringComparison.OrdinalIgnoreCase)
+            || state.Equals("closing", StringComparison.OrdinalIgnoreCase)
+            || state.Equals("deny", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Map DoorState enum to RSI state names used by airlock RSIs.</summary>
+    static string DoorVisualState(string doorState) =>
+        doorState.ToLowerInvariant() switch
+        {
+            "open" or "opened" => "open",
+            "opening" => "opening",
+            "closing" => "closing",
+            "denying" or "deny" => "deny",
+            "emagging" or "emagged" => "closed",
+            "welded" => "closed", // welded overlay separate; keep base closed
+            _ => "closed",
+        };
+
+    bool TryReadDoorState(object state, out string doorState)
+    {
+        doorState = "";
+        var tn = state.GetType().Name;
+        if (!tn.Contains("Door", StringComparison.OrdinalIgnoreCase)
+            || !tn.Contains("State", StringComparison.OrdinalIgnoreCase)
+            || tn.Contains("Appearance", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var t = state.GetType();
+        foreach (var name in new[] { "State", "DoorState", "CurrentState" })
+        {
+            var p = t.GetProperty(name)?.GetValue(state)
+                    ?? t.GetField(name)?.GetValue(state);
+            if (p is null) continue;
+            var s = p is Enum e ? e.ToString() : p.ToString();
+            if (string.IsNullOrWhiteSpace(s) || s is "null")
+                continue;
+            doorState = s!;
             return true;
         }
 
-        // Real wall RSI / proto only.
-        data = new IconSmoothData("walls", GuessSmoothBase(p, "wall"), IconSmoothMode.Corners);
-        return true;
+        return false;
     }
 
-    static bool IsWallOrWindowForSmooth(string? proto, string? path)
-        => IsWindowForSmooth(proto, path) || IsWallForSmooth(proto, path);
-
-    static bool IsWindowForSmooth(string? proto, string? path)
+    /// <summary>
+    /// PC IconSmoothSystem.CalculateCornerFill remaps corner fills by LocalRotation cardinal.
+    /// Tuple order is (NE, NW, SW, SE).
+    /// </summary>
+    static void RemapIconSmoothCorners(float localRotRadians, ref byte cNE, ref byte cNW, ref byte cSW, ref byte cSE)
     {
-        var protoHit = proto ?? "";
-        var p = path ?? "";
-        if (protoHit.Contains("Window", StringComparison.OrdinalIgnoreCase)
-            && !protoHit.Contains("Wallmount", StringComparison.OrdinalIgnoreCase))
-            return true;
-        return p.Contains("/Windows/", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("Structures/Windows", StringComparison.OrdinalIgnoreCase);
-    }
-
-    static bool IsWallForSmooth(string? proto, string? path)
-    {
-        var protoHit = proto ?? "";
-        var p = path ?? "";
-
-        // Path is authoritative — only Structures/Walls/*.rsi
-        if (p.Contains("/Walls/", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Structures/Walls", StringComparison.OrdinalIgnoreCase))
+        // Cardinal: 0=E, 1=N, 2=W, 3=S (Robust Angle 0 = East).
+        var twoPi = MathF.PI * 2f;
+        var a = localRotRadians % twoPi;
+        if (a < 0) a += twoPi;
+        var cardinal = (int)MathF.Floor(((a + MathF.PI / 4f) % twoPi) / (MathF.PI / 2f));
+        byte ne = cNE, nw = cNW, sw = cSW, se = cSE;
+        switch (cardinal)
         {
-            // Exclude wall-mounted furniture that lives under odd paths.
-            if (p.Contains("Wallmount", StringComparison.OrdinalIgnoreCase)
-                || p.Contains("Closet", StringComparison.OrdinalIgnoreCase)
-                || p.Contains("Locker", StringComparison.OrdinalIgnoreCase))
-                return false;
-            return true;
+            case 1: // North
+                cNE = sw; cNW = se; cSW = ne; cSE = nw;
+                break;
+            case 2: // West
+                cNE = se; cNW = ne; cSW = nw; cSE = sw;
+                break;
+            case 3: // South
+                // identity
+                break;
+            default: // East
+                cNE = nw; cNW = sw; cSW = se; cSE = ne;
+                break;
         }
-
-        // Proto id fallback — strict wall entities only (not WallCloset / WallLocker / …).
-        if (string.IsNullOrEmpty(protoHit) || !protoHit.Contains("Wall", StringComparison.OrdinalIgnoreCase))
-            return false;
-        if (protoHit.Contains("Window", StringComparison.OrdinalIgnoreCase))
-            return false;
-        if (protoHit.Contains("Wallmount", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("WallLight", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("WallTerminal", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("WallCabinet", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("WallCloset", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("WallLocker", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Closet", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Locker", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Cabinet", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Fireplace", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Shelf", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Rack", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Girder", StringComparison.OrdinalIgnoreCase)
-            || protoHit.Contains("Grille", StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        // Prefer names that look like wall tiles: WallSolid, ReinforcedWall, …
-        return protoHit.Contains("ReinforcedWall", StringComparison.OrdinalIgnoreCase)
-               || protoHit.StartsWith("Wall", StringComparison.OrdinalIgnoreCase)
-               || protoHit.EndsWith("Wall", StringComparison.OrdinalIgnoreCase)
-               || protoHit.Contains("WallSolid", StringComparison.OrdinalIgnoreCase)
-               || protoHit.Contains("WallRock", StringComparison.OrdinalIgnoreCase)
-               || protoHit.Contains("WallShuttle", StringComparison.OrdinalIgnoreCase);
     }
 
     static bool LooksLikeDoorOrMachine(string? proto, string? path)
@@ -1144,66 +1312,6 @@ public sealed class WorldStateCache
                || p.Contains("Closet", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/Closets/", StringComparison.OrdinalIgnoreCase)
                || p.Contains("/Lockers/", StringComparison.OrdinalIgnoreCase);
-    }
-
-    static bool LooksLikeLockerOrCloset(string? proto, string? path)
-    {
-        var p = (proto ?? "") + " " + (path ?? "");
-        return p.Contains("Locker", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("Closet", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("Cabinet", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("/Closets/", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("/Lockers/", StringComparison.OrdinalIgnoreCase)
-               || p.Contains("Structures/Storage", StringComparison.OrdinalIgnoreCase);
-    }
-
-    static float Dist2(float x, float y, float fx, float fy)
-    {
-        var dx = x - fx;
-        var dy = y - fy;
-        return dx * dx + dy * dy;
-    }
-
-    static string GuessSmoothBase(string path, string fallback)
-    {
-        // Window RSIs almost always use stateBase "window" (YAML IconSmooth.base), not the file name.
-        if (fallback.Equals("window", StringComparison.OrdinalIgnoreCase))
-            return "window";
-
-        try
-        {
-            var name = Path.GetFileNameWithoutExtension(path.Replace('\\', '/'));
-            if (name.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
-                name = name[..^4];
-            if (!string.IsNullOrWhiteSpace(name))
-                return name;
-        }
-        catch
-        {
-            /* ignore */
-        }
-
-        return fallback;
-    }
-
-    string? DefaultSpriteState(string? path, string? proto)
-    {
-        var fromProto = _protos?.TryGetState(proto);
-        if (!string.IsNullOrWhiteSpace(fromProto))
-            return fromProto;
-
-        var p = (path ?? "") + " " + (proto ?? "");
-        // IconSmooth walls: Sprite has no state until client IconSmooth; RSI icon state is "full".
-        if (p.Contains("Wall", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("/Walls/", StringComparison.OrdinalIgnoreCase))
-            return "full";
-        if (p.Contains("Window", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Grille", StringComparison.OrdinalIgnoreCase))
-            return "full";
-        if (p.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Observer", StringComparison.OrdinalIgnoreCase))
-            return "animated";
-        return null;
     }
 
     List<WorldTileDraw> BuildTileDrawList(Vector2 focus, float viewTiles, NetEntity eyeMap)
@@ -1770,7 +1878,56 @@ public sealed class WorldStateCache
                || p.Contains("SuitStorage", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>World rotation of the grid under an entity, snapped to cardinals (no diagonals).</summary>
+    /// <summary>
+    /// PC SharedMoverController.GetParentGridAngle: parent grid/map world rotation plus
+    /// InputMover relative camera rotation. This is independent of entity facing.
+    /// </summary>
+    public float GetGridCameraRotation(NetEntity ent)
+    {
+        lock (this)
+        {
+            if (!ent.IsValid())
+                return 0f;
+            if (_movers.TryGetValue(ent, out var mover))
+            {
+                var relative = mover.RelativeEntity;
+                if (relative.IsValid() && _xforms.ContainsKey(relative))
+                    return ResolveWorldRot(relative) + mover.RelativeRotation;
+            }
+
+            var grid = FindParentGrid(ent);
+            if (grid.IsValid())
+                return ResolveWorldRot(grid);
+            var map = ResolveMapUid(ent);
+            return map.IsValid() && _xforms.ContainsKey(map) ? ResolveWorldRot(map) : 0f;
+        }
+    }
+
+    static bool TryReadInputMover(
+        object state,
+        out (NetEntity RelativeEntity, float RelativeRotation, float TargetRelativeRotation) mover)
+    {
+        mover = default;
+        var t = state.GetType();
+        if (!t.Name.Contains("InputMoverComponentState", StringComparison.OrdinalIgnoreCase)
+            && !t.Name.Contains("InputMover", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        object? Read(string name) => t.GetProperty(name)?.GetValue(state) ?? t.GetField(name)?.GetValue(state);
+        var relativeObj = Read("RelativeEntity");
+        var relative = relativeObj is NetEntity net ? net : default;
+        static float AngleValue(object? value) => value switch
+        {
+            Angle a => (float)a.Theta,
+            float f => f,
+            double d => (float)d,
+            _ => 0f,
+        };
+        mover = (relative, AngleValue(Read("RelativeRotation")), AngleValue(Read("TargetRelativeRotation")));
+        return true;
+    }
+
+    /// <summary>World rotation of the grid under an entity, snapped to cardinals (legacy helper).</summary>
     public float GetSnappedGridRotation(NetEntity ent)
     {
         lock (this)

@@ -130,8 +130,8 @@ public sealed class GameSessionClient : IDisposable
     public float CamX { get; private set; }
     public float CamY { get; private set; }
     /// <summary>
-    /// Rendered camera rotation. Kept north-up (0) so stick direction = screen direction.
-    /// Eye/grid rotation is tracked separately for Move* transforms if needed.
+    /// Rendered camera rotation — follows server eye/grid (PC Clyde eye alignment).
+    /// Stick input is transformed by this so screen-up stays MoveUp on a rotated grid.
     /// </summary>
     public float CamRotation { get; private set; }
     /// <summary>Server eye / grid world rotation (radians).</summary>
@@ -396,13 +396,13 @@ public sealed class GameSessionClient : IDisposable
 
     void SyncMoveKeysFromStick()
     {
-        // Server mover axes are effectively mirrored against our on-screen stick.
-        // Keep this inversion here so stick direction matches visible movement.
+        // PC relative movement: screen-space input is rotated by the parent-grid camera basis.
         const float dead = 0.28f;
-        SetMoveKey(ref _keyRight, EngineKeyFunctions.MoveRight, _flightX < -dead);
-        SetMoveKey(ref _keyLeft, EngineKeyFunctions.MoveLeft, _flightX > dead);
-        SetMoveKey(ref _keyUp, EngineKeyFunctions.MoveUp, _flightY < -dead);
-        SetMoveKey(ref _keyDown, EngineKeyFunctions.MoveDown, _flightY > dead);
+        var (gx, gy) = GridCameraMath.RotateScreenInput(_flightX, _flightY, CamRotation);
+        SetMoveKey(ref _keyRight, EngineKeyFunctions.MoveRight, gx > dead);
+        SetMoveKey(ref _keyLeft, EngineKeyFunctions.MoveLeft, gx < -dead);
+        SetMoveKey(ref _keyUp, EngineKeyFunctions.MoveUp, gy > dead);
+        SetMoveKey(ref _keyDown, EngineKeyFunctions.MoveDown, gy < -dead);
     }
 
     void SetMoveKey(ref bool held, BoundKeyFunction function, bool wantDown)
@@ -520,6 +520,13 @@ public sealed class GameSessionClient : IDisposable
         if (_serializer?.HasMappedStrings == true)
             return;
 
+        // Server disconnects on a second NeedsStrings=true ("Cannot request strings twice").
+        if (_mapStrRequested || _mapStrPhase is MapStrPhase.AwaitingPackage or MapStrPhase.Complete)
+        {
+            Note($"mapstr request skipped — already requested (phase={_mapStrPhase})");
+            return;
+        }
+
         // Only legal while server opened a handshake (AwaitingResponse).
         if (_mapStrPhase is not MapStrPhase.AwaitingResponse)
         {
@@ -529,16 +536,17 @@ public sealed class GameSessionClient : IDisposable
 
         try
         {
+            _mapStrRequested = true; // set before send so races cannot double-fire
             SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
             {
                 m.Write(true); // NeedsStrings
             });
-            _mapStrRequested = true;
             _mapStrPhase = MapStrPhase.AwaitingPackage;
             Note("mapstr: requested NeedsStrings=true");
         }
         catch (Exception ex)
         {
+            _mapStrRequested = false;
             Note($"mapstr request fail: {ex.Message}");
         }
     }
@@ -933,7 +941,10 @@ public sealed class GameSessionClient : IDisposable
                     case "MsgMapStrServerHandshake":
                         Set(GameSessionPhase.MapStrings, "MsgMapStrServerHandshake");
                         _mapStrHash = ReadMapStrHash(msg);
-                        _mapStrPhase = MapStrPhase.AwaitingResponse;
+                        // Do not downgrade AwaitingPackage/Complete — a second ServerHandshake
+                        // must not reset phase and trigger another NeedsStrings=true.
+                        if (_mapStrPhase is MapStrPhase.None or MapStrPhase.AwaitingResponse)
+                            _mapStrPhase = MapStrPhase.AwaitingResponse;
                         EnsureSerializer();
                         if (_serializer is not null
                             && _serializer.TryLoadCachedStrings(_mapStrHash, Note))
@@ -949,14 +960,11 @@ public sealed class GameSessionClient : IDisposable
                             break;
                         }
 
-                        // Request package for GameState decode.
-                        SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m =>
-                        {
-                            m.Write(true); // NeedsStrings = true
-                        });
-                        _mapStrRequested = true;
-                        _mapStrPhase = MapStrPhase.AwaitingPackage;
-                        Note($"mapstr: NeedsStrings=true hashLen={_mapStrHash.Length}");
+                        // Single NeedsStrings=true for this handshake (via RequestMappedStrings).
+                        if (_mapStrPhase == MapStrPhase.AwaitingResponse && !_mapStrRequested)
+                            RequestMappedStrings();
+                        else
+                            Note($"mapstr: handshake seen — phase={_mapStrPhase} requested={_mapStrRequested}");
                         break;
 
                     case "MsgMapStrStrings":
@@ -1348,7 +1356,8 @@ public sealed class GameSessionClient : IDisposable
 
             case "MsgMapStrServerHandshake":
                 _mapStrHash = ReadMapStrHash(msg);
-                _mapStrPhase = MapStrPhase.AwaitingResponse;
+                if (_mapStrPhase is MapStrPhase.None or MapStrPhase.AwaitingResponse)
+                    _mapStrPhase = MapStrPhase.AwaitingResponse;
                 EnsureSerializer();
                 if (_serializer is not null && !_serializer.HasMappedStrings)
                 {
@@ -1358,10 +1367,10 @@ public sealed class GameSessionClient : IDisposable
                         SendNamed("MsgMapStrClientHandshake", NetDeliveryMethod.ReliableOrdered, m => m.Write(false));
                         _mapStrPhase = MapStrPhase.Complete;
                     }
-                    else
+                    else if (_mapStrPhase == MapStrPhase.AwaitingResponse && !_mapStrRequested)
                         RequestMappedStrings();
                 }
-                else
+                else if (_mapStrPhase is not MapStrPhase.AwaitingPackage)
                 {
                     // Already have strings (or no serializer yet) — ack without download.
                     try
@@ -2397,12 +2406,12 @@ public sealed class GameSessionClient : IDisposable
                     else if (LastWorld is null && world is not null)
                         LastWorld = world;
                     LastEyeHint = eye!.Detail;
-                    // Ghost free-cam: camera = eye world pos + pan.
-                    // North-up view (CamRotation=0): stick/screen axes stay aligned; world does not spin.
+                    // PC eye alignment: camera follows parent grid + InputMover relative
+                    // rotation, never the ghost/entity facing that changes during movement.
                     CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
                     CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
                     EyeWorldRotation = (float)eye.Rotation.Theta;
-                    CamRotation = 0f; // north-up: stick direction = screen direction
+                    CamRotation = _worldCache.GetGridCameraRotation(eye.Controlled);
 
                     try
                     {
@@ -2520,14 +2529,8 @@ public sealed class GameSessionClient : IDisposable
                            ?? $"serializer: bootstrap failed — {SerializerBootstrap.LastError ?? "unknown"}";
         if (_serializer is not null)
             TryApplyPendingMapStrings();
-        if (_serializer is not null
-            && _mapStrHash is { Length: > 0 }
-            && !_serializer.HasMappedStrings)
-        {
-            if (!_serializer.TryLoadCachedStrings(_mapStrHash, Note)
-                && _mapStrPhase == MapStrPhase.AwaitingResponse)
-                RequestMappedStrings();
-        }
+        // Do NOT auto-send NeedsStrings here — MsgMapStrServerHandshake owns that.
+        // EnsureSerializer used to race the handshake and trigger "Cannot request strings twice".
     }
 
     /// <summary>Call when content download finishes so Assemblies become visible.</summary>
