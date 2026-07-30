@@ -37,9 +37,23 @@ public sealed class PrototypeSpriteIndex
         @"^\s*parent:\s*\[([^\]]+)\]",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    static readonly Regex SmoothKey = new(
+        @"^\s*key:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    static readonly Regex SmoothBase = new(
+        @"^\s*base:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
+    static readonly Regex SmoothMode = new(
+        @"^\s*mode:\s*[""']?([A-Za-z0-9_.\-]+)[""']?",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
     readonly ConcurrentDictionary<string, string> _spriteByProto =
         new(StringComparer.OrdinalIgnoreCase);
     readonly ConcurrentDictionary<string, string> _stateByProto =
+        new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<string, IconSmoothData> _smoothByProto =
         new(StringComparer.OrdinalIgnoreCase);
     readonly ConcurrentDictionary<string, List<string>> _parentsByProto =
         new(StringComparer.OrdinalIgnoreCase);
@@ -63,6 +77,15 @@ public sealed class PrototypeSpriteIndex
 
         var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return ResolveState(prototypeId!, visiting, 0);
+    }
+
+    public IconSmoothData? TryGetIconSmooth(string? prototypeId)
+    {
+        if (string.IsNullOrWhiteSpace(prototypeId))
+            return null;
+
+        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return ResolveSmooth(prototypeId!, visiting, 0);
     }
 
     string? Resolve(string id, HashSet<string> visiting, int depth)
@@ -101,11 +124,30 @@ public sealed class PrototypeSpriteIndex
         return null;
     }
 
+    IconSmoothData? ResolveSmooth(string id, HashSet<string> visiting, int depth)
+    {
+        if (depth > 24 || !visiting.Add(id))
+            return null;
+        if (_smoothByProto.TryGetValue(id, out var sm))
+            return sm;
+        if (!_parentsByProto.TryGetValue(id, out var parents))
+            return null;
+        foreach (var parent in parents)
+        {
+            var got = ResolveSmooth(parent, visiting, depth + 1);
+            if (got is not null)
+                return got;
+        }
+
+        return null;
+    }
+
     public void Invalidate()
     {
         Root = null;
         _spriteByProto.Clear();
         _stateByProto.Clear();
+        _smoothByProto.Clear();
         _parentsByProto.Clear();
     }
 
@@ -119,6 +161,7 @@ public sealed class PrototypeSpriteIndex
         Root = contentFilesRoot;
         _spriteByProto.Clear();
         _stateByProto.Clear();
+        _smoothByProto.Clear();
         _parentsByProto.Clear();
 
         var protoRoot = Path.Combine(contentFilesRoot, "Prototypes");
@@ -183,17 +226,35 @@ public sealed class PrototypeSpriteIndex
         string? currentId = null;
         var inEntity = false;
         var sawSpriteComponent = false;
+        var inIconSmooth = false;
+        string? smoothKey = null;
+        string? smoothBase = null;
+        var smoothMode = IconSmoothMode.Corners;
         var inParentList = false;
         var entityIndent = -1;
+
+        void FlushSmooth()
+        {
+            if (currentId is null || !inIconSmooth)
+                return;
+            if (string.IsNullOrWhiteSpace(smoothKey) || string.IsNullOrWhiteSpace(smoothBase))
+                return;
+            _smoothByProto.TryAdd(currentId, new IconSmoothData(smoothKey!, smoothBase!, smoothMode));
+        }
 
         foreach (var raw in File.ReadLines(path))
         {
             var line = raw;
             if (TypeEntity.IsMatch(line))
             {
+                FlushSmooth();
                 inEntity = true;
                 currentId = null;
                 sawSpriteComponent = false;
+                inIconSmooth = false;
+                smoothKey = null;
+                smoothBase = null;
+                smoothMode = IconSmoothMode.Corners;
                 inParentList = false;
                 entityIndent = line.TakeWhile(c => c == ' ' || c == '\t').Count();
                 continue;
@@ -207,15 +268,21 @@ public sealed class PrototypeSpriteIndex
                 && line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase)
                 && indent <= entityIndent)
             {
+                FlushSmooth();
                 if (!TypeEntity.IsMatch(line))
                 {
                     inEntity = false;
                     inParentList = false;
+                    inIconSmooth = false;
                     continue;
                 }
 
                 currentId = null;
                 sawSpriteComponent = false;
+                inIconSmooth = false;
+                smoothKey = null;
+                smoothBase = null;
+                smoothMode = IconSmoothMode.Corners;
                 inParentList = false;
                 entityIndent = indent;
                 continue;
@@ -223,8 +290,10 @@ public sealed class PrototypeSpriteIndex
 
             if (line.Length > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#')
             {
+                FlushSmooth();
                 inEntity = false;
                 inParentList = false;
+                inIconSmooth = false;
                 continue;
             }
 
@@ -275,16 +344,53 @@ public sealed class PrototypeSpriteIndex
                 }
             }
 
-            if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
+            if (line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
             {
+                FlushSmooth();
+                inIconSmooth = true;
+                smoothKey = null;
+                smoothBase = null;
+                smoothMode = IconSmoothMode.Corners;
+                inParentList = false;
+            }
+            else if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
+                     || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
+                     || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase))
+            {
+                if (inIconSmooth)
+                    FlushSmooth();
+                inIconSmooth = false;
                 sawSpriteComponent = true;
                 inParentList = false;
             }
+            else if (inIconSmooth && line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase))
+            {
+                FlushSmooth();
+                inIconSmooth = false;
+            }
 
-            if (sawSpriteComponent && currentId is not null)
+            if (inIconSmooth && currentId is not null)
+            {
+                var sk = SmoothKey.Match(line);
+                if (sk.Success)
+                    smoothKey = sk.Groups[1].Value;
+                var sb = SmoothBase.Match(line);
+                if (sb.Success)
+                    smoothBase = sb.Groups[1].Value;
+                var sm = SmoothMode.Match(line);
+                if (sm.Success)
+                {
+                    smoothMode = sm.Groups[1].Value.ToLowerInvariant() switch
+                    {
+                        "cardinalflags" => IconSmoothMode.CardinalFlags,
+                        "diagonal" => IconSmoothMode.Diagonal,
+                        "nosprite" => IconSmoothMode.NoSprite,
+                        _ => IconSmoothMode.Corners,
+                    };
+                }
+            }
+
+            if (sawSpriteComponent && !inIconSmooth && currentId is not null)
             {
                 var st = StateName.Match(line);
                 if (st.Success)
@@ -298,22 +404,29 @@ public sealed class PrototypeSpriteIndex
             var rsi = spr.Groups[1].Value.Trim().Trim('"', '\'');
             if (rsi.Length == 0 || rsi.Equals("null", StringComparison.OrdinalIgnoreCase))
                 continue;
-            if (!rsi.Contains('/') && !rsi.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase))
+            if (!rsi.Contains('/') && !rsi.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
+                && !rsi.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                 continue;
+            // Keep .png as-is (tile/entity sheet). Only append .rsi when extension missing.
             if (!rsi.EndsWith(".rsi", StringComparison.OrdinalIgnoreCase)
                 && !rsi.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase)
                 && !rsi.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                 rsi += ".rsi";
-            if (rsi.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
-                rsi = rsi[..^4] + ".rsi";
 
-            // Prefer first sprite under Sprite/Icon; also accept layer sprite: paths.
-            if (!sawSpriteComponent && !line.Contains("sprite:", StringComparison.OrdinalIgnoreCase))
+            // First sprite under Sprite/Icon only — each entity keeps its own YAML sprite.
+            if (!sawSpriteComponent)
                 continue;
+            if (_spriteByProto.ContainsKey(currentId))
+            {
+                sawSpriteComponent = false;
+                continue;
+            }
 
             if (_spriteByProto.TryAdd(currentId, rsi.Replace('\\', '/')))
                 sawSpriteComponent = false;
         }
+
+        FlushSmooth();
     }
 
     void AddParents(string id, IEnumerable<string> parents)

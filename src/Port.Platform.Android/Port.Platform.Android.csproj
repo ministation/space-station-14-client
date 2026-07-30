@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
+    <ProjectReference Include="..\Port.Net\Port.Net.csproj" />
   </ItemGroup>
 </Project>
