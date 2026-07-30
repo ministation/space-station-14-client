@@ -62,7 +62,7 @@ public sealed class SerializerBootstrap : IDisposable
                 .ToArray();
             log?.Invoke($"serializer: found {dlls.Length} dll(s) in {assembliesDirectory}");
 
-            alc = new AssemblyLoadContext("SS14Content", isCollectible: true);
+            alc = new AssemblyLoadContext("SS14Content", isCollectible: false);
             alc.Resolving += (_, name) =>
             {
                 if (string.IsNullOrEmpty(name.Name))

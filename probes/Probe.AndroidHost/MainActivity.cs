@@ -34,6 +34,7 @@ public class MainActivity : Activity
     TextView? _lobbyDetail;
     TextView? _lobbyCharStatus;
     TextView? _lobbyPlayerCount;
+    TextView? _lobbyContentStatus;
     TextView? _observeHud;
     TextView? _joinDebug;
     TextView? _debugToggle;
@@ -194,6 +195,7 @@ public class MainActivity : Activity
         _lobbyDetail = FindViewById<TextView>(Resource.Id.lobby_detail);
         _lobbyCharStatus = FindViewById<TextView>(Resource.Id.lobby_char_status);
         _lobbyPlayerCount = FindViewById<TextView>(Resource.Id.lobby_player_count);
+        _lobbyContentStatus = FindViewById<TextView>(Resource.Id.lobby_content_status);
         _observeHud = FindViewById<TextView>(Resource.Id.observe_hud);
         _joinDebug = FindViewById<TextView>(Resource.Id.join_debug);
         _debugToggle = FindViewById<TextView>(Resource.Id.debug_toggle);
@@ -297,16 +299,17 @@ public class MainActivity : Activity
         if (_observeBtn != null)
             _observeBtn.Click += (_, _) =>
             {
+                _connect.Session.EnsureSerializerPublic();
                 if (!_connect.Observe())
                 {
-                    Toast.MakeText(this, "Нет соединения", ToastLength.Short)?.Show();
+                    Toast.MakeText(this, "Нет соединения с сервером", ToastLength.Short)?.Show();
                     return;
                 }
 
                 EnsureGl();
                 _glView?.Renderer.SetGhostMode(true);
                 ApplyOrientation(forceLandscape: true);
-                Toast.MakeText(this, "Observe — тач для камеры", ToastLength.Short)?.Show();
+                Toast.MakeText(this, "Наблюдение…", ToastLength.Short)?.Show();
                 RenderStatus();
             };
 
@@ -975,6 +978,15 @@ public class MainActivity : Activity
             var ready = _connect.Session.IsReady;
             _lobbyCharStatus.Text = ready ? "Статус: READY" : "Статус: Not Ready";
             _lobbyCharStatus.SetTextColor(Color.ParseColor(ready ? "#6B9B6E" : "#D4C5A9"));
+        }
+
+        if (_lobbyContentStatus != null && lobby)
+        {
+            _lobbyContentStatus.Text = ContentCapabilityReport.Format(
+                _connect.Session.ContentFilesRoot,
+                _connect.Session.SerializerStatus,
+                _connect.Session.HasMappedStrings,
+                _connect.Session.LastWorld?.Entities.Count ?? 0);
         }
 
         if (_lobbyPlayers != null)

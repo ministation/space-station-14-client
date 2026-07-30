@@ -150,6 +150,8 @@ public sealed class GameSessionClient : IDisposable
         }
     }
 
+    public void EnsureSerializerPublic() => EnsureSerializer(forceRediscover: true);
+
     public bool SetReady(bool ready)
     {
         IsReady = ready;

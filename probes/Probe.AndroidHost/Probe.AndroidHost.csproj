@@ -6,12 +6,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>org.ss14.mobilehub</ApplicationId>
-    <ApplicationVersion>203</ApplicationVersion>
-    <ApplicationDisplayVersion>0.2.3</ApplicationDisplayVersion>
+    <ApplicationVersion>204</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.4</ApplicationDisplayVersion>
     <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
+    <!-- AOT + aggressive trim strips NetSerializable types → serializer bootstrap fails. -->
+    <RunAOTCompilation>false</RunAOTCompilation>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
   </PropertyGroup>
+  <ItemGroup>
+    <TrimmerRootAssembly Include="Robust.Shared" />
+    <TrimmerRootAssembly Include="Robust.Shared.Maths" />
+    <TrimmerRootAssembly Include="Port.Net" />
+    <TrimmerRootAssembly Include="Port.Content" />
+    <TrimmerRootAssembly Include="Robust.NetSerializer" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Probe.SharedOnAndroid\Probe.SharedOnAndroid.csproj" />
     <ProjectReference Include="..\..\src\Port.Platform.Android\Port.Platform.Android.csproj" />
