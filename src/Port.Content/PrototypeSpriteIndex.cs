@@ -43,6 +43,8 @@ public sealed class PrototypeSpriteIndex
         new(StringComparer.OrdinalIgnoreCase);
     readonly ConcurrentDictionary<string, List<string>> _parentsByProto =
         new(StringComparer.OrdinalIgnoreCase);
+    readonly ConcurrentDictionary<string, byte> _iconSmoothProtos =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public int Count => _spriteByProto.Count;
     public string? Root { get; private set; }
@@ -63,6 +65,31 @@ public sealed class PrototypeSpriteIndex
 
         var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         return ResolveState(prototypeId!, visiting, 0);
+    }
+
+    public bool IsIconSmooth(string? prototypeId)
+    {
+        if (string.IsNullOrWhiteSpace(prototypeId))
+            return false;
+        var visiting = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return ResolveIconSmooth(prototypeId!, visiting, 0);
+    }
+
+    bool ResolveIconSmooth(string id, HashSet<string> visiting, int depth)
+    {
+        if (depth > 24 || !visiting.Add(id))
+            return false;
+        if (_iconSmoothProtos.ContainsKey(id))
+            return true;
+        if (!_parentsByProto.TryGetValue(id, out var parents))
+            return false;
+        foreach (var parent in parents)
+        {
+            if (ResolveIconSmooth(parent, visiting, depth + 1))
+                return true;
+        }
+
+        return false;
     }
 
     string? Resolve(string id, HashSet<string> visiting, int depth)
@@ -107,6 +134,7 @@ public sealed class PrototypeSpriteIndex
         _spriteByProto.Clear();
         _stateByProto.Clear();
         _parentsByProto.Clear();
+        _iconSmoothProtos.Clear();
     }
 
     public void EnsureLoaded(string? contentFilesRoot, Action<string>? log = null)
@@ -120,6 +148,7 @@ public sealed class PrototypeSpriteIndex
         _spriteByProto.Clear();
         _stateByProto.Clear();
         _parentsByProto.Clear();
+        _iconSmoothProtos.Clear();
 
         var protoRoot = Path.Combine(contentFilesRoot, "Prototypes");
         if (!Directory.Exists(protoRoot))
@@ -275,10 +304,17 @@ public sealed class PrototypeSpriteIndex
                 }
             }
 
+            if (line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase)
+                && currentId is not null)
+            {
+                _iconSmoothProtos.TryAdd(currentId, 1);
+                sawSpriteComponent = true;
+                inParentList = false;
+            }
+
             if (line.Contains("type: Sprite", StringComparison.OrdinalIgnoreCase)
                 || line.Contains("type: sprite", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("type: IconSmooth", StringComparison.OrdinalIgnoreCase))
+                || line.Contains("type: Icon", StringComparison.OrdinalIgnoreCase))
             {
                 sawSpriteComponent = true;
                 inParentList = false;

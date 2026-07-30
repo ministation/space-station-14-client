@@ -17,13 +17,16 @@ namespace Port.Net;
 /// </summary>
 public sealed class WorldStateCache
 {
-    const int MaxDrawEntities = 4000;
-    const int MaxDrawTiles = 9000;
+    const int MaxDrawEntities = 4500;
+    const int MaxDrawTiles = 12000;
+    const int MaxLayersPerEntity = 8;
     const int ChunkDefault = 16;
 
     readonly Dictionary<NetEntity, TransformComponentState> _xforms = new();
     readonly Dictionary<NetEntity, GameStateDecoder.SpriteVisual> _sprites = new();
     readonly Dictionary<NetEntity, string> _prototypes = new();
+    readonly HashSet<NetEntity> _hiddenFromEye = new();
+    readonly ContainerOcclusionTracker _containers = new();
     readonly Dictionary<NetEntity, Dictionary<Vector2i, ChunkDatum>> _grids = new();
     readonly Dictionary<NetEntity, ushort> _gridChunkSize = new();
     readonly Dictionary<NetEntity, Vector2> _worldPosCache = new();
@@ -66,6 +69,8 @@ public sealed class WorldStateCache
                 _xforms.Remove(del);
                 _sprites.Remove(del);
                 _prototypes.Remove(del);
+                _hiddenFromEye.Remove(del);
+                _containers.Remove(del);
                 _grids.Remove(del);
                 _gridChunkSize.Remove(del);
                 _worldPosCache.Remove(del);
@@ -92,6 +97,8 @@ public sealed class WorldStateCache
             _xforms.Clear();
             _sprites.Clear();
             _prototypes.Clear();
+            _hiddenFromEye.Clear();
+            _containers.Clear();
             _grids.Clear();
             _gridChunkSize.Clear();
             _worldPosCache.Clear();
@@ -145,6 +152,8 @@ public sealed class WorldStateCache
                     _xforms.Clear();
                     _sprites.Clear();
                     _prototypes.Clear();
+                    _hiddenFromEye.Clear();
+                    _containers.Clear();
                     _grids.Clear();
                     _gridChunkSize.Clear();
                     _worldPosCache.Clear();
@@ -158,6 +167,8 @@ public sealed class WorldStateCache
                     _xforms.Remove(del);
                     _sprites.Remove(del);
                     _prototypes.Remove(del);
+                    _hiddenFromEye.Remove(del);
+                    _containers.Remove(del);
                     _grids.Remove(del);
                     _gridChunkSize.Remove(del);
                     _worldPosCache.Remove(del);
@@ -207,8 +218,16 @@ public sealed class WorldStateCache
                                 if (!_sprites.TryGetValue(es.NetEntity, out var existing) || !existing.FromNetwork)
                                     TryAttachPrototypeSprite(es.NetEntity, meta.PrototypeId!);
                             }
+
+                            if (IsHiddenFromDefaultEye(meta))
+                                _hiddenFromEye.Add(es.NetEntity);
+                            else
+                                _hiddenFromEye.Remove(es.NetEntity);
                             continue;
                         }
+
+                        if (_containers.TryApplyComponentState(es.NetEntity, change.State))
+                            continue;
 
                         // MapComponent — marks MapUid roots so we can separate stacked maps.
                         if (change.State is MapComponentState
@@ -286,7 +305,7 @@ public sealed class WorldStateCache
                 Vector2 sum = default;
                 var nSum = 0;
                 // Viewport stream: only draw near the eye (+ margin). Far store kept until LeavePvs.
-                const float viewTiles = 40f;
+                const float viewTiles = 48f;
                 var viewR2 = viewTiles * viewTiles;
 
                 foreach (var (ent, xf) in _xforms)
@@ -295,6 +314,10 @@ public sealed class WorldStateCache
                         continue; // map-grid entity without sprite — tiles drawn separately
 
                     var isCtrl = controlled.IsValid() && ent == controlled;
+                    if (!isCtrl && _containers.IsOccluded(ent))
+                        continue;
+                    if (!isCtrl && _hiddenFromEye.Contains(ent))
+                        continue;
                     // Critical: only the eye's map — otherwise stations/asteroids stack in one space.
                     if (!isCtrl && eyeMap.IsValid())
                     {
@@ -321,6 +344,8 @@ public sealed class WorldStateCache
                     {
                         foreach (var layer in spr.Layers)
                         {
+                            if (layersAdded >= MaxLayersPerEntity)
+                                break;
                             if (!layer.Visible) continue;
                             // Network layers must not inherit a prototype RSI path.
                             var path = layer.Path
@@ -333,6 +358,8 @@ public sealed class WorldStateCache
                             byte lr = layer.R, lg = layer.G, lb = layer.B;
                             if (lr == 0 && lg == 0 && lb == 0) { lr = 255; lg = 255; lb = 255; }
                             var layerState = layer.State ?? spr.State ?? DefaultSpriteState(path, protoId);
+                            if (ShouldHideSubfloor(path, protoId, layerState))
+                                continue;
                             // Layer offset is in local entity space → world via rotation.
                             var ox = layer.OffsetX;
                             var oy = layer.OffsetY;
@@ -356,6 +383,13 @@ public sealed class WorldStateCache
                         // Prototype fill only when no network SpriteComponent at all.
                         if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId)
                             && spr is not { FromNetwork: true })
+                            path = _protos?.TryGetSprite(protoId);
+
+                        if (!isCtrl && ShouldHideSubfloor(path, protoId, stateName))
+                            continue;
+
+                        // Doors/airlocks/lockers: YAML fill when network sent no layers.
+                        if (string.IsNullOrEmpty(path) && !string.IsNullOrEmpty(protoId))
                             path = _protos?.TryGetSprite(protoId);
 
                         if (isCtrl)
@@ -430,6 +464,11 @@ public sealed class WorldStateCache
                     if (y != 0) return y;
                     return b.IsControlled.CompareTo(a.IsControlled);
                 });
+
+                IconSmoothProcessor.Apply(
+                    drawList,
+                    ent => _prototypes.TryGetValue(ent, out var p) ? p : null,
+                    proto => _protos?.IsIconSmooth(proto) == true);
 
                 var tiles = BuildTileDrawList(focus, viewTiles, eyeMap);
 
@@ -739,7 +778,6 @@ public sealed class WorldStateCache
 
     static void ColorForTile(int typeId, out byte r, out byte g, out byte b)
     {
-        // Stable pastel-ish floor colours from type id.
         unchecked
         {
             var h = (uint)typeId * 2654435761u;
@@ -747,6 +785,42 @@ public sealed class WorldStateCache
             g = (byte)(80 + ((h >> 8) & 0x6F));
             b = (byte)(90 + ((h >> 16) & 0x5F));
         }
+    }
+
+    static bool IsHiddenFromDefaultEye(MetaDataComponentState meta)
+    {
+        try
+        {
+            var t = meta.GetType();
+            var flags = t.GetProperty("Flags")?.GetValue(meta)
+                        ?? t.GetField("Flags")?.GetValue(meta);
+            if (flags is Enum e)
+            {
+                var name = e.ToString() ?? "";
+                if (name.Contains("Hidden", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                var val = Convert.ToInt32(e);
+                if ((val & (1 << 2)) != 0)
+                    return true;
+            }
+        }
+        catch { /* ignore */ }
+
+        return false;
+    }
+
+    static bool ShouldHideSubfloor(string? path, string? proto, string? state)
+    {
+        var p = (path ?? "") + " " + (proto ?? "") + " " + (state ?? "");
+        if (p.Contains("Marker", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("SpawnPoint", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (p.Contains("Cable", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Wire", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("Subfloor", StringComparison.OrdinalIgnoreCase)
+            || p.Contains("FloorCable", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
     }
 
     Vector2 ResolveWorldPos(NetEntity ent)
@@ -762,7 +836,6 @@ public sealed class WorldStateCache
         var pos = Vector2.Zero;
         for (var depth = 0; depth < 24; depth++)
         {
-            // Match SharedTransformSystem.GetWorldPosition: stop before applying the map entity.
             if (_mapEntities.Contains(cur) && cur != ent)
                 break;
             if (!_xforms.TryGetValue(cur, out var t)) break;
@@ -770,7 +843,7 @@ public sealed class WorldStateCache
             pos = t.Rotation.RotateVec(pos) + t.LocalPosition;
             if (!t.ParentID.IsValid() || t.ParentID == cur) break;
             if (mapUid.IsValid() && t.ParentID == mapUid)
-                break; // next is map — done
+                break;
             cur = t.ParentID;
         }
 

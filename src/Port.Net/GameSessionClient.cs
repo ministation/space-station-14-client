@@ -104,6 +104,8 @@ public sealed class GameSessionClient : IDisposable
     /// <summary>World rotation of the eye/grid (radians). View rotates with shuttles.</summary>
     public float CamRotation { get; private set; }
     public float Zoom { get; private set; } = 1f;
+    public bool DrawFoV { get; private set; } = true;
+    public bool DrawLighting { get; private set; } = true;
     float _panOffX;
     float _panOffY;
     float _flightX;
@@ -328,6 +330,82 @@ public sealed class GameSessionClient : IDisposable
         _panOffY += dy;
         CamX += dx;
         CamY += dy;
+        TrySendGhostMove(_flightX, _flightY);
+    }
+
+    long _lastMoveSendMs;
+    string _lastMoveCmd = "";
+
+    void TrySendGhostMove(float viewX, float viewY)
+    {
+        if (!IsConnected || Math.Abs(viewX) < 0.05f && Math.Abs(viewY) < 0.05f)
+        {
+            ReleaseMoveKeys();
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        if (now - _lastMoveSendMs < 80)
+            return;
+        _lastMoveSendMs = now;
+
+        // Dominant axis in view space → ghost movement binds.
+        var cmd = MathF.Abs(viewX) > MathF.Abs(viewY)
+            ? (viewX > 0 ? "+moveright" : "+moveleft")
+            : (viewY > 0 ? "+moveup" : "+movedown");
+        if (cmd == _lastMoveCmd)
+            return;
+        ReleaseMoveKeys();
+        _lastMoveCmd = cmd;
+        try
+        {
+            SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write(cmd));
+        }
+        catch { /* ignore */ }
+    }
+
+    void ReleaseMoveKeys()
+    {
+        if (string.IsNullOrEmpty(_lastMoveCmd))
+            return;
+        var release = _lastMoveCmd.Replace('+', '-', StringComparison.Ordinal);
+        _lastMoveCmd = "";
+        try
+        {
+            SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write(release));
+        }
+        catch { /* ignore */ }
+    }
+
+    public bool ToggleFoV()
+    {
+        DrawFoV = !DrawFoV;
+        Note($"FoV toggle → {DrawFoV}");
+        return DrawFoV;
+    }
+
+    public bool ToggleLighting()
+    {
+        DrawLighting = !DrawLighting;
+        Note($"Lighting toggle → {DrawLighting}");
+        return DrawLighting;
+    }
+
+    public bool GhostNado()
+    {
+        if (!IsConnected)
+            return false;
+        try
+        {
+            SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("ghostnado"));
+            Note(">> ghostnado");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Note($"ghostnado FAIL: {ex.Message}");
+            return false;
+        }
     }
 
     public void AdjustZoom(float factor)
@@ -1999,6 +2077,7 @@ public sealed class GameSessionClient : IDisposable
                     CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
                     CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
                     CamRotation = (float)eye.Rotation.Theta;
+                    DrawFoV = eye.DrawFov;
 
                     try
                     {

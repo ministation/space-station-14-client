@@ -554,6 +554,40 @@ public class MainActivity : Activity
                 }
             };
         }
+
+        var nadoBtn = FindViewById<Button>(Resource.Id.btn_ghost_nado);
+        if (nadoBtn != null)
+        {
+            nadoBtn.Click += (_, _) =>
+            {
+                if (_connect.Session.GhostNado())
+                    Toast.MakeText(this, "ghostnado…", ToastLength.Short)?.Show();
+                else
+                    Toast.MakeText(this, "Nado недоступен", ToastLength.Short)?.Show();
+            };
+        }
+
+        var fovBtn = FindViewById<Button>(Resource.Id.btn_toggle_fov);
+        if (fovBtn != null)
+        {
+            fovBtn.Click += (_, _) =>
+            {
+                var on = _connect.Session.ToggleFoV();
+                _glView?.Renderer.SetFoVEnabled(on);
+                Toast.MakeText(this, on ? "FoV вкл" : "FoV выкл", ToastLength.Short)?.Show();
+            };
+        }
+
+        var lightBtn = FindViewById<Button>(Resource.Id.btn_toggle_light);
+        if (lightBtn != null)
+        {
+            lightBtn.Click += (_, _) =>
+            {
+                var on = _connect.Session.ToggleLighting();
+                _glView?.Renderer.SetLightingEnabled(on);
+                Toast.MakeText(this, on ? "Свет вкл" : "Свет выкл", ToastLength.Short)?.Show();
+            };
+        }
     }
 
     VirtualJoystickView? _joystick;
@@ -934,6 +968,8 @@ public class MainActivity : Activity
         _glView.Renderer.SetCamera(s.CamX, s.CamY);
         _glView.Renderer.SetCameraRotation(s.CamRotation);
         _glView.Renderer.SetZoom(s.Zoom);
+        _glView.Renderer.SetFoVEnabled(s.DrawFoV);
+        _glView.Renderer.SetLightingEnabled(s.DrawLighting);
         var world = s.LastWorld;
         if (world is null)
         {
@@ -989,6 +1025,13 @@ public class MainActivity : Activity
         }
 
         _glView.Renderer.SetTiles(_tileScratch, tn);
+
+        var pinPaths = new List<string?>(tn + ordered.Length);
+        for (var i = 0; i < tn; i++)
+            pinPaths.Add(tiles[i].RsiPath);
+        for (var i = 0; i < ordered.Length; i++)
+            pinPaths.Add(ordered[i].RsiPath);
+        _glView.Renderer.PinTextures(pinPaths);
 
         var bubbles = s.SnapshotSpeechBubbles();
         var bn = Math.Min(bubbles.Count, _bubbleScratch.Length);
