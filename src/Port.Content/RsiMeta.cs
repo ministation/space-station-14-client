@@ -119,7 +119,7 @@ public static class RsiMeta
     }
 
     /// <summary>Pick a preview frame from .rsic file or exploded .rsi folder.</summary>
-    public static FrameInfo? TryGetPreviewFrame(string rsiPathOrDirectory)
+    public static FrameInfo? TryGetPreviewFrame(string rsiPathOrDirectory, string? preferredState = null)
     {
         if (File.Exists(rsiPathOrDirectory)
             && rsiPathOrDirectory.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
@@ -137,17 +137,20 @@ public static class RsiMeta
 
         var fw = doc.Size?.X > 0 ? doc.Size.X : 32;
         var fh = doc.Size?.Y > 0 ? doc.Size.Y : 32;
-        // Prefer icon-like states — first meta entry is often an anim strip, not the wall face.
-        static bool Prefer(string? n) =>
-            n is not null && (n.Equals("full", StringComparison.OrdinalIgnoreCase)
-                              || n.Equals("icon", StringComparison.OrdinalIgnoreCase)
-                              || n.Equals("animated", StringComparison.OrdinalIgnoreCase)
-                              || n.Equals("default", StringComparison.OrdinalIgnoreCase));
-        var state = doc.States.FirstOrDefault(s => Prefer(s.Name))
-                    ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name)
-                                                      && File.Exists(Path.Combine(rsiPathOrDirectory, s.Name + ".png")))
-                    ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
-                    ?? doc.States.FirstOrDefault();
+        // Prefer requested / canonical states for multi-state folder RSIs.
+        State? state = null;
+        if (!string.IsNullOrWhiteSpace(preferredState))
+            state = doc.States.FirstOrDefault(s =>
+                string.Equals(s.Name, preferredState, StringComparison.OrdinalIgnoreCase));
+        state ??= doc.States.FirstOrDefault(s =>
+                      string.Equals(s.Name, "full", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(s.Name, "icon", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(s.Name, "animated", StringComparison.OrdinalIgnoreCase)
+                      || string.Equals(s.Name, "default", StringComparison.OrdinalIgnoreCase))
+                  ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name)
+                                                    && File.Exists(Path.Combine(rsiPathOrDirectory, s.Name + ".png")))
+                  ?? doc.States.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Name))
+                  ?? doc.States.FirstOrDefault();
         if (state is null)
             return null;
 

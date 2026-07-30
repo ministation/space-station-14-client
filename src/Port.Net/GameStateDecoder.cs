@@ -58,7 +58,8 @@ public readonly record struct WorldTileDraw(
     string? RsiPath = null,
     string? StateName = null,
     byte Variant = 0,
-    byte RotationMirroring = 0);
+    byte RotationMirroring = 0,
+    float Rotation = 0f);
 
 /// <summary>Networked AudioComponent cue (PC SharedAudioSystem → Android SoundPool).</summary>
 public readonly record struct WorldAudioCue(

@@ -129,8 +129,13 @@ public sealed class GameSessionClient : IDisposable
     public SessionStatus LocalStatus { get; private set; } = SessionStatus.Connecting;
     public float CamX { get; private set; }
     public float CamY { get; private set; }
-    /// <summary>World rotation of the eye/grid (radians). View rotates with shuttles.</summary>
+    /// <summary>
+    /// Rendered camera rotation. Kept north-up (0) so stick direction = screen direction.
+    /// Eye/grid rotation is tracked separately for Move* transforms if needed.
+    /// </summary>
     public float CamRotation { get; private set; }
+    /// <summary>Server eye / grid world rotation (radians).</summary>
+    public float EyeWorldRotation { get; private set; }
     public float Zoom { get; private set; } = 1f;
     float _panOffX;
     float _panOffY;
@@ -2391,11 +2396,12 @@ public sealed class GameSessionClient : IDisposable
                     else if (LastWorld is null && world is not null)
                         LastWorld = world;
                     LastEyeHint = eye!.Detail;
-                    // Ghost free-cam: follow eye + pan. Keep north-up so joystick maps 1:1
-                    // to screen (grid-snapped CamRotation made Move* feel rotated wrong).
+                    // Ghost free-cam: camera = eye world pos + pan.
+                    // North-up view (CamRotation=0): stick/screen axes stay aligned; world does not spin.
                     CamX = eye.LocalPosition.X * 32f + eye.EyeOffset.X * 32f + _panOffX;
                     CamY = eye.LocalPosition.Y * 32f + eye.EyeOffset.Y * 32f + _panOffY;
-                    CamRotation = 0f;
+                    EyeWorldRotation = (float)eye.Rotation.Theta;
+                    CamRotation = 0f; // north-up: stick direction = screen direction
 
                     try
                     {
@@ -2788,7 +2794,12 @@ public sealed class GameSessionClient : IDisposable
         CamX = 0;
         CamY = 0;
         CamRotation = 0;
+        EyeWorldRotation = 0;
         Zoom = 1f;
+        DrawFov = true;
+        DrawLighting = true;
+        _lightingMode = 0;
+        ShowOtherGhosts = true;
         _panOffX = 0;
         _panOffY = 0;
         _flightX = 0;

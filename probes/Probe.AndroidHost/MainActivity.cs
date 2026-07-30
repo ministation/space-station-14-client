@@ -799,7 +799,7 @@ public class MainActivity : Activity
                 panel.LayoutParameters = lp;
                 scroll.Visibility = _chatExpanded ? ViewStates.Visible : ViewStates.Gone;
             };
-        }
+    }
     }
 
     VirtualJoystickView? _joystick;
@@ -1167,7 +1167,7 @@ public class MainActivity : Activity
     }
 
     readonly GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
-    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[8000];
+    readonly GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[12000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
     void UpdateObserveOverlay()
@@ -1296,6 +1296,7 @@ public class MainActivity : Activity
                 B = t.B,
                 RsiPath = t.RsiPath,
                 StateName = t.StateName,
+                Rotation = t.Rotation,
                 Variant = t.Variant,
                 RotationMirroring = t.RotationMirroring,
             };
