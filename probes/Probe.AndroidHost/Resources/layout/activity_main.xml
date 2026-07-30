@@ -1,8 +1,129 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/hub_bg">
+
+    <!-- ===== CONNECT / LOADING (SS14-style, landscape) ===== -->
+    <FrameLayout
+        android:id="@+id/screen_loading"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true">
+
+        <FrameLayout
+            android:id="@+id/loading_parallax_host"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:paddingLeft="36dp"
+            android:paddingRight="36dp"
+            android:paddingTop="24dp"
+            android:paddingBottom="24dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <ImageView
+                    android:layout_width="200dp"
+                    android:layout_height="90dp"
+                    android:src="@drawable/ss14_logo_site"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="@string/app_name" />
+
+                <TextView
+                    android:id="@+id/loading_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center"
+                    android:text="ПОДКЛЮЧЕНИЕ"
+                    android:textColor="#F3F0E8"
+                    android:textSize="13sp"
+                    android:fontFamily="@font/pressstart2p"
+                    android:letterSpacing="0.08" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1.25"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:paddingLeft="20dp">
+
+                <TextView
+                    android:id="@+id/loading_server"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:textColor="#D4C5A9"
+                    android:textSize="15sp"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:text="" />
+
+                <TextView
+                    android:id="@+id/loading_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:minLines="2"
+                    android:textColor="#F3F0E8"
+                    android:textSize="14sp"
+                    android:fontFamily="@font/exo2_regular"
+                    android:text="Подготовка…" />
+
+                <ProgressBar
+                    android:id="@+id/loading_progress"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="match_parent"
+                    android:layout_height="14dp"
+                    android:layout_marginTop="16dp"
+                    android:max="100"
+                    android:progress="0"
+                    android:progressTint="#D4C5A9"
+                    android:progressBackgroundTint="#2A3140" />
+
+                <TextView
+                    android:id="@+id/loading_pct"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center"
+                    android:textColor="#A8A295"
+                    android:textSize="12sp"
+                    android:fontFamily="monospace"
+                    android:text="0%" />
+
+                <Button
+                    android:id="@+id/btn_loading_cancel"
+                    android:layout_width="220dp"
+                    android:layout_height="48dp"
+                    android:layout_gravity="center_horizontal"
+                    android:layout_marginTop="22dp"
+                    android:background="@drawable/hub_btn_danger"
+                    android:textColor="#F3F0E8"
+                    android:text="Отмена"
+                    android:textAllCaps="false"
+                    android:textSize="14sp"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:stateListAnimator="@null" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 
     <!-- ===== HUB ===== -->
     <ScrollView
@@ -96,43 +217,156 @@
                         android:fontFamily="@font/exo2_regular"
                         android:text="Войдите через аккаунт SS14" />
 
-                    <EditText
-                        android:id="@+id/auth_username"
+                    <LinearLayout
+                        android:id="@+id/auth_login_fields"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <EditText
+                            android:id="@+id/auth_username"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="10dp"
+                            android:hint="@string/auth_username_hint"
+                            android:inputType="text"
+                            android:textColor="@color/hub_text"
+                            android:textColorHint="@color/hub_muted"
+                            android:background="@drawable/hub_input"
+                            android:paddingLeft="12dp"
+                            android:paddingRight="12dp"
+                            android:textSize="14sp"
+                            android:fontFamily="@font/exo2_regular" />
+
+                        <EditText
+                            android:id="@+id/auth_password"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="8dp"
+                            android:hint="@string/auth_password_hint"
+                            android:inputType="textPassword"
+                            android:textColor="@color/hub_text"
+                            android:textColorHint="@color/hub_muted"
+                            android:background="@drawable/hub_input"
+                            android:paddingLeft="12dp"
+                            android:paddingRight="12dp"
+                            android:textSize="14sp"
+                            android:fontFamily="@font/exo2_regular" />
+
+                        <EditText
+                            android:id="@+id/auth_tfa"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="8dp"
+                            android:hint="@string/auth_tfa_hint"
+                            android:inputType="number"
+                            android:textColor="@color/hub_text"
+                            android:textColorHint="@color/hub_muted"
+                            android:background="@drawable/hub_input"
+                            android:paddingLeft="12dp"
+                            android:paddingRight="12dp"
+                            android:textSize="14sp"
+                            android:fontFamily="@font/exo2_regular" />
+
+                        <Button
+                            android:id="@+id/btn_login_ss14"
+                            android:layout_width="match_parent"
+                            android:layout_height="48dp"
+                            android:layout_marginTop="10dp"
+                            android:background="@drawable/hub_btn"
+                            android:textColor="@color/hub_text"
+                            android:text="@string/btn_login_ss14"
+                            android:textAllCaps="false"
+                            android:textSize="14sp"
+                            android:fontFamily="@font/exo2_semibold"
+                            android:stateListAnimator="@null" />
+                    </LinearLayout>
+
+                    <Button
+                        android:id="@+id/btn_logout_ss14"
                         android:layout_width="match_parent"
                         android:layout_height="48dp"
                         android:layout_marginTop="10dp"
-                        android:hint="@string/auth_username_hint"
+                        android:background="@drawable/hub_btn_danger"
+                        android:textColor="@color/hub_text"
+                        android:text="@string/btn_logout_ss14"
+                        android:textAllCaps="false"
+                        android:textSize="14sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null"
+                        android:visibility="gone" />
+                </LinearLayout>
+
+                <!-- Servers / Hub (collapsed by default) -->
+                <LinearLayout
+                    android:id="@+id/hub_header"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="18dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="@drawable/hub_card"
+                    android:padding="12dp"
+                    android:clickable="true"
+                    android:focusable="true">
+
+                    <TextView
+                        android:id="@+id/hub_header_title"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/servers_title"
+                        android:textColor="@color/hub_beige"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/pressstart2p" />
+
+                    <TextView
+                        android:id="@+id/hub_header_chevron"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="▶"
+                        android:textColor="@color/hub_beige"
+                        android:textSize="14sp"
+                        android:paddingEnd="8dp" />
+
+                    <Button
+                        android:id="@+id/btn_refresh_hub"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:background="@drawable/hub_input"
+                        android:textColor="@color/hub_beige"
+                        android:text="@string/btn_refresh_servers"
+                        android:textAllCaps="false"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/hub_body"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/hub_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:textColor="@color/hub_muted"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_regular"
+                        android:text="Хабы свёрнуты — нажмите, чтобы открыть" />
+
+                    <EditText
+                        android:id="@+id/hub_search"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="8dp"
+                        android:hint="@string/hub_search_hint"
                         android:inputType="text"
-                        android:textColor="@color/hub_text"
-                        android:textColorHint="@color/hub_muted"
-                        android:background="@drawable/hub_input"
-                        android:paddingLeft="12dp"
-                        android:paddingRight="12dp"
-                        android:textSize="14sp"
-                        android:fontFamily="@font/exo2_regular" />
-
-                    <EditText
-                        android:id="@+id/auth_password"
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:layout_marginTop="8dp"
-                        android:hint="@string/auth_password_hint"
-                        android:inputType="textPassword"
-                        android:textColor="@color/hub_text"
-                        android:textColorHint="@color/hub_muted"
-                        android:background="@drawable/hub_input"
-                        android:paddingLeft="12dp"
-                        android:paddingRight="12dp"
-                        android:textSize="14sp"
-                        android:fontFamily="@font/exo2_regular" />
-
-                    <EditText
-                        android:id="@+id/auth_tfa"
-                        android:layout_width="match_parent"
-                        android:layout_height="48dp"
-                        android:layout_marginTop="8dp"
-                        android:hint="@string/auth_tfa_hint"
-                        android:inputType="number"
+                        android:imeOptions="actionSearch"
                         android:textColor="@color/hub_text"
                         android:textColorHint="@color/hub_muted"
                         android:background="@drawable/hub_input"
@@ -142,55 +376,12 @@
                         android:fontFamily="@font/exo2_regular" />
 
                     <LinearLayout
+                        android:id="@+id/server_list"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:orientation="horizontal">
-
-                        <Button
-                            android:id="@+id/btn_login_ss14"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_weight="1"
-                            android:background="@drawable/hub_btn"
-                            android:textColor="@color/hub_text"
-                            android:text="@string/btn_login_ss14"
-                            android:textAllCaps="false"
-                            android:textSize="12sp"
-                            android:fontFamily="@font/pressstart2p"
-                            android:stateListAnimator="@null" />
-
-                        <Button
-                            android:id="@+id/btn_logout_ss14"
-                            android:layout_width="0dp"
-                            android:layout_height="48dp"
-                            android:layout_weight="1"
-                            android:layout_marginStart="8dp"
-                            android:background="@drawable/hub_input"
-                            android:textColor="@color/hub_beige"
-                            android:text="@string/btn_logout_ss14"
-                            android:textAllCaps="false"
-                            android:fontFamily="@font/exo2_semibold"
-                            android:stateListAnimator="@null" />
-                    </LinearLayout>
+                        android:layout_marginTop="8dp"
+                        android:orientation="vertical" />
                 </LinearLayout>
-
-                <!-- Servers -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="18dp"
-                    android:text="@string/servers_title"
-                    android:textColor="@color/hub_beige"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/pressstart2p" />
-
-                <LinearLayout
-                    android:id="@+id/server_list"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="vertical" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -348,261 +539,72 @@
         </LinearLayout>
     </ScrollView>
 
-    <!-- ===== LOBBY ===== -->
-    <ScrollView
+    <!-- ===== LOBBY (SS14-style landscape) ===== -->
+    <FrameLayout
         android:id="@+id/screen_lobby"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:fillViewport="true"
-        android:visibility="gone"
-        android:background="@color/hub_bg">
+        android:visibility="gone">
+
+        <FrameLayout
+            android:id="@+id/lobby_parallax_host"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
 
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
             android:orientation="vertical"
-            android:padding="14dp">
+            android:paddingTop="6dp">
 
+            <!-- Top bar -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:background="@drawable/hub_card"
-                android:padding="12dp">
+                android:paddingLeft="16dp"
+                android:paddingRight="16dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:background="#99000000">
 
                 <ImageView
-                    android:layout_width="40dp"
-                    android:layout_height="18dp"
+                    android:layout_width="48dp"
+                    android:layout_height="22dp"
                     android:src="@drawable/ss14_logo_site"
                     android:scaleType="fitCenter"
                     android:contentDescription="@string/app_name" />
 
-                <LinearLayout
+                <TextView
+                    android:id="@+id/lobby_station"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:layout_marginStart="12dp"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:id="@+id/lobby_station"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Server"
-                        android:textColor="@color/hub_text"
-                        android:textSize="12sp"
-                        android:fontFamily="@font/pressstart2p" />
-
-                    <TextView
-                        android:id="@+id/lobby_round"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="Лобби"
-                        android:textColor="@color/hub_ok"
-                        android:textSize="12sp"
-                        android:fontFamily="@font/exo2_regular" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="vertical"
-                android:background="@drawable/hub_card"
-                android:padding="14dp">
-
-                <TextView
-                    android:id="@+id/lobby_account"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:textColor="@color/hub_beige"
+                    android:text="Station"
+                    android:textColor="#F3F0E8"
                     android:textSize="12sp"
-                    android:fontFamily="monospace" />
-
-                <EditText
-                    android:id="@+id/char_name"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="10dp"
-                    android:hint="@string/char_name_hint"
-                    android:inputType="textPersonName"
-                    android:textColor="@color/hub_text"
-                    android:textColorHint="@color/hub_muted"
-                    android:background="@drawable/hub_input"
-                    android:paddingLeft="12dp"
-                    android:paddingRight="12dp"
-                    android:fontFamily="@font/exo2_regular" />
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btn_ready"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/hub_btn"
-                        android:textColor="@color/hub_text"
-                        android:text="@string/btn_ready"
-                        android:textAllCaps="false"
-                        android:fontFamily="@font/pressstart2p"
-                        android:textSize="11sp"
-                        android:stateListAnimator="@null" />
-
-                    <Button
-                        android:id="@+id/btn_observe"
-                        android:layout_width="0dp"
-                        android:layout_height="48dp"
-                        android:layout_weight="1"
-                        android:layout_marginStart="8dp"
-                        android:background="@drawable/hub_input"
-                        android:textColor="@color/hub_beige"
-                        android:text="@string/btn_observe"
-                        android:textAllCaps="false"
-                        android:fontFamily="@font/exo2_semibold"
-                        android:stateListAnimator="@null" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="@string/players_title"
-                android:textColor="@color/hub_beige"
-                android:textSize="10sp"
-                android:fontFamily="@font/pressstart2p" />
-
-            <TextView
-                android:id="@+id/lobby_players"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/hub_card"
-                android:padding="12dp"
-                android:fontFamily="monospace"
-                android:textColor="@color/hub_text"
-                android:textSize="12sp"
-                android:text="…" />
-
-            <TextView
-                android:id="@+id/lobby_detail"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:textColor="@color/hub_muted"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
-
-            <Button
-                android:id="@+id/btn_disconnect"
-                android:layout_width="match_parent"
-                android:layout_height="50dp"
-                android:layout_marginTop="14dp"
-                android:background="@drawable/hub_btn"
-                android:textColor="@color/hub_text"
-                android:text="@string/btn_disconnect"
-                android:textAllCaps="false"
-                android:fontFamily="@font/pressstart2p"
-                android:textSize="11sp"
-                android:stateListAnimator="@null" />
-        </LinearLayout>
-    </ScrollView>
-
-    <!-- ===== OBSERVE / GAME (landscape) ===== -->
-    <LinearLayout
-        android:id="@+id/screen_observe"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="horizontal"
-        android:visibility="gone"
-        android:background="@color/hub_bg_deep">
-
-        <!-- Left touch zone -->
-        <LinearLayout
-            android:id="@+id/touch_pad_left"
-            android:layout_width="72dp"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
-            android:gravity="center"
-            android:background="@color/hub_panel"
-            android:padding="6dp">
-
-            <Button
-                android:id="@+id/btn_touch_up"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:background="@drawable/hub_btn"
-                android:text="▲"
-                android:textColor="@color/hub_text"
-                android:textSize="18sp"
-                android:stateListAnimator="@null" />
-
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="6dp">
-
-                <Button
-                    android:id="@+id/btn_touch_left"
-                    android:layout_width="56dp"
-                    android:layout_height="56dp"
-                    android:background="@drawable/hub_btn"
-                    android:text="◀"
-                    android:textColor="@color/hub_text"
-                    android:textSize="18sp"
-                    android:stateListAnimator="@null" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btn_touch_down"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
-                android:layout_marginTop="6dp"
-                android:background="@drawable/hub_btn"
-                android:text="▼"
-                android:textColor="@color/hub_text"
-                android:textSize="18sp"
-                android:stateListAnimator="@null" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:padding="8dp"
-                android:gravity="center_vertical"
-                android:background="@color/hub_panel">
+                    android:fontFamily="@font/pressstart2p"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
 
                 <TextView
-                    android:id="@+id/observe_title"
-                    android:layout_width="0dp"
+                    android:id="@+id/lobby_round"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="VIEWPORT"
-                    android:textColor="@color/hub_beige"
-                    android:textSize="11sp"
-                    android:fontFamily="@font/pressstart2p" />
+                    android:layout_marginEnd="12dp"
+                    android:text="In Lobby"
+                    android:textColor="#D4C5A9"
+                    android:textSize="12sp"
+                    android:fontFamily="@font/exo2_semibold" />
 
                 <Button
-                    android:id="@+id/btn_observe_leave"
+                    android:id="@+id/btn_disconnect"
                     android:layout_width="wrap_content"
                     android:layout_height="40dp"
-                    android:background="@drawable/hub_btn"
-                    android:textColor="@color/hub_text"
+                    android:background="@drawable/hub_btn_danger"
+                    android:textColor="#F3F0E8"
                     android:text="@string/btn_disconnect"
                     android:textAllCaps="false"
                     android:textSize="11sp"
@@ -610,53 +612,624 @@
                     android:stateListAnimator="@null" />
             </LinearLayout>
 
-            <FrameLayout
-                android:id="@+id/observe_gl"
+            <!-- 3 columns -->
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1"
-                android:background="#000000">
+                android:orientation="horizontal"
+                android:padding="8dp">
 
-    <TextView 
-                    android:id="@+id/observe_crosshair"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-                    android:layout_gravity="center"
-                    android:text="+"
-                    android:textColor="#66FFFFFF"
-                    android:textSize="28sp" />
-            </FrameLayout>
+                <!-- Left: server info -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="0.85"
+                    android:orientation="vertical"
+                    android:padding="8dp"
+                    android:background="#66000000">
 
-            <TextView
-                android:id="@+id/observe_hud"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:padding="8dp"
-                android:background="@color/hub_panel"
-                android:fontFamily="monospace"
-                android:textColor="@color/hub_text"
-                android:textSize="10sp"
-                android:text="@string/touch_hint" />
+                    <TextView
+                        android:id="@+id/lobby_welcome"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:visibility="gone"
+                        android:text=""
+                        android:textColor="#E8C96A"
+                        android:textSize="13sp"
+                        android:fontFamily="@font/exo2_semibold" />
+
+                    <TextView
+                        android:id="@+id/lobby_account"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="#C8C4B8"
+                        android:textSize="11sp"
+                        android:maxLines="2"
+                        android:ellipsize="end"
+                        android:fontFamily="@font/exo2_regular" />
+
+                    <TextView
+                        android:id="@+id/lobby_char_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:text="Статус: Not Ready"
+                        android:textColor="#D4C5A9"
+                        android:textSize="12sp"
+                        android:fontFamily="@font/exo2_semibold" />
+
+                    <TextView
+                        android:id="@+id/lobby_content_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/lobby_detail"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:layout_marginTop="6dp"
+                        android:textColor="#8A8478"
+                        android:textSize="9sp"
+                        android:fontFamily="monospace"
+                        android:maxLines="6"
+                        android:ellipsize="end" />
+                </LinearLayout>
+
+                <!-- Center: character + actions -->
+                <ScrollView
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1.15"
+                    android:fillViewport="true">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:gravity="center_horizontal"
+                        android:paddingLeft="10dp"
+                        android:paddingRight="10dp">
+
+                    <TextView
+                        android:id="@+id/lobby_char_label"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="Ваш персонаж"
+                        android:textColor="#F3F0E8"
+                        android:textSize="12sp"
+                        android:fontFamily="@font/exo2_regular" />
+
+                    <EditText
+                        android:id="@+id/char_name"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:hint="@string/char_name_hint"
+                        android:inputType="textPersonName"
+                        android:textColor="#F3F0E8"
+                        android:textColorHint="#8A8478"
+                        android:background="@drawable/hub_input"
+                        android:paddingLeft="12dp"
+                        android:paddingRight="12dp"
+                        android:fontFamily="@font/exo2_regular" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:text="👻"
+                        android:textSize="36sp"
+                        android:gravity="center" />
+
+                    <Button
+                        android:id="@+id/btn_observe"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="12dp"
+                        android:background="@drawable/hub_btn"
+                        android:textColor="#F3F0E8"
+                        android:text="Наблюдать"
+                        android:textAllCaps="false"
+                        android:fontFamily="@font/pressstart2p"
+                        android:textSize="10sp"
+                        android:stateListAnimator="@null" />
+
+                    <Button
+                        android:id="@+id/btn_ready"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:layout_marginBottom="8dp"
+                        android:background="@drawable/hub_btn"
+                        android:textColor="#F3F0E8"
+                        android:text="@string/btn_ready"
+                        android:textAllCaps="false"
+                        android:fontFamily="@font/pressstart2p"
+                        android:textSize="10sp"
+                        android:stateListAnimator="@null" />
+                    </LinearLayout>
+                </ScrollView>
+
+                <!-- Right: chat -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1.0"
+                    android:orientation="vertical"
+                    android:padding="10dp"
+                    android:background="#66000000">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="ЧАТ"
+                            android:textColor="#D4C5A9"
+                            android:textSize="10sp"
+                            android:fontFamily="@font/pressstart2p" />
+
+                        <TextView
+                            android:id="@+id/lobby_player_count"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="0"
+                            android:textColor="#F3F0E8"
+                            android:textSize="12sp"
+                            android:fontFamily="@font/exo2_semibold" />
+                    </LinearLayout>
+
+                    <ScrollView
+                        android:id="@+id/lobby_chat_scroll"
+                        android:layout_width="match_parent"
+                        android:layout_height="0dp"
+                        android:layout_weight="1"
+                        android:layout_marginTop="8dp"
+                        android:fillViewport="true">
+
+                        <TextView
+                            android:id="@+id/lobby_players"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:textColor="#F3F0E8"
+                            android:textSize="11sp"
+                            android:lineSpacingExtra="3dp"
+                            android:text="ожидание чата…" />
+                    </ScrollView>
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ===== OBSERVE / GAME (fullscreen) ===== -->
+    <FrameLayout
+        android:id="@+id/screen_observe"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:background="#000000">
+
+        <FrameLayout
+            android:id="@+id/observe_gl"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#000000" />
+
+        <!-- Hidden legacy ids (kept for FindViewById safety) -->
+        <LinearLayout
+            android:id="@+id/touch_pad_left"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone"
+            android:orientation="vertical">
+            <Button android:id="@+id/btn_touch_up" android:layout_width="0dp" android:layout_height="0dp" />
+            <Button android:id="@+id/btn_touch_down" android:layout_width="0dp" android:layout_height="0dp" />
+            <Button android:id="@+id/btn_touch_left" android:layout_width="0dp" android:layout_height="0dp" />
+            <Button android:id="@+id/btn_touch_right" android:layout_width="0dp" android:layout_height="0dp" />
         </LinearLayout>
 
-        <!-- Right touch zone -->
-        <LinearLayout
-            android:layout_width="72dp"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
+        <TextView
+            android:id="@+id/observe_crosshair"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/observe_title"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/observe_hud"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_marginTop="6dp"
+            android:layout_marginStart="8dp"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:background="#44000000"
+            android:fontFamily="@font/exo2_regular"
+            android:textColor="#99E8E4DA"
+            android:textSize="10sp"
             android:gravity="center"
-            android:background="@color/hub_panel"
-            android:padding="6dp">
+            android:text="" />
+
+        <TextView
+            android:id="@+id/observe_fps"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="6dp"
+            android:layout_marginEnd="56dp"
+            android:paddingLeft="6dp"
+            android:paddingRight="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:background="#44000000"
+            android:fontFamily="@font/exo2_regular"
+            android:textColor="#B0E8E4DA"
+            android:textSize="10sp"
+            android:gravity="center"
+            android:text="FPS" />
+
+        <Button
+            android:id="@+id/btn_observe_leave"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_gravity="top|end"
+            android:layout_margin="10dp"
+            android:background="@drawable/hub_btn_danger"
+            android:textColor="#F3F0E8"
+            android:text="@string/btn_disconnect"
+            android:textAllCaps="false"
+            android:textSize="11sp"
+            android:fontFamily="@font/exo2_semibold"
+            android:stateListAnimator="@null" />
+
+        <!-- PC GhostSystem eye toggles -->
+        <LinearLayout
+            android:id="@+id/ghost_toggles"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="104dp"
+            android:orientation="horizontal"
+            android:gravity="center">
 
             <Button
-                android:id="@+id/btn_touch_right"
-                android:layout_width="56dp"
-                android:layout_height="56dp"
+                android:id="@+id/btn_ghost_fov"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
                 android:background="@drawable/hub_btn"
-                android:text="▶"
+                android:text="FoV"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_light"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="Свет"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_vis"
+                android:layout_width="64dp"
+                android:layout_height="28dp"
+                android:background="@drawable/hub_btn"
+                android:text="Духи"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="9sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+        </LinearLayout>
+
+        <!-- Ghost actions — bottom center, compact -->
+        <LinearLayout
+            android:id="@+id/ghost_actions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="68dp"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <Button
+                android:id="@+id/btn_ghost_return"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="В тело"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="10sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_warps"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="Варп"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="10sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_follow"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:layout_marginEnd="4dp"
+                android:background="@drawable/hub_btn"
+                android:text="Следить"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="10sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+
+            <Button
+                android:id="@+id/btn_ghost_roles"
+                android:layout_width="72dp"
+                android:layout_height="32dp"
+                android:background="@drawable/hub_btn"
+                android:text="Роли"
+                android:textColor="@color/hub_text"
+                android:textAllCaps="false"
+                android:textSize="10sp"
+                android:fontFamily="@font/exo2_semibold"
+                android:stateListAnimator="@null"
+                android:padding="0dp" />
+        </LinearLayout>
+
+        <!-- Robust-style warp / follow picker (replaces AlertDialog) -->
+        <FrameLayout
+            android:id="@+id/observe_warp_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone"
+            android:background="#99000000"
+            android:clickable="true"
+            android:focusable="true">
+
+            <LinearLayout
+                android:layout_width="360dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:layout_marginTop="48dp"
+                android:layout_marginBottom="48dp"
+                android:orientation="vertical"
+                android:background="@drawable/chat_panel_bg"
+                android:padding="8dp">
+
+                <TextView
+                    android:id="@+id/observe_warp_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:textColor="#F3F0E8"
+                    android:textSize="14sp"
+                    android:padding="8dp"
+                    android:text="Варп" />
+
+                <ListView
+                    android:id="@+id/observe_warp_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:divider="#332A3038"
+                    android:dividerHeight="1dp"
+                    android:cacheColorHint="@android:color/transparent" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="end"
+                    android:paddingTop="8dp">
+
+                    <Button
+                        android:id="@+id/btn_observe_warp_ghostnado"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginEnd="8dp"
+                        android:background="@drawable/hub_btn"
+                        android:text="Ghostnado"
+                        android:textAllCaps="false"
+                        android:textColor="@color/hub_text"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null"
+                        android:visibility="gone" />
+
+                    <Button
+                        android:id="@+id/btn_observe_warp_close"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:background="@drawable/hub_btn_danger"
+                        android:text="Закрыть"
+                        android:textAllCaps="false"
+                        android:textColor="#F3F0E8"
+                        android:textSize="11sp"
+                        android:fontFamily="@font/exo2_semibold"
+                        android:stateListAnimator="@null" />
+                </LinearLayout>
+            </LinearLayout>
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/joystick_host"
+            android:layout_width="140dp"
+            android:layout_height="140dp"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="16dp" />
+
+        <!-- PC-style chat (history + channel + input) — top right -->
+        <LinearLayout
+            android:id="@+id/observe_chat_panel"
+            android:layout_width="320dp"
+            android:layout_height="180dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="48dp"
+            android:layout_marginEnd="8dp"
+            android:orientation="vertical"
+            android:background="@drawable/chat_panel_bg"
+            android:padding="4dp">
+
+            <ScrollView
+                android:id="@+id/observe_chat_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:fillViewport="false"
+                android:fadeScrollbars="true"
+                android:scrollbarStyle="insideOverlay">
+
+                <TextView
+                    android:id="@+id/observe_chat_history"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textColor="#E8E4DC"
+                    android:textSize="11sp"
+                    android:lineSpacingExtra="2dp"
+                    android:paddingStart="6dp"
+                    android:paddingEnd="6dp"
+                    android:paddingTop="4dp"
+                    android:paddingBottom="4dp"
+                    android:text="чат…" />
+            </ScrollView>
+
+            <LinearLayout
+                android:id="@+id/observe_chat_bar"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="@drawable/chat_input_bg"
+                android:paddingStart="2dp"
+                android:paddingEnd="2dp">
+
+                <Button
+                    android:id="@+id/btn_observe_chat_channel"
+                    android:layout_width="72dp"
+                    android:layout_height="32dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="Рядом"
+                    android:textColor="@color/hub_text"
+                    android:textAllCaps="false"
+                    android:textSize="10sp"
+                    android:fontFamily="@font/exo2_semibold"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+
+                <EditText
+                    android:id="@+id/observe_chat_input"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@android:color/transparent"
+                    android:fontFamily="@font/exo2_regular"
+                    android:hint="E чтобы говорить…"
+                    android:textColorHint="#66E8E4DA"
+                    android:textColor="#F3F0E8"
+                    android:textSize="12sp"
+                    android:imeOptions="actionSend"
+                    android:inputType="textCapSentences"
+                    android:maxLines="1"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="4dp" />
+
+                <Button
+                    android:id="@+id/btn_observe_chat_filter"
+                    android:layout_width="36dp"
+                    android:layout_height="32dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="☰"
+                    android:textColor="@color/hub_text"
+                    android:textSize="12sp"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+
+                <Button
+                    android:id="@+id/btn_observe_chat_send"
+                    android:layout_width="40dp"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="2dp"
+                    android:background="@drawable/hub_btn"
+                    android:text="▶"
+                    android:textColor="@color/hub_text"
+                    android:textSize="12sp"
+                    android:stateListAnimator="@null"
+                    android:padding="0dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_margin="16dp">
+
+            <Button
+                android:id="@+id/btn_zoom_in"
+                android:layout_width="52dp"
+                android:layout_height="44dp"
+                android:background="@drawable/hub_btn"
+                android:text="＋"
+                android:textColor="@color/hub_text"
+                android:textSize="18sp"
+                android:stateListAnimator="@null" />
+
+            <Button
+                android:id="@+id/btn_zoom_out"
+                android:layout_width="52dp"
+                android:layout_height="44dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/hub_btn"
+                android:text="－"
                 android:textColor="@color/hub_text"
                 android:textSize="18sp"
                 android:stateListAnimator="@null" />
         </LinearLayout>
-    </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

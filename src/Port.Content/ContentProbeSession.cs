@@ -2,7 +2,7 @@ namespace Port.Content;
 
 /// <summary>
 /// Downloads ACZ content with resume + progress. Prioritizes Assemblies for NetSerializer,
-/// then remaining pack files in batches.
+/// then Prototypes, then all Textures/*.rsic — before lobby join.
 /// </summary>
 public sealed class ContentProbeSession
 {
@@ -12,16 +12,34 @@ public sealed class ContentProbeSession
     public bool Busy { get; private set; }
     public ServerBuildInfo? LastInfo { get; private set; }
     public ContentManifest? LastManifest { get; private set; }
+    public ManifestPlan? LastPlan { get; private set; }
+    public IReadOnlyDictionary<string, int>? TextureIndex { get; private set; }
     public int FilesDownloaded { get; private set; }
     public int AssembliesDownloaded { get; private set; }
+    public int TexturesDownloaded { get; private set; }
     public ContentDownloadProgress? LastProgress { get; private set; }
     public string FilesRoot { get; private set; } = "";
 
-    /// <summary>If true, after assemblies also pull the rest of the manifest (large).</summary>
-    public bool DownloadFullPack { get; set; } = true;
+    /// <summary>Legacy: never use on mobile (OOM).</summary>
+    public bool DownloadFullPack { get; set; }
 
-    /// <summary>Max non-assembly files to pull when DownloadFullPack (0 = all).</summary>
-    public int MaxExtraFiles { get; set; } = 0;
+    /// <summary>Download Prototypes after assemblies.</summary>
+    public bool DownloadGhostAssets { get; set; } = true;
+
+    /// <summary>Download every Textures/**/*.rsic before join (progress on loading screen).</summary>
+    public bool DownloadAllTextures { get; set; } = true;
+
+    /// <summary>Max non-assembly files when DownloadFullPack (0 = all).</summary>
+    public int MaxExtraFiles { get; set; }
+
+    /// <summary>True when the last RunAsync finished without FAIL.</summary>
+    public bool LastSucceeded { get; private set; }
+
+    public void DropManifest()
+    {
+        LastManifest = null;
+        Note("manifest dropped from RAM");
+    }
 
     public event Action<ContentDownloadProgress>? ProgressChanged;
 
@@ -37,10 +55,12 @@ public sealed class ContentProbeSession
             lines.Add($"build: engine={info.EngineVersion} fork={info.ForkId}");
             lines.Add($"version: {Truncate(info.Version, 16)}… acz={info.Acz} auth={info.AuthMode}");
         }
-        if (LastManifest is { } man)
-            lines.Add($"manifest: {man.Entries.Count} files");
+        if (LastPlan is { } plan)
+            lines.Add($"plan: asm={plan.Assemblies.Count} proto={plan.Prototypes.Count} rsic={plan.TexturesRsic.Count} tilePng={plan.TexturesTilePng.Count} / {plan.TotalEntries}");
         if (AssembliesDownloaded > 0)
             lines.Add($"assemblies: {AssembliesDownloaded}");
+        if (TexturesDownloaded > 0)
+            lines.Add($"textures: {TexturesDownloaded}");
         if (FilesDownloaded > 0)
             lines.Add($"files on disk: {FilesDownloaded} → {FilesRoot}");
         foreach (var l in _log.TakeLast(14))
@@ -52,8 +72,13 @@ public sealed class ContentProbeSession
     {
         if (Busy) return;
         Busy = true;
+        LastSucceeded = false;
         FilesDownloaded = 0;
         AssembliesDownloaded = 0;
+        TexturesDownloaded = 0;
+        TextureIndex = null;
+        LastPlan = null;
+        LastManifest = null;
         _log.Clear();
         try
         {
@@ -75,7 +100,6 @@ public sealed class ContentProbeSession
 
             var versionKey = Sanitize(LastInfo.ManifestHash.Length > 0 ? LastInfo.ManifestHash : LastInfo.Version);
             var forkKey = Sanitize(LastInfo.ForkId);
-            // Reuse version dir on resume / second pass (full pack) — don't nest paths.
             string versionDir;
             if (!string.IsNullOrWhiteSpace(FilesRoot)
                 && FilesRoot.Replace('\\', '/').Contains($"/{forkKey}/{versionKey}/files", StringComparison.OrdinalIgnoreCase))
@@ -103,63 +127,57 @@ public sealed class ContentProbeSession
 
             Report(new ContentDownloadProgress("manifest", 0, 1, 0, Detail: "GET /manifest.txt"));
             Note("download /manifest.txt");
-            Summary = "content: downloading manifest…";
+            Summary = "Манифест контента…";
             var acz = new AczContentClient();
             var manifestBytes = await acz.DownloadManifestAsync(StatusBaseUrl, ct);
             await File.WriteAllBytesAsync(Path.Combine(versionDir, "manifest.txt"), manifestBytes, ct);
-            LastManifest = ContentManifest.Parse(manifestBytes);
-            Note($"manifest OK — {LastManifest.Entries.Count} entries ({manifestBytes.Length:N0} B)");
 
-            var assemblies = LastManifest.Entries
-                .Where(e => e.Path.StartsWith("Assemblies/", StringComparison.OrdinalIgnoreCase)
-                            && e.Path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                .Select(e => e.Index)
-                .ToArray();
+            Summary = "Индекс Assemblies / Prototypes / Textures…";
+            Report(new ContentDownloadProgress("index", 0, 1, 0, Detail: "extract plan"));
+            var plan = ManifestPlan.Extract(manifestBytes);
+            LastPlan = plan;
+            // Free the raw bytes ASAP — plan already holds only needed paths.
+            manifestBytes = Array.Empty<byte>();
+            GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
 
-            if (assemblies.Length == 0)
+            Note($"plan OK — total={plan.TotalEntries:N0} asm={plan.Assemblies.Count} proto={plan.Prototypes.Count} rsic={plan.TexturesRsic.Count} tilePng={plan.TexturesTilePng.Count}");
+            TextureIndex = plan.BuildRsicIndex();
+
+            if (plan.Assemblies.Count == 0)
             {
                 Summary = "content: FAIL — no Assemblies/*.dll in manifest";
                 return;
             }
 
-            Note($"assemblies to sync: {assemblies.Length}");
+            var progress = Bridge();
+
+            // --- Assemblies ---
             var asmDir = Path.Combine(FilesRoot, "Assemblies");
             var cacheMarker = Path.Combine(versionDir, "assemblies.ok");
             var cacheHit = File.Exists(cacheMarker)
                            && string.Equals(File.ReadAllText(cacheMarker).Trim(), versionKey, StringComparison.OrdinalIgnoreCase)
                            && Directory.Exists(asmDir)
-                           && Directory.GetFiles(asmDir, "*.dll").Length >= Math.Min(3, assemblies.Length);
+                           && Directory.GetFiles(asmDir, "*.dll").Length >= Math.Min(3, plan.Assemblies.Count);
 
             if (cacheHit)
             {
                 AssembliesDownloaded = Directory.GetFiles(asmDir, "*.dll").Length;
                 FilesDownloaded = AssembliesDownloaded;
-                Note($"assemblies cache HIT — {AssembliesDownloaded} dlls (skip download)");
-                Summary = $"content: cache OK — {AssembliesDownloaded} assemblies";
+                Note($"assemblies cache HIT — {AssembliesDownloaded} dlls");
+                Summary = $"Сборки из кэша ({AssembliesDownloaded})";
+                Report(new ContentDownloadProgress("assemblies", AssembliesDownloaded, AssembliesDownloaded, 0, Detail: "cache"));
             }
             else
             {
-                Summary = $"content: downloading assemblies 0/{assemblies.Length}…";
-                // Avoid Progress<T> + SynchronizationContext: on Android it re-enters the UI
-                // thread and can wrap failures as opaque Java RuntimeException.
-                var progress = new ContentProgressBridge(p =>
-                {
-                    LastProgress = p;
-                    Summary = $"content: {p.Line}";
-                    ProgressChanged?.Invoke(p);
-                    if (p.Done == p.Total || p.Done % 5 == 0)
-                        Note(p.Line);
-                });
-
-                AssembliesDownloaded = await acz.DownloadFilesBatchedAsync(
-                    StatusBaseUrl, LastManifest, assemblies, FilesRoot, progress,
+                Summary = $"Загрузка сборок 0/{plan.Assemblies.Count}…";
+                AssembliesDownloaded = await acz.DownloadIndexedPathsBatchedAsync(
+                    StatusBaseUrl, plan.Assemblies, FilesRoot, progress,
                     batchSize: 16, stage: "assemblies", ct);
-                Note($"assemblies done: {AssembliesDownloaded}");
                 FilesDownloaded = AssembliesDownloaded;
+                Note($"assemblies done: {AssembliesDownloaded}");
                 try
                 {
                     await File.WriteAllTextAsync(cacheMarker, versionKey, ct);
-                    Note("assemblies cache saved");
                 }
                 catch (Exception ex)
                 {
@@ -167,46 +185,65 @@ public sealed class ContentProbeSession
                 }
             }
 
-            if (DownloadFullPack)
+            // --- Prototypes ---
+            if (DownloadGhostAssets && plan.Prototypes.Count > 0)
             {
-                var progress = new ContentProgressBridge(p =>
-                {
-                    LastProgress = p;
-                    Summary = $"content: {p.Line}";
-                    ProgressChanged?.Invoke(p);
-                    if (p.Done == p.Total || p.Done % 5 == 0)
-                        Note(p.Line);
-                });
-
-                var extras = LastManifest.Entries
-                    .Where(e => !e.Path.StartsWith("Assemblies/", StringComparison.OrdinalIgnoreCase))
-                    .Select(e => e.Index)
-                    .ToList();
-                if (MaxExtraFiles > 0 && extras.Count > MaxExtraFiles)
-                    extras = extras.Take(MaxExtraFiles).ToList();
-
-                Note($"pack files to sync: {extras.Count}");
-                Summary = $"content: downloading pack 0/{extras.Count}…";
-                var packDone = await acz.DownloadFilesBatchedAsync(
-                    StatusBaseUrl, LastManifest, extras, FilesRoot, progress,
-                    batchSize: AczContentClient.DefaultBatchSize, stage: "pack", ct);
-                FilesDownloaded = AssembliesDownloaded + packDone;
-                Note($"pack done: {packDone}");
+                Summary = $"Загрузка прототипов 0/{plan.Prototypes.Count}…";
+                var protoDone = await acz.DownloadIndexedPathsBatchedAsync(
+                    StatusBaseUrl, plan.Prototypes, FilesRoot, progress,
+                    batchSize: AczContentClient.DefaultBatchSize, stage: "prototypes", ct);
+                FilesDownloaded = AssembliesDownloaded + protoDone;
+                Note($"prototypes done: {protoDone}");
             }
+
+            // --- Tile PNGs (floors) — SS14 ContentTileDefinition uses .png, not .rsic ---
+            if (DownloadAllTextures && plan.TexturesTilePng.Count > 0)
+            {
+                Summary = $"Загрузка тайлов 0/{plan.TexturesTilePng.Count}…";
+                Note($"tile png to sync: {plan.TexturesTilePng.Count}");
+                var tileDone = await acz.DownloadIndexedPathsBatchedAsync(
+                    StatusBaseUrl, plan.TexturesTilePng, FilesRoot, progress,
+                    batchSize: 48, stage: "tiles", ct);
+                FilesDownloaded += tileDone;
+                Note($"tile png done: {tileDone}");
+            }
+
+            // --- All .rsic textures (before lobby) ---
+            if (DownloadAllTextures && plan.TexturesRsic.Count > 0)
+            {
+                Summary = $"Загрузка текстур 0/{plan.TexturesRsic.Count}…";
+                Note($"textures to sync: {plan.TexturesRsic.Count}");
+                TexturesDownloaded = await acz.DownloadIndexedPathsBatchedAsync(
+                    StatusBaseUrl, plan.TexturesRsic, FilesRoot, progress,
+                    batchSize: 32, stage: "textures", ct);
+                FilesDownloaded = AssembliesDownloaded + TexturesDownloaded +
+                                  (DownloadGhostAssets ? plan.Prototypes.Count : 0) +
+                                  plan.TexturesTilePng.Count;
+                Note($"textures done: {TexturesDownloaded}");
+            }
+
+            // Drop heavy plan path lists after download (index kept separately).
+            plan.Assemblies.Clear();
+            plan.Prototypes.Clear();
+            plan.TexturesRsic.Clear();
+            plan.TexturesTilePng.Clear();
+            GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
 
             await File.WriteAllTextAsync(
                 Path.Combine(versionDir, "build-info.json"),
                 System.Text.Json.JsonSerializer.Serialize(LastInfo, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }),
                 ct);
 
-            var asmNames = Directory.Exists(Path.Combine(FilesRoot, "Assemblies"))
-                ? Directory.GetFiles(Path.Combine(FilesRoot, "Assemblies"), "*.dll").Select(Path.GetFileName).ToArray()
-                : Array.Empty<string?>();
-            Note($"local Assemblies: {string.Join(", ", asmNames.Take(12))}{(asmNames.Length > 12 ? "…" : "")}");
+            var texDir = Path.Combine(FilesRoot, "Textures");
+            var texCount = Directory.Exists(texDir)
+                ? Directory.EnumerateFiles(texDir, "*.rsic", SearchOption.AllDirectories).Take(100_000).Count()
+                : 0;
+            Note($"textures on disk: {texCount} .rsic");
 
-            Report(new ContentDownloadProgress("done", FilesDownloaded, Math.Max(FilesDownloaded, 1), 0, Detail: "OK"));
+            Report(new ContentDownloadProgress("done", Math.Max(FilesDownloaded, 1), Math.Max(FilesDownloaded, 1), 0, Detail: "OK"));
             Summary =
-                $"content: OK — assemblies {AssembliesDownloaded}, files {FilesDownloaded}/{LastManifest.Entries.Count}, engine {LastInfo.EngineVersion}";
+                $"Готово — asm={AssembliesDownloaded}, .rsic={texCount}, eng={LastInfo.EngineVersion}";
+            LastSucceeded = true;
         }
         catch (Exception ex)
         {
@@ -219,6 +256,24 @@ public sealed class ContentProbeSession
             Busy = false;
         }
     }
+
+    ContentProgressBridge Bridge() => new(p =>
+    {
+        LastProgress = p;
+        Summary = p.Stage switch
+        {
+            "assemblies" => $"Сборки {p.Done}/{p.Total} ({p.Percent}%)",
+            "prototypes" => $"Прототипы {p.Done}/{p.Total} ({p.Percent}%)",
+            "tiles" => $"Тайлы {p.Done}/{p.Total} ({p.Percent}%)",
+            "textures" => $"Текстуры {p.Done}/{p.Total} ({p.Percent}%)",
+            _ => $"Загрузка: {p.Line}",
+        };
+        if (!string.IsNullOrWhiteSpace(p.CurrentPath))
+            Summary += $"\n{ShortPath(p.CurrentPath)}";
+        ProgressChanged?.Invoke(p);
+        if (p.Done == p.Total || p.Done % 25 == 0)
+            Note(p.Line);
+    });
 
     sealed class ContentProgressBridge : IProgress<ContentDownloadProgress>
     {
@@ -246,6 +301,14 @@ public sealed class ContentProbeSession
 
     static string Truncate(string s, int n) =>
         string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s[..n]);
+
+    static string ShortPath(string path)
+    {
+        path = path.Replace('\\', '/');
+        if (path.Length <= 48) return path;
+        var slash = path.LastIndexOf('/');
+        return slash > 0 ? "…/" + path[(slash + 1)..] : Truncate(path, 48);
+    }
 
     static string Sanitize(string s)
     {

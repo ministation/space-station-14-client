@@ -4,7 +4,8 @@ using Robust.Shared.Enums;
 namespace Port.Net;
 
 /// <summary>
-/// Deploy path: auth → content sync (progress) → lobby join (verbose debug).
+/// Auth → full content preload (assemblies/prototypes/textures) → lobby join.
+/// Lobby is never entered until textures finish downloading.
 /// </summary>
 public sealed class ConnectSession
 {
@@ -21,6 +22,7 @@ public sealed class ConnectSession
     public string DebugLog { get; private set; } = "";
 
     readonly List<string> _log = new();
+    bool _joinSettled;
 
     public bool InLobby => Session.IsConnected && !Session.IsObserving;
     public bool Observing => Session.IsConnected && Session.IsObserving;
@@ -67,6 +69,7 @@ public sealed class ConnectSession
     {
         if (Busy) return;
         Busy = true;
+        _joinSettled = false;
         _log.Clear();
         try
         {
@@ -74,17 +77,33 @@ public sealed class ConnectSession
             Session = new GameSessionClient();
 
             Note("=== connect start ===");
-            Summary = "Checking SS14 login…";
+            Summary = "Проверка аккаунта SS14…";
             NotifyDebug();
             var auth = await EnsureAuthAsync(ct);
             if (auth is null)
             {
-                Summary = "Log in with your SS14 account first";
+                Summary = "Сначала войдите в аккаунт SS14";
                 return;
             }
 
+            if (!auth.AllowHwid)
+            {
+                auth.AllowHwid = true;
+                if (!string.IsNullOrWhiteSpace(AuthConfigPath))
+                    auth.Save(AuthConfigPath);
+                Note("AllowHwid enabled (required by server)");
+            }
+
+            if (string.IsNullOrWhiteSpace(ClientHwid.StorageDirectory)
+                && !string.IsNullOrWhiteSpace(AuthConfigPath))
+            {
+                ClientHwid.StorageDirectory = Path.Combine(
+                    Path.GetDirectoryName(AuthConfigPath) ?? ".",
+                    "userdata");
+            }
+
             Note(auth.StatusLine());
-            Summary = "Fetching server status…";
+            Summary = "Статус сервера…";
             NotifyDebug();
             try
             {
@@ -96,7 +115,7 @@ public sealed class ConnectSession
                 Note($"status warn: {ex.Message}");
             }
 
-            Summary = "Fetching /info…";
+            Summary = "Информация о билде…";
             NotifyDebug();
             LastInfo = await new ServerInfoClient().FetchAsync(Endpoint.HttpBaseUrl, ct);
             Note($"info: engine={LastInfo.EngineVersion} auth={LastInfo.AuthMode} acz={LastInfo.Acz}");
@@ -109,57 +128,55 @@ public sealed class ConnectSession
                 Note("pubkey saved to auth-session");
             }
 
-            // UDP join is independent of ACZ. Run assemblies download in parallel so a
-            // Java/HTTP blip no longer blocks the lobby handshake (~15–25s).
-            Task? contentTask = null;
+            // Content MUST finish (including all .rsic) before UDP lobby join.
             if (!string.IsNullOrWhiteSpace(ContentRoot))
             {
                 Content.StatusBaseUrl = Endpoint.HttpBaseUrl;
                 Content.ContentRoot = ContentRoot;
                 Content.DownloadFullPack = false;
+                Content.DownloadGhostAssets = true;
+                Content.DownloadAllTextures = true;
                 Content.ProgressChanged -= OnContentProgress;
                 Content.ProgressChanged += OnContentProgress;
 
-                Summary = "UDP join + content…";
-                Note("content sync: assemblies in parallel with UDP join");
-                NotifyDebug();
-                
-                // Pre-set AssembliesDirectory so serializer can find files as soon as they land.
+                Session.ContentSearchRoot = ContentRoot;
                 Session.AssembliesDirectory = Path.Combine(ContentRoot, "Assemblies");
-                Note($"assemblies dir (pre) → {Session.AssembliesDirectory}");
-                
-                contentTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await Content.RunAsync(ct);
-                        Note(Content.Summary);
-                        if (!string.IsNullOrWhiteSpace(Content.FilesRoot))
-                        {
-                            Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
-                            Note($"assemblies dir → {Session.AssembliesDirectory}");
-                        }
+                Session.StringsCacheDirectory = Path.Combine(ContentRoot, "string-cache");
+                Note($"content search root → {Session.ContentSearchRoot}");
 
-                        if (Content.Summary.StartsWith("content: OK", StringComparison.Ordinal))
-                        {
-                            Content.DownloadFullPack = true;
-                            Note("background pack download start");
-                            await Content.RunAsync(CancellationToken.None);
-                            Note(Content.Summary);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Note($"content parallel: {Port.Content.PortHttp.FormatException(ex)}");
-                    }
-                }, CancellationToken.None);
+                Summary = "Загрузка контента…";
+                Note("content sync BEFORE lobby: assemblies + prototypes + all .rsic");
+                NotifyDebug();
+
+                await Content.RunAsync(ct);
+                Note(Content.Summary);
+
+                if (!Content.LastSucceeded)
+                {
+                    Summary = string.IsNullOrWhiteSpace(Content.Summary)
+                        ? "Не удалось загрузить контент"
+                        : Content.Summary;
+                    Note("content failed — abort join");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(Content.FilesRoot))
+                {
+                    Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
+                    Session.ContentFilesRoot = Content.FilesRoot;
+                    if (Content.TextureIndex is { Count: > 0 } idx)
+                        Session.ConfigureTextureFetcher(Endpoint.HttpBaseUrl, idx, Content.FilesRoot);
+                    Session.NotifyContentReady(Content.FilesRoot);
+                    Note($"assemblies dir → {Session.AssembliesDirectory}");
+                    Note($"rsic index={Session.TextureFetcher.IndexedRsicCount}");
+                }
             }
             else
             {
                 Note("ContentRoot unset — skip content sync");
             }
 
-            Summary = "Connecting UDP / handshake…";
+            Summary = "Подключение к серверу…";
             Note($"join lobby → {Endpoint.Host}:{Endpoint.Port}");
             NotifyDebug();
 
@@ -168,35 +185,14 @@ public sealed class ConnectSession
                 LastInfo.AuthMode,
                 LastInfo.PublicKey,
                 auth,
-                TimeSpan.FromSeconds(75),
+                TimeSpan.FromSeconds(90),
                 ct);
-
-            if (contentTask is not null)
-            {
-                // Don't fail the join if content is still finishing; wait briefly for assemblies path.
-                var finished = await Task.WhenAny(contentTask, Task.Delay(TimeSpan.FromSeconds(10), ct));
-                if (finished == contentTask)
-                {
-                    try { await contentTask; }
-                    catch (Exception ex) { Note($"content await: {ex.Message}"); }
-                }
-                else
-                {
-                    Note("content still running in background");
-                }
-
-                if (string.IsNullOrWhiteSpace(Session.AssembliesDirectory)
-                    && !string.IsNullOrWhiteSpace(Content.FilesRoot))
-                {
-                    Session.AssembliesDirectory = Path.Combine(Content.FilesRoot, "Assemblies");
-                    Note($"assemblies dir (post-content) → {Session.AssembliesDirectory}");
-                }
-            }
 
             Note($"session phase={result.Phase} detail={result.Detail}");
             foreach (var line in Session.SnapshotLogPublic(24))
                 Note(line);
 
+            _joinSettled = true;
             if (result.Phase is GameSessionPhase.InLobby or GameSessionPhase.Observing)
             {
                 var local = result.Players?.FirstOrDefault(p => p.UserId == result.UserId);
@@ -207,16 +203,20 @@ public sealed class ConnectSession
             }
             else
             {
-                Summary = $"Connect failed: {result.Detail}";
-                if (result.Detail.Contains("no response", StringComparison.OrdinalIgnoreCase))
-                    Summary += "\nUDP до сервера не доходит — выключи VPN / Private DNS и попробуй на мобильном интернете.";
+                var readable = ConnectFailureFormatter.ExtractReason(result.Detail);
+                Summary = ConnectFailureFormatter.FormatUserSummary(result.Detail);
+                Note($"connect denied (raw): {result.Detail}");
+                if (!string.IsNullOrWhiteSpace(readable) && readable != result.Detail)
+                    Note($"connect denied: {readable}");
                 Note(Summary);
             }
         }
         catch (Exception ex)
         {
-            Summary = $"Error: {ex.Message}";
+            _joinSettled = true;
+            Summary = ConnectFailureFormatter.FormatUserSummary(ex.Message);
             Note($"{ex.GetType().Name}: {ex.Message}");
+            Note(Summary);
         }
         finally
         {
@@ -237,9 +237,8 @@ public sealed class ConnectSession
     void OnContentProgress(ContentDownloadProgress p)
     {
         LastProgress = p;
-        Summary = $"Downloading: {p.Percent}% — {p.Stage} {p.Done}/{p.Total}";
-        if (!string.IsNullOrWhiteSpace(p.CurrentPath))
-            Summary += $"\n{p.CurrentPath}";
+        if (!_joinSettled)
+            Summary = Content.Summary;
         ProgressChanged?.Invoke(p);
         NotifyDebug();
     }

@@ -17,6 +17,9 @@ public sealed class GlesClearSurfaceView : GLSurfaceView
     {
         Holder?.SetFormat(global::Android.Graphics.Format.Opaque);
         SetEGLContextClientVersion(2);
+        // Preserve the context across pauses when possible; the renderer still resets
+        // cached GL objects whenever Android creates a new context.
+        PreserveEGLContextOnPause = true;
         Renderer = new GlesClearRenderer();
         SetRenderer(Renderer);
         RenderMode = Rendermode.Continuously;
@@ -26,6 +29,7 @@ public sealed class GlesClearSurfaceView : GLSurfaceView
     {
         Holder?.SetFormat(global::Android.Graphics.Format.Opaque);
         SetEGLContextClientVersion(2);
+        PreserveEGLContextOnPause = true;
         Renderer = new GlesClearRenderer();
         SetRenderer(Renderer);
         RenderMode = Rendermode.Continuously;

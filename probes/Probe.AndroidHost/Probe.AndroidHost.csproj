@@ -6,12 +6,34 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>org.ss14.mobilehub</ApplicationId>
-    <ApplicationVersion>100</ApplicationVersion>
-    <ApplicationDisplayVersion>0.1.0-hub-beta</ApplicationDisplayVersion>
+    <ApplicationVersion>245</ApplicationVersion>
+    <ApplicationDisplayVersion>0.2.45</ApplicationDisplayVersion>
     <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
+    <!-- AOT + aggressive trim strips NetSerializable types → serializer bootstrap fails. -->
+    <RunAOTCompilation>false</RunAOTCompilation>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidEnableMarshalMethods>true</AndroidEnableMarshalMethods>
+    <AndroidLinkTool>r8</AndroidLinkTool>
+    <!-- Keep Java/IL trim conservative — content serializers need reflection. -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+  </PropertyGroup>
+  <ItemGroup>
+    <TrimmerRootAssembly Include="Robust.Shared" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Shared.Maths" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Client" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.Server" RootMode="All" />
+    <TrimmerRootAssembly Include="Port.Net" RootMode="All" />
+    <TrimmerRootAssembly Include="Port.Content" RootMode="All" />
+    <TrimmerRootAssembly Include="Robust.NetSerializer" RootMode="All" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Probe.SharedOnAndroid\Probe.SharedOnAndroid.csproj" />
     <ProjectReference Include="..\..\src\Port.Platform.Android\Port.Platform.Android.csproj" />
@@ -20,6 +42,7 @@
   </ItemGroup>
 
   <!-- Ship libsodium for CryptoBox / AEAD (NuGet android RIDs + explicit ABI pack). -->
+  <!-- Ship libzstd for SharpZstd / mapped strings / MsgState (from com.github.luben:zstd-jni 1.5.6-9). -->
   <ItemGroup>
     <AndroidNativeLibrary Include="lib\arm64-v8a\libsodium.so">
       <Abi>arm64-v8a</Abi>
@@ -31,6 +54,18 @@
       <Abi>armeabi-v7a</Abi>
     </AndroidNativeLibrary>
     <AndroidNativeLibrary Include="lib\x86\libsodium.so">
+      <Abi>x86</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\arm64-v8a\libzstd.so">
+      <Abi>arm64-v8a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86_64\libzstd.so">
+      <Abi>x86_64</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\armeabi-v7a\libzstd.so">
+      <Abi>armeabi-v7a</Abi>
+    </AndroidNativeLibrary>
+    <AndroidNativeLibrary Include="lib\x86\libzstd.so">
       <Abi>x86</Abi>
     </AndroidNativeLibrary>
   </ItemGroup>

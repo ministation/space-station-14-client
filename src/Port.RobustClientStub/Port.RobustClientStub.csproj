@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Satisfy Content.* references to Robust.Client without shipping Clyde/SDL. -->
+    <AssemblyName>Robust.Client</AssemblyName>
+    <RootNamespace>Robust.Client</RootNamespace>
+    <AssemblyVersion>283.1.0.0</AssemblyVersion>
+    <FileVersion>283.1.0.0</FileVersion>
+    <Version>283.1.0</Version>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\vendor\RobustToolbox\Robust.Shared\Robust.Shared.csproj" />
+  </ItemGroup>
+</Project>
