@@ -1136,4 +1136,138 @@ public sealed class AuthoritativeSpriteTests
         Assert.Contains("x3", collapsed);
         Assert.Equal(1, collapsed.Split('\n').Length);
     }
+
+    [Fact]
+    public void AuthoritativeModeSkipsPathHeuristicWhenMetaMissing()
+    {
+        var prev = SpriteResolveOptions.AuthoritativeOnly;
+        SpriteResolveOptions.AuthoritativeOnly = true;
+        try
+        {
+            IconSmoothInfer.ClearCache();
+            // No content root / meta — path invent must not fire in authoritative mode.
+            var data = IconSmoothInfer.FromRsi(null, "Structures/Walls/solid.rsi", "WallSolid");
+            Assert.Null(data);
+
+            // Explicit opt-in still allows legacy invent for tests / rollback.
+            var legacy = IconSmoothInfer.FromRsi(
+                null, "Structures/Walls/solid.rsi", "WallSolid", allowPathHeuristic: true);
+            Assert.NotNull(legacy);
+            Assert.Equal("solid", legacy!.Value.StateBase);
+        }
+        finally
+        {
+            SpriteResolveOptions.AuthoritativeOnly = prev;
+            IconSmoothInfer.ClearCache();
+        }
+    }
+
+    [Fact]
+    public void DrawDepthResolverPrefersYamlThenIconSmoothKey()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "port-depth-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "Prototypes"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Prototypes", "wall.yml"), """
+                - type: entity
+                  id: WallSolid
+                  components:
+                  - type: Sprite
+                    sprite: Structures/Walls/solid.rsi
+                    drawdepth: Walls
+                  - type: IconSmooth
+                    key: walls
+                    base: solid
+                """);
+            var index = new PrototypeSpriteIndex();
+            index.EnsureLoaded(root);
+            var prev = SpriteResolveOptions.AuthoritativeOnly;
+            SpriteResolveOptions.AuthoritativeOnly = true;
+            try
+            {
+                var depth = DrawDepthResolver.Resolve(
+                    index, "WallSolid", "Structures/Walls/solid.rsi", 50, hasAuthoritativeDepth: false);
+                Assert.Equal(DrawDepthResolver.Walls, depth);
+
+                var window = DrawDepthResolver.Resolve(
+                    null, null, "Structures/Windows/reinforced_window.rsi", 0, false,
+                    new IconSmoothData("windows", "rwindow", IconSmoothMode.Corners));
+                Assert.Equal(DrawDepthResolver.WallTops, window);
+
+                // Authoritative: no YAML / IconSmooth → Objects, not path invent.
+                Assert.Equal(
+                    DrawDepthResolver.Objects,
+                    DrawDepthResolver.Resolve(null, null, "Structures/Walls/solid.rsi", 50, false));
+            }
+            finally
+            {
+                SpriteResolveOptions.AuthoritativeOnly = prev;
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IconSmoothResolverPrefersYamlThenMeta()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "port-resolve-" + Guid.NewGuid().ToString("N"));
+        var protoDir = Path.Combine(root, "Prototypes");
+        var rsi = Path.Combine(root, "Textures", "Structures", "Windows", "reinforced_window.rsi");
+        Directory.CreateDirectory(protoDir);
+        Directory.CreateDirectory(rsi);
+        try
+        {
+            File.WriteAllText(Path.Combine(protoDir, "win.yml"), """
+                - type: entity
+                  id: ReinforcedWindow
+                  components:
+                  - type: Sprite
+                    sprite: Structures/Windows/reinforced_window.rsi
+                  - type: IconSmooth
+                    key: windows
+                    base: window
+                    mode: Corners
+                """);
+            File.WriteAllText(Path.Combine(rsi, "meta.json"), """
+                {
+                  "version": 1,
+                  "size": { "x": 32, "y": 32 },
+                  "states": [
+                    { "name": "rwindow0", "directions": 4 },
+                    { "name": "rwindow1", "directions": 4 },
+                    { "name": "rwindow7", "directions": 4 }
+                  ]
+                }
+                """);
+            // FindRsiSource ignores meta-only folders (pngCount < 2) — need real frames.
+            File.WriteAllBytes(Path.Combine(rsi, "rwindow0.png"), [0x89, 0x50, 0x4E, 0x47]);
+            File.WriteAllBytes(Path.Combine(rsi, "rwindow1.png"), [0x89, 0x50, 0x4E, 0x47]);
+            IconSmoothInfer.ClearCache();
+            var index = new PrototypeSpriteIndex();
+            index.EnsureLoaded(root);
+            var prev = SpriteResolveOptions.AuthoritativeOnly;
+            SpriteResolveOptions.AuthoritativeOnly = true;
+            try
+            {
+                var data = IconSmoothResolver.Resolve(
+                    index, root, "ReinforcedWindow", "Structures/Windows/reinforced_window.rsi");
+                Assert.NotNull(data);
+                Assert.Equal("rwindow", data!.Value.StateBase);
+                Assert.Equal("windows", data.Value.Key);
+            }
+            finally
+            {
+                SpriteResolveOptions.AuthoritativeOnly = prev;
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            IconSmoothInfer.ClearCache();
+        }
+    }
 }

@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Port.Client\Port.Client.csproj" />
     <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
     <ProjectReference Include="..\Port.Net\Port.Net.csproj" />
   </ItemGroup>

@@ -15,20 +15,28 @@ public static class IconSmoothInfer
 
     /// <summary>
     /// Read meta states and pick the best numbered base (e.g. solid0..7 → base "solid", Corners).
+    /// Path heuristics are off when <see cref="SpriteResolveOptions.AuthoritativeOnly"/> is true
+    /// (or when <paramref name="allowPathHeuristic"/> is explicitly false).
     /// </summary>
-    public static IconSmoothData? FromRsi(string? contentRoot, string? rsiPath, string? protoId = null)
+    public static IconSmoothData? FromRsi(
+        string? contentRoot,
+        string? rsiPath,
+        string? protoId = null,
+        bool? allowPathHeuristic = null)
     {
         if (string.IsNullOrWhiteSpace(rsiPath))
             return null;
 
-        var cacheKey = (contentRoot ?? "") + "|" + rsiPath;
+        var heuristic = allowPathHeuristic ?? !SpriteResolveOptions.AuthoritativeOnly;
+        // Cache key includes heuristic mode so toggling policy never serves stale invents.
+        var cacheKey = (contentRoot ?? "") + "|" + rsiPath + "|" + (heuristic ? "h" : "a");
         if (Cache.TryGetValue(cacheKey, out var hit))
             return hit;
 
         IconSmoothData? result = null;
         try
         {
-            result = InferCore(contentRoot, rsiPath, protoId);
+            result = InferCore(contentRoot, rsiPath, protoId, heuristic);
         }
         catch
         {
@@ -53,21 +61,30 @@ public static class IconSmoothInfer
     {
         if (string.IsNullOrWhiteSpace(rsiPath))
             return;
-        var key = (contentRoot ?? "") + "|" + rsiPath;
-        Cache.TryRemove(key, out _);
-        StateNameCache.TryRemove(key, out _);
-        // Also drop path-only keys used by callers that omit contentRoot.
+        var root = contentRoot ?? "";
+        var baseKey = root + "|" + rsiPath;
+        Cache.TryRemove(baseKey + "|a", out _);
+        Cache.TryRemove(baseKey + "|h", out _);
+        // Legacy keys (pre-policy suffix) + path-only callers.
+        Cache.TryRemove(baseKey, out _);
         Cache.TryRemove("|" + rsiPath, out _);
+        Cache.TryRemove("|" + rsiPath + "|a", out _);
+        Cache.TryRemove("|" + rsiPath + "|h", out _);
         Cache.TryRemove(rsiPath, out _);
+        StateNameCache.TryRemove(baseKey, out _);
         StateNameCache.TryRemove("|" + rsiPath, out _);
         StateNameCache.TryRemove(rsiPath, out _);
     }
 
-    static IconSmoothData? InferCore(string? contentRoot, string rsiPath, string? protoId)
+    static IconSmoothData? InferCore(
+        string? contentRoot,
+        string rsiPath,
+        string? protoId,
+        bool allowPathHeuristic)
     {
         var names = LoadStateNames(contentRoot, rsiPath);
         if (names.Count == 0)
-            return HeuristicFromPath(rsiPath, protoId);
+            return allowPathHeuristic ? HeuristicFromPath(rsiPath, protoId) : null;
 
         // Collect bases that have contiguous numbered states (base0, base1, ...).
         var bases = new Dictionary<string, (int Max, int Count, int DirHint)>(StringComparer.OrdinalIgnoreCase);
@@ -115,9 +132,11 @@ public static class IconSmoothInfer
         }
 
         // Meta present but no numbered sheet (railing side/corner) → not IconSmooth.
-        // Heuristic only when meta/atlas is empty (ACZ not arrived yet).
+        // Path invent only when meta empty and heuristics explicitly allowed.
         if (bestBase is null)
-            return names.Count > 0 ? null : HeuristicFromPath(rsiPath, protoId);
+            return names.Count > 0 || !allowPathHeuristic
+                ? null
+                : HeuristicFromPath(rsiPath, protoId);
 
         var key = InferSmoothKey(rsiPath, protoId);
         return new IconSmoothData(key, bestBase, bestMode);

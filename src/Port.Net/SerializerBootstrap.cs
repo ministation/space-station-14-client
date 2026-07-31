@@ -256,8 +256,10 @@ public sealed class SerializerBootstrap : IDisposable
         if (fileName.StartsWith("Robust.Server", StringComparison.OrdinalIgnoreCase))
             return true;
         // Only skip true client/server packs — not Content.Shared / *.Interfaces.Shared.
-        if (fileName.EndsWith(".Client.dll", StringComparison.OrdinalIgnoreCase)
-            || fileName.Contains(".Client.", StringComparison.OrdinalIgnoreCase))
+        // Opt-in via SerializerLoadPolicy once Robust.Client stubs cover Content.Client surface.
+        if (!SerializerLoadPolicy.LoadContentClientAssemblies
+            && (fileName.EndsWith(".Client.dll", StringComparison.OrdinalIgnoreCase)
+                || fileName.Contains(".Client.", StringComparison.OrdinalIgnoreCase)))
             return true;
         if (fileName.EndsWith(".Server.dll", StringComparison.OrdinalIgnoreCase)
             || (fileName.Contains(".Server.", StringComparison.OrdinalIgnoreCase)

@@ -2732,7 +2732,12 @@ public sealed class GameSessionClient : IDisposable
         }
 
         Note($"content ready → serializer={SerializerStatus} strings={HasMappedStrings} pendingPkg={_pendingMapStrPackage?.Length ?? 0} protos={_protoSprites.Count} tiles={_tileProtos.Count}");
+        try { OnContentReady?.Invoke(ContentFilesRoot); }
+        catch (Exception ex) { Note($"OnContentReady FAIL: {ex.Message}"); }
     }
+
+    /// <summary>Fired after Assemblies/prototypes are ready (Content.Client host load hooks here).</summary>
+    public Action<string?>? OnContentReady { get; set; }
 
     void TryScanControlledEntity(byte[] payload, Guid userId)
     {

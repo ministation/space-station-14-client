@@ -519,21 +519,13 @@ public sealed class PrototypeSpriteIndex
         var name = Scalar(component, "drawdepth");
         if (string.IsNullOrWhiteSpace(name))
             name = Scalar(component, "drawDepth");
-        depth = name.ToLowerInvariant() switch
+        if (DrawDepthResolver.TryParseName(name) is { } parsed)
         {
-            "belowfloor" or "floortiles" => -13,
-            "floor" or "floors" => -12,
-            "deadmobs" => -5,
-            "walls" => -2,
-            "walltops" or "walltop" => -1,
-            "objects" or "items" => 0,
-            "doors" or "airlocks" => 1,
-            "mobs" => 4,
-            "overmobs" => 5,
-            "effects" => 6,
-            "ghosts" or "overlays" => 8,
-            _ => 0,
-        };
+            depth = parsed;
+            return true;
+        }
+
+        depth = 0;
         return !string.IsNullOrWhiteSpace(name);
     }
 

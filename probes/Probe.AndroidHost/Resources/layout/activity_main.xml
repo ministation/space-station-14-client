@@ -1116,7 +1116,7 @@
             android:layout_gravity="bottom|start"
             android:layout_margin="16dp" />
 
-        <!-- PC-style chat (history + channel + input) — top right -->
+        <!-- Observe chat/HUD views are adapters for Port.Client.Ui.ObserveHudRoot (Phase 4). -->
         <LinearLayout
             android:id="@+id/observe_chat_panel"
             android:layout_width="320dp"
