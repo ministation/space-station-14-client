@@ -1,3 +1,4 @@
+using Port.Client.Rendering;
 using Port.Client.Sprites;
 using Port.Client.Ui;
 using Port.Content;
@@ -10,11 +11,16 @@ namespace Port.Client.Bootstrap;
 /// </summary>
 public static class ClientBootstrap
 {
-    public static ClientLoop CreateDefaultLoop(PrototypeSpriteIndex prototypes)
+    public static ClientLoop CreateDefaultLoop(
+        PrototypeSpriteIndex? prototypes = null,
+        ClydeRenderSystem? render = null)
     {
         var loop = new ClientLoop();
         loop.Add(new AndroidUiHost());
-        loop.Add(new SpritePipelineSystem(new AuthoritativeSpritePipeline(prototypes)));
+        if (prototypes is not null)
+            loop.Add(new SpritePipelineSystem(new AuthoritativeSpritePipeline(prototypes)));
+        if (render is not null)
+            loop.Add(render);
         return loop;
     }
 }

@@ -1163,6 +1163,55 @@ public sealed class AuthoritativeSpriteTests
     }
 
     [Fact]
+    public void DrawDepthResolverPrefersYamlThenIconSmoothKey()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "port-depth-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "Prototypes"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Prototypes", "wall.yml"), """
+                - type: entity
+                  id: WallSolid
+                  components:
+                  - type: Sprite
+                    sprite: Structures/Walls/solid.rsi
+                    drawdepth: Walls
+                  - type: IconSmooth
+                    key: walls
+                    base: solid
+                """);
+            var index = new PrototypeSpriteIndex();
+            index.EnsureLoaded(root);
+            var prev = SpriteResolveOptions.AuthoritativeOnly;
+            SpriteResolveOptions.AuthoritativeOnly = true;
+            try
+            {
+                var depth = DrawDepthResolver.Resolve(
+                    index, "WallSolid", "Structures/Walls/solid.rsi", 50, hasAuthoritativeDepth: false);
+                Assert.Equal(DrawDepthResolver.Walls, depth);
+
+                var window = DrawDepthResolver.Resolve(
+                    null, null, "Structures/Windows/reinforced_window.rsi", 0, false,
+                    new IconSmoothData("windows", "rwindow", IconSmoothMode.Corners));
+                Assert.Equal(DrawDepthResolver.WallTops, window);
+
+                // Authoritative: no YAML / IconSmooth → Objects, not path invent.
+                Assert.Equal(
+                    DrawDepthResolver.Objects,
+                    DrawDepthResolver.Resolve(null, null, "Structures/Walls/solid.rsi", 50, false));
+            }
+            finally
+            {
+                SpriteResolveOptions.AuthoritativeOnly = prev;
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void IconSmoothResolverPrefersYamlThenMeta()
     {
         var root = Path.Combine(Path.GetTempPath(), "port-resolve-" + Guid.NewGuid().ToString("N"));

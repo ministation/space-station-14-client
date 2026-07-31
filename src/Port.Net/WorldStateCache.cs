@@ -757,9 +757,12 @@ public sealed class WorldStateCache
                     if (smooth0.Mode == IconSmoothMode.NoSprite || string.IsNullOrEmpty(path0))
                         continue;
 
-                    var depth0 = spr0 is { FromNetwork: true, HasDrawDepth: true }
-                        ? spr0.DrawDepth
-                        : ClassifyDepth(path0, spr0?.DrawDepth ?? GameStateDecoder.GuessDepth(path0), proto0);
+                    var depth0 = ResolveDrawDepth(
+                        proto0,
+                        path0,
+                        spr0?.DrawDepth ?? GameStateDecoder.GuessDepth(path0),
+                        spr0 is { FromNetwork: true, HasDrawDepth: true },
+                        smooth0);
                     smoothByEnt[ent] = (smooth0, path0!, depth0, parentKey, tx0, ty0);
                 }
 
@@ -936,9 +939,11 @@ public sealed class WorldStateCache
                     if (spr?.Layers is { Count: > 0 })
                     {
                         // Preserve the complete authoritative Sprite layer stack.
-                        var baseDepth = spr.FromNetwork && spr.HasDrawDepth
-                            ? spr.DrawDepth
-                            : ClassifyDepth(spr.Path, spr.DrawDepth != 0 ? spr.DrawDepth : GameStateDecoder.GuessDepth(spr.Path), protoId);
+                        var baseDepth = ResolveDrawDepth(
+                            protoId,
+                            spr.Path,
+                            spr.DrawDepth != 0 ? spr.DrawDepth : GameStateDecoder.GuessDepth(spr.Path),
+                            spr.FromNetwork && spr.HasDrawDepth);
 
                         foreach (var layer in spr.Layers)
                         {
@@ -1026,9 +1031,11 @@ public sealed class WorldStateCache
 
                         var depth = isCtrl
                             ? 100
-                            : (spr is { FromNetwork: true, HasDrawDepth: true }
-                                ? spr.DrawDepth
-                                : ClassifyDepth(path, spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path), protoId));
+                            : ResolveDrawDepth(
+                                protoId,
+                                path,
+                                spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path),
+                                spr is { FromNetwork: true, HasDrawDepth: true });
                         var snap = ForceSpriteDir0(path, protoId, spr?.SnapCardinals == true, spr?.NoRotation == true);
                         drawList.Add(new WorldEntityDraw(
                             ent, wp.X, wp.Y, worldRot,
@@ -1298,7 +1305,8 @@ public sealed class WorldStateCache
             }
             else
             {
-                visual.DrawDepth = ClassifyDepth(path, GameStateDecoder.GuessDepth(path), prototypeId);
+                visual.DrawDepth = ResolveDrawDepth(
+                    prototypeId, path, GameStateDecoder.GuessDepth(path), hasAuthoritativeDepth: false, smooth);
                 visual.HasDrawDepth = true;
             }
 
@@ -1325,7 +1333,8 @@ public sealed class WorldStateCache
         }
         else if (!rebuilt.HasDrawDepth)
         {
-            rebuilt.DrawDepth = ClassifyDepth(rebuilt.Path, GameStateDecoder.GuessDepth(rebuilt.Path), prototypeId);
+            rebuilt.DrawDepth = ResolveDrawDepth(
+                prototypeId, rebuilt.Path, GameStateDecoder.GuessDepth(rebuilt.Path), hasAuthoritativeDepth: false);
         }
 
         rebuilt.NoRotation = resolved.NoRotation || rebuilt.NoRotation;
@@ -1468,35 +1477,29 @@ public sealed class WorldStateCache
         }
     }
 
-    static int ClassifyDepth(string? path, int fallback, string? proto)
+    int ResolveDrawDepth(
+        string? proto,
+        string? path,
+        int networkOrFallback,
+        bool hasAuthoritativeDepth,
+        IconSmoothData? iconSmooth = null)
     {
-        var p = (path ?? "") + " " + (proto ?? "");
-        // Match PC Content.Shared.DrawDepth relative order (Default≈0).
-        if (p.Contains("Tiles", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Floor", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("plating", StringComparison.OrdinalIgnoreCase))
-            return -12;
-        if (p.Contains("/Walls/", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Wall", StringComparison.OrdinalIgnoreCase)
-                && !p.Contains("Window", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Grille", StringComparison.OrdinalIgnoreCase))
-            return -2; // Walls
-        if (p.Contains("Window", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("/Windows/", StringComparison.OrdinalIgnoreCase))
-            return -1; // WallTops
-        if (p.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Door", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Windoor", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Firelock", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Shutter", StringComparison.OrdinalIgnoreCase))
-            return 1;
-        if (IsPlayerLike(proto, path))
-            return 4; // Mobs
-        if (p.Contains("Ghost", StringComparison.OrdinalIgnoreCase)
-            || p.Contains("Observer", StringComparison.OrdinalIgnoreCase))
-            return 5;
-        return fallback != 0 ? fallback : 0;
+        if (iconSmooth is null
+            && TryResolveIconSmooth(proto, path, out var sm)
+            && IsDrawableIconSmooth(sm))
+            iconSmooth = sm;
+
+        // In authoritative mode do not feed GuessDepth path invent as a "fallback depth".
+        var fallback = SpriteResolveOptions.AuthoritativeOnly
+            ? DrawDepthResolver.Objects
+            : networkOrFallback;
+        return DrawDepthResolver.Resolve(
+            _protos, proto, path, fallback, hasAuthoritativeDepth, iconSmooth);
     }
+
+    /// <summary>Legacy path heuristic — prefer <see cref="ResolveDrawDepth"/>.</summary>
+    static int ClassifyDepth(string? path, int fallback, string? proto) =>
+        DrawDepthResolver.HeuristicFromPath(path, proto, fallback);
 
     static bool IsPlayerLike(string? proto, GameStateDecoder.SpriteVisual? spr)
         => IsPlayerLike(proto, spr?.Path);

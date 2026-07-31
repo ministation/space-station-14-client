@@ -6,7 +6,7 @@ using Android.Views;
 using Android.Widget;
 using Port.Client;
 using Port.Client.Bootstrap;
-using Port.Client.Ui;
+using Port.Client.Rendering;
 using Port.Content;
 using Port.Net;
 using Port.Platform.Android;
@@ -101,6 +101,8 @@ public class MainActivity : Activity
     Button? _refreshHubBtn;
     FrameLayout? _observeGl;
     GlesClearSurfaceView? _glView;
+    GlesClydeBackend? _clyde;
+    ClydeRenderSystem? _renderSystem;
     AndroidAudioPlayer? _audioPlayer;
 
     AndroidPlatformHost? _host;
@@ -165,8 +167,8 @@ public class MainActivity : Activity
         ClientFeatureFlags.AuthoritativeSprites = true;
         ClientFeatureFlags.StrictRsiStates = true;
         ClientFeatureFlags.LoadContentClientAssemblies = false;
-        _clientLoop = new ClientLoop();
-        _clientLoop.Add(new AndroidUiHost());
+        _renderSystem = new ClydeRenderSystem();
+        _clientLoop = ClientBootstrap.CreateDefaultLoop(render: _renderSystem);
         _clientLoop.Start();
         // Landscape locked from loading onward. Portrait only on hub home.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
@@ -1384,20 +1386,24 @@ public class MainActivity : Activity
     {
         if (_glView is null)
             return;
+        EnsureGl();
         var s = _connect.Session;
-        _glView.Renderer.SetContentFilesRoot(s.ContentFilesRoot);
-        _glView.Renderer.SetTextureFetcher(s.TextureFetcher);
-        _glView.Renderer.SetCamera(s.CamX, s.CamY);
-        _glView.Renderer.SetCameraRotation(s.CamRotation);
-        _glView.Renderer.SetZoom(s.Zoom);
-        _glView.Renderer.SetFullbright(true);
+        var clyde = _clyde ?? new GlesClydeBackend(_glView.Renderer);
+        _clyde ??= clyde;
+        clyde.SetContentRoot(s.ContentFilesRoot);
+        clyde.SetTextureFetcher(s.TextureFetcher);
+        // Camera is driven by ClydeRenderSystem each tick; keep a direct sync for camera-only frames.
+        clyde.Camera = new System.Numerics.Vector2(s.CamX, s.CamY);
+        clyde.CameraRotation = s.CamRotation;
+        clyde.Zoom = s.Zoom;
+        clyde.SetFullbright(true);
         _glView.Renderer.SetDrawFov(false);
         var world = s.LastWorld;
         if (world is null)
         {
-            _glView.Renderer.SetEntities(Array.Empty<GlesClearRenderer.EntitySprite>(), 0);
-            _glView.Renderer.SetTiles(Array.Empty<GlesClearRenderer.TileSprite>(), 0);
-            _glView.Renderer.SetSpeechBubbles(Array.Empty<GlesClearRenderer.SpeechBubbleSprite>(), 0);
+            clyde.SetEntities(Array.Empty<GlesClearRenderer.EntitySprite>(), 0);
+            clyde.SetTiles(Array.Empty<GlesClearRenderer.TileSprite>(), 0);
+            clyde.SetSpeechBubbles(Array.Empty<GlesClearRenderer.SpeechBubbleSprite>(), 0);
             _audioPlayer?.Tick(Array.Empty<WorldAudioCue>());
             return;
         }
@@ -1445,7 +1451,7 @@ public class MainActivity : Activity
             };
         }
 
-        _glView.Renderer.SetEntities(_spriteScratch, n);
+        clyde.SetEntities(_spriteScratch, n);
 
         var tiles = world.Tiles ?? Array.Empty<WorldTileDraw>();
         var tn = Math.Min(tiles.Count, _tileScratch.Length);
@@ -1467,7 +1473,7 @@ public class MainActivity : Activity
             };
         }
 
-        _glView.Renderer.SetTiles(_tileScratch, tn);
+        clyde.SetTiles(_tileScratch, tn);
 
         var bubbles = s.SnapshotSpeechBubbles();
         var bn = Math.Min(bubbles.Count, _bubbleScratch.Length);
@@ -1485,7 +1491,7 @@ public class MainActivity : Activity
             };
         }
 
-        _glView.Renderer.SetSpeechBubbles(_bubbleScratch, bn);
+        clyde.SetSpeechBubbles(_bubbleScratch, bn);
 
         _audioPlayer ??= new AndroidAudioPlayer();
         _audioPlayer.SetContentRoot(s.ContentFilesRoot);
@@ -1513,9 +1519,20 @@ public class MainActivity : Activity
             ViewGroup.LayoutParams.MatchParent);
         _glView.Touch += OnObserveTouch;
         _observeGl.AddView(_glView, 0);
-        _glView.Renderer.SetGhostMode(true);
-        _glView.Renderer.SetContentFilesRoot(_connect.Session.ContentFilesRoot);
-        _glView.Renderer.SetTextureFetcher(_connect.Session.TextureFetcher);
+        _clyde = new GlesClydeBackend(_glView.Renderer);
+        _clyde.SetGhostMode(true);
+        _clyde.SetContentRoot(_connect.Session.ContentFilesRoot);
+        _clyde.SetTextureFetcher(_connect.Session.TextureFetcher);
+        _clyde.SetFullbright(true);
+        if (_renderSystem is not null)
+        {
+            _renderSystem.AttachBackend(_clyde, _clyde);
+            _renderSystem.CameraSource = () =>
+            {
+                var s = _connect.Session;
+                return (s.CamX, s.CamY, s.CamRotation, s.Zoom);
+            };
+        }
     }
 
     void LeaveServer()
@@ -1724,8 +1741,12 @@ public class MainActivity : Activity
             s_connect = null;
             s_uiObserving = false;
             _uiObserving = false;
+            if (_renderSystem is not null)
+                _renderSystem.CameraSource = null;
+            _clyde = null;
             _clientLoop?.Shutdown();
             _clientLoop = null;
+            _renderSystem = null;
         }
 
         _host?.OnLifecycle(PlatformLifecycle.Destroyed);

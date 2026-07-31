@@ -1,6 +1,7 @@
 using Port.Client;
 using Port.Client.Bootstrap;
 using Port.Client.Content;
+using Port.Client.Rendering;
 using Port.Client.Sprites;
 using Port.Client.Ui;
 using Port.Content;
@@ -107,6 +108,21 @@ public class ClientFoundationTests
         Assert.NotNull(host.Ui);
         host.FrameUpdate(0.05f);
         host.Shutdown();
+    }
+
+    [Fact]
+    public void ClydeRenderSystemSyncsCameraToEye()
+    {
+        var view = new NullClydeWorldView();
+        var render = new ClydeRenderSystem(view);
+        render.CameraSource = () => (10f, 20f, 0.5f, 2f);
+        render.Initialize();
+        render.FrameUpdate(0.05f);
+        Assert.Equal(10f, view.Camera.X);
+        Assert.Equal(20f, view.Camera.Y);
+        Assert.Equal(2f, view.Zoom);
+        Assert.Equal(10f, render.Eyes.CurrentEye!.Position.X);
+        render.Shutdown();
     }
 
     [Fact]
