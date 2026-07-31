@@ -16,21 +16,25 @@ public class ClientFoundationTests
     {
         var prevAuth = SpriteResolveOptions.AuthoritativeOnly;
         var prevStrict = SpriteResolveOptions.StrictRsiStates;
-        var prevLoad = SerializerLoadPolicy.LoadContentClientAssemblies;
+        var prevHost = ClientFeatureFlags.LoadContentClientAssemblies;
+        var prevReflect = SerializerLoadPolicy.LoadContentClientAssemblies;
         try
         {
             ClientFeatureFlags.AuthoritativeSprites = false;
             ClientFeatureFlags.StrictRsiStates = false;
             ClientFeatureFlags.LoadContentClientAssemblies = true;
+            ClientFeatureFlags.ReflectContentClientInSerializer = true;
             Assert.False(SpriteResolveOptions.AuthoritativeOnly);
             Assert.False(SpriteResolveOptions.StrictRsiStates);
+            Assert.True(ClientFeatureFlags.LoadContentClientAssemblies);
             Assert.True(SerializerLoadPolicy.LoadContentClientAssemblies);
         }
         finally
         {
             SpriteResolveOptions.AuthoritativeOnly = prevAuth;
             SpriteResolveOptions.StrictRsiStates = prevStrict;
-            SerializerLoadPolicy.LoadContentClientAssemblies = prevLoad;
+            ClientFeatureFlags.LoadContentClientAssemblies = prevHost;
+            SerializerLoadPolicy.LoadContentClientAssemblies = prevReflect;
         }
     }
 
@@ -84,20 +88,46 @@ public class ClientFoundationTests
     }
 
     [Fact]
-    public void ContentAssemblyHostSkipsClientPacksByDefault()
+    public void ContentAssemblyHostRespectsHostLoadFlagNotSerializer()
     {
-        Assert.False(ContentAssemblyHost.ShouldLoad("Content.Client.dll"));
-        Assert.True(ContentAssemblyHost.ShouldLoad("Content.Shared.dll"));
-        var prev = SerializerLoadPolicy.LoadContentClientAssemblies;
+        var prevHost = ClientFeatureFlags.LoadContentClientAssemblies;
+        var prevReflect = SerializerLoadPolicy.LoadContentClientAssemblies;
         try
         {
+            ClientFeatureFlags.LoadContentClientAssemblies = false;
             SerializerLoadPolicy.LoadContentClientAssemblies = true;
+            Assert.False(ContentAssemblyHost.ShouldLoad("Content.Client.dll"));
+            Assert.True(ContentAssemblyHost.ShouldLoad("Content.Shared.dll"));
+
+            ClientFeatureFlags.LoadContentClientAssemblies = true;
+            SerializerLoadPolicy.LoadContentClientAssemblies = false;
             Assert.True(ContentAssemblyHost.ShouldLoad("Content.Client.dll"));
         }
         finally
         {
-            SerializerLoadPolicy.LoadContentClientAssemblies = prev;
+            ClientFeatureFlags.LoadContentClientAssemblies = prevHost;
+            SerializerLoadPolicy.LoadContentClientAssemblies = prevReflect;
         }
+    }
+
+    [Fact]
+    public void ContentClientBootstrapIncludesLoadSystem()
+    {
+        var boot = ClientBootstrap.CreateDefaultLoop();
+        Assert.Contains(boot.Loop.Systems, s => s is ContentClientLoadSystem);
+        boot.Loop.Start();
+        boot.Loop.Shutdown();
+    }
+
+    [Fact]
+    public void RobustClientGameClientStubIsLoadable()
+    {
+        Assert.True(typeof(Robust.Client.GameClient).IsAbstract);
+        Assert.True(typeof(Robust.Client.IBaseClient).IsInterface);
+        Assert.True(typeof(Robust.Client.UserInterface.IUserInterfaceManager).IsInterface);
+        _ = new Robust.Client.BaseClient { RunLevel = Robust.Client.ClientRunLevel.InGame };
+        _ = new Robust.Client.Graphics.OverlayManager();
+        _ = new Robust.Client.State.StateManager();
     }
 
     [Fact]

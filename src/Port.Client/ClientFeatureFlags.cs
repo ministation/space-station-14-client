@@ -5,13 +5,11 @@ namespace Port.Client;
 
 /// <summary>
 /// Kill-switches while the port migrates from ghost-observe hacks to a full Robust-shaped client.
-/// Defaults prefer correctness (YAML+meta) over heuristic fill-ins.
 /// </summary>
 public static class ClientFeatureFlags
 {
     /// <summary>
     /// When true, IconSmooth / RSI state resolution uses prototype YAML + RSI meta only.
-    /// Path heuristics (Walls/Windows invent) are disabled.
     /// </summary>
     public static bool AuthoritativeSprites
     {
@@ -20,10 +18,16 @@ public static class ClientFeatureFlags
     }
 
     /// <summary>
-    /// When true, attempt to load Content.*.Client assemblies (requires expanded Robust.Client stubs).
-    /// Off by default until UI/Clyde surface is large enough.
+    /// When true, <see cref="Content.ContentAssemblyHost"/> loads Content.*.Client packs
+    /// for type discovery. Does NOT put them into NetSerializer (see ReflectContentClientInSerializer).
     /// </summary>
-    public static bool LoadContentClientAssemblies
+    public static bool LoadContentClientAssemblies { get; set; } = true;
+
+    /// <summary>
+    /// When true, Content.*.Client packs enter the NetSerializer reflection set.
+    /// Default false — historically polluted DESER fail lists.
+    /// </summary>
+    public static bool ReflectContentClientInSerializer
     {
         get => SerializerLoadPolicy.LoadContentClientAssemblies;
         set => SerializerLoadPolicy.LoadContentClientAssemblies = value;

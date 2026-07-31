@@ -4,7 +4,7 @@ namespace Robust.Client;
 /// GameController shell so Content.Client can resolve the type.
 /// Android drives ticks via Port.Client.ClientLoop until full Robust embed lands.
 /// </summary>
-public sealed class GameController
+public sealed partial class GameController
 {
     public bool IsRunning { get; private set; }
 

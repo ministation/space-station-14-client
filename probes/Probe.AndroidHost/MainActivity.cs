@@ -6,6 +6,7 @@ using Android.Views;
 using Android.Widget;
 using Port.Client;
 using Port.Client.Bootstrap;
+using Port.Client.Content;
 using Port.Client.Rendering;
 using Port.Client.Ui;
 using Port.Content;
@@ -107,6 +108,7 @@ public class MainActivity : Activity
     GlesClydeBackend? _clyde;
     ClydeRenderSystem? _renderSystem;
     AndroidUiHost? _uiHost;
+    ContentClientLoadSystem? _contentClient;
     AndroidInputBridge? _inputBridge;
     readonly AndroidUiBinder _uiBinder = new();
     AndroidAudioPlayer? _audioPlayer;
@@ -169,15 +171,21 @@ public class MainActivity : Activity
             catch { /* ignore */ }
         };
         base.OnCreate(savedInstanceState);
-        // Full-client foundation: YAML+meta sprites, Content.Client load still gated off.
+        // Full-client foundation: YAML+meta sprites; Content.Client host-load on.
         ClientFeatureFlags.AuthoritativeSprites = true;
         ClientFeatureFlags.StrictRsiStates = true;
-        ClientFeatureFlags.LoadContentClientAssemblies = false;
+        // Host-load Content.Client for type discovery; keep out of NetSerializer for now.
+        ClientFeatureFlags.LoadContentClientAssemblies = true;
+        ClientFeatureFlags.ReflectContentClientInSerializer = false;
         _renderSystem = new ClydeRenderSystem();
         var boot = ClientBootstrap.CreateDefaultLoop(render: _renderSystem);
         _clientLoop = boot.Loop;
         _uiHost = boot.Ui;
+        _contentClient = boot.ContentClient;
+        _contentClient.Log = msg => DiagLog.Info(msg);
+        _contentClient.AssembliesDirectorySource = () => _connect.Session.AssembliesDirectory;
         _inputBridge = new AndroidInputBridge(_uiHost.Input);
+        ContentAssemblyHost.EnsureAssemblyResolveHook();
         _clientLoop.Start();
         // Landscape locked from loading onward. Portrait only on hub home.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
@@ -196,6 +204,12 @@ public class MainActivity : Activity
         _uiObserving = s_uiObserving;
         _connect.AuthConfigPath = System.IO.Path.Combine(paths.FilesDir, "auth-session.json");
         _connect.ContentRoot = paths.ContentDir;
+        _connect.Session.OnContentReady = root =>
+        {
+            var dir = _connect.Session.AssembliesDirectory;
+            if (!string.IsNullOrWhiteSpace(dir))
+                _contentClient?.TryLoad(dir);
+        };
         ClientHwid.StorageDirectory = paths.UserDataDir;
         _hub = new HubServerCatalog(System.IO.Path.Combine(paths.FilesDir, "hub-favorites.json"));
         _connect.ProgressChanged -= OnProgressChanged;
@@ -1822,6 +1836,9 @@ public class MainActivity : Activity
             _clyde = null;
             _inputBridge = null;
             _uiHost = null;
+            _contentClient = null;
+            if (_connect is not null)
+                _connect.Session.OnContentReady = null;
             _clientLoop?.Shutdown();
             _clientLoop = null;
             _renderSystem = null;

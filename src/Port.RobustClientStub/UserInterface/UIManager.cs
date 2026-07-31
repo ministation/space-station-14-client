@@ -4,7 +4,7 @@ namespace Robust.Client.UserInterface;
 /// Minimal UIManager stub. Full Clyde-backed UI comes in later PRs;
 /// this exists so Content.Client can resolve the type during assembly load.
 /// </summary>
-public class UIManager
+public partial class UIManager
 {
     public Control? RootControl { get; set; }
 

@@ -11,5 +11,6 @@
     <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
     <ProjectReference Include="..\Port.Net\Port.Net.csproj" />
     <ProjectReference Include="..\Port.RobustClientStub\Port.RobustClientStub.csproj" />
+    <ProjectReference Include="..\Port.RobustServerStub\Port.RobustServerStub.csproj" />
   </ItemGroup>
 </Project>
