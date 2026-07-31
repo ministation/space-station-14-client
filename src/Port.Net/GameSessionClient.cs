@@ -291,18 +291,19 @@ public sealed class GameSessionClient : IDisposable
         IsObserving = true;
         _panOffX = 0;
         _panOffY = 0;
-        // Already have a live eye on the station (joined in-round / admin) — do NOT yank
-        // to alphabetical first warp ("Automated Trade Station").
+        // Already in PVS / on a map — never auto-warp (Trade Station / Lavaland yanks).
         var eyePos = LastEye?.LocalPosition ?? default;
-        var alreadyPlaced = eyePos.LengthSquared() > 1f
-                            && LastWorld is { Entities.Count: > 50 };
+        var alreadyPlaced = _worldCache.XformCount > 20
+                            || eyePos.LengthSquared() > 1f
+                            || (LastWorld?.Entities.Count ?? 0) > 10
+                            || (LastWorld?.Tiles?.Count ?? 0) > 20;
         _spawnWarpPending = !alreadyPlaced;
         Set(GameSessionPhase.Observing,
             alreadyPlaced
                 ? "ghost flight — already on map"
                 : "ghost flight — awaiting MsgState / spawn warp");
         if (alreadyPlaced)
-            Note("observe: keep current eye — skip auto spawn warp");
+            Note($"observe: keep current eye — skip auto spawn warp (xf={_worldCache.XformCount})");
 
         // One warps request for the picker UI; auto-spawn only if still pending.
         try { RequestGhostWarps(); } catch { /* serializer may not be ready yet */ }
@@ -2045,17 +2046,31 @@ public sealed class GameSessionClient : IDisposable
 
             if (_spawnWarpPending && list.Count > 0)
             {
-                _spawnWarpPending = false;
-                var spawn = PickObserverSpawn(list);
-                if (WarpTo(spawn.Entity))
+                // Re-check: MsgState may have placed us while warps were in flight.
+                if (_worldCache.XformCount > 20
+                    || (LastEye?.LocalPosition.LengthSquared() ?? 0) > 1f)
                 {
-                    Note($"spawn warp → {spawn.DisplayName}");
-                    try { WarpCycled?.Invoke(spawn.DisplayName); } catch { /* UI */ }
+                    _spawnWarpPending = false;
+                    Note("spawn warp cancelled — already on map");
                 }
                 else
                 {
-                    _spawnWarpPending = true; // retry
-                    Note("spawn warp FAIL — will retry");
+                    var spawn = PickObserverSpawn(list);
+                    if (IsOffStationWarpName(spawn.DisplayName))
+                    {
+                        _spawnWarpPending = false;
+                        Note($"spawn warp skipped off-station '{spawn.DisplayName}' — use warp picker");
+                    }
+                    else if (WarpTo(spawn.Entity))
+                    {
+                        _spawnWarpPending = false;
+                        Note($"spawn warp → {spawn.DisplayName}");
+                        try { WarpCycled?.Invoke(spawn.DisplayName); } catch { /* UI */ }
+                    }
+                    else
+                    {
+                        Note("spawn warp FAIL — will retry");
+                    }
                 }
             }
             else if (_warpCyclePending && list.Count > 0)
@@ -2120,8 +2135,7 @@ public sealed class GameSessionClient : IDisposable
 
     static GhostWarpEntry PickObserverSpawn(IReadOnlyList<GhostWarpEntry> list)
     {
-        // Prefer real observer/station spawns. Alphabetical first among equal scores used to
-        // pick "Automated Trade Station" and yank ghosts off the main station.
+        // Prefer main-station observer spawns. Never prefer off-station maps (Lavaland/Trade/…).
         static int Score(GhostWarpEntry w)
         {
             var n = w.DisplayName ?? "";
@@ -2135,16 +2149,46 @@ public sealed class GameSessionClient : IDisposable
                 score += 25;
             if (n.Contains("Arrive", StringComparison.OrdinalIgnoreCase)) score += 10;
             if (n.Contains("Late", StringComparison.OrdinalIgnoreCase)) score += 10;
-            if (n.Contains("Trade", StringComparison.OrdinalIgnoreCase)
+            // Off-station / secondary maps — heavily penalize (were winning after Trade fix).
+            if (n.Contains("Lavaland", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Лаваленд", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Лавалэнд", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Mining", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Asteroid", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Planet", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Gateway", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Expedition", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Salvage", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Trade", StringComparison.OrdinalIgnoreCase)
                 || n.Contains("Automated", StringComparison.OrdinalIgnoreCase)
                 || n.Contains("Outpost", StringComparison.OrdinalIgnoreCase)
                 || n.Contains("CentComm", StringComparison.OrdinalIgnoreCase)
-                || n.Contains("Центрком", StringComparison.OrdinalIgnoreCase))
-                score -= 80;
+                || n.Contains("Центрком", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Arrivals", StringComparison.OrdinalIgnoreCase))
+                score -= 200;
             return score;
         }
 
         return list.OrderByDescending(Score).ThenBy(w => w.DisplayName).First();
+    }
+
+    static bool IsOffStationWarpName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var n = name;
+        return n.Contains("Lavaland", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Лаваленд", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Лавалэнд", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Mining", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Asteroid", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Trade", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Automated", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Outpost", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("CentComm", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Центрком", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Gateway", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Expedition", StringComparison.OrdinalIgnoreCase)
+               || n.Contains("Salvage", StringComparison.OrdinalIgnoreCase);
     }
 
     const int MaxChatLines = 200;
