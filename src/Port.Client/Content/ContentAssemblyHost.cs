@@ -9,22 +9,26 @@ namespace Port.Client.Content;
 /// <summary>
 /// Loads Content assemblies for the full client path (not the NetSerializer type map).
 /// *.Client packs require <see cref="ClientFeatureFlags.LoadContentClientAssemblies"/>.
+/// Uses an isolated ALC so content-bin/ACZ Shared is not replaced by vendor Shared.
 /// </summary>
 public sealed class ContentAssemblyHost
 {
     static int s_resolveHooked;
+    ContentLoadContext? _alc;
     readonly List<Assembly> _loaded = new();
     readonly List<string> _failures = new();
 
     public IReadOnlyList<Assembly> Loaded => _loaded;
     public IReadOnlyList<string> Failures => _failures;
     public string Status { get; private set; } = "idle";
+    public string? AssembliesDirectory { get; private set; }
 
     public static void EnsureAssemblyResolveHook()
     {
         if (Interlocked.Exchange(ref s_resolveHooked, 1) == 1)
             return;
 
+        // Default-context fallback for code that still loads Content into Default.
         AssemblyLoadContext.Default.Resolving += (_, name) =>
         {
             if (name.Name is null)
@@ -40,6 +44,8 @@ public sealed class ContentAssemblyHost
     public int LoadFromDirectory(string directory)
     {
         _failures.Clear();
+        _loaded.Clear();
+        AssembliesDirectory = directory;
         if (!Directory.Exists(directory))
         {
             Status = $"missing dir {directory}";
@@ -47,12 +53,29 @@ public sealed class ContentAssemblyHost
         }
 
         EnsureAssemblyResolveHook();
+        _alc = new ContentLoadContext(directory);
 
         // Shared first, then Client — reduces missing-type noise during Client load.
         var files = Directory.EnumerateFiles(directory, "*.dll", SearchOption.TopDirectoryOnly)
             .OrderBy(p => ClientRank(Path.GetFileName(p)))
             .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+        // Prefer content-bin Shared/Maths before Content packs bind types.
+        foreach (var engine in new[] { "Robust.Shared.dll", "Robust.Maths.dll", "Robust.Shared.Maths.dll" })
+        {
+            var enginePath = Path.Combine(directory, engine);
+            if (!File.Exists(enginePath))
+                continue;
+            try
+            {
+                _alc.LoadFromAssemblyPath(Path.GetFullPath(enginePath));
+            }
+            catch (Exception ex)
+            {
+                _failures.Add($"{engine}: {Flatten(ex)}");
+            }
+        }
 
         var count = 0;
         foreach (var path in files)
@@ -62,7 +85,7 @@ public sealed class ContentAssemblyHost
                 continue;
             try
             {
-                var asm = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.GetFullPath(path));
+                var asm = _alc.LoadFromAssemblyPath(Path.GetFullPath(path));
                 _loaded.Add(asm);
                 count++;
             }
@@ -78,13 +101,31 @@ public sealed class ContentAssemblyHost
 
     public ContentClientScanResult ScanClientTypes()
     {
-        Type? entry = null;
+        string? entry = null;
         var systems = 0;
         foreach (var asm in _loaded)
         {
             var asmName = asm.GetName().Name ?? "";
             if (!asmName.Contains("Client", StringComparison.OrdinalIgnoreCase))
                 continue;
+
+            try
+            {
+                var loc = asm.Location;
+                if (!string.IsNullOrEmpty(loc) && File.Exists(loc))
+                {
+                    var meta = ContentMetadataScan.ScanAssemblyFile(loc);
+                    systems += meta.EntitySystemCount + meta.VisualizerCount;
+                    if (entry is null && meta.EntryPointCount > 0)
+                        entry = asmName + ".EntryPoint?";
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                _failures.Add($"scan-meta {asmName}: {Flatten(ex)}");
+            }
+
             try
             {
                 foreach (var t in asm.GetExportedTypes())
@@ -92,7 +133,7 @@ public sealed class ContentAssemblyHost
                     if (entry is null
                         && typeof(GameClient).IsAssignableFrom(t)
                         && !t.IsAbstract)
-                        entry = t;
+                        entry = t.FullName;
                     if (t.Name.EndsWith("System", StringComparison.Ordinal)
                         && t is { IsClass: true, IsAbstract: false })
                         systems++;
@@ -112,7 +153,7 @@ public sealed class ContentAssemblyHost
             }
         }
 
-        return new ContentClientScanResult(entry?.FullName, systems, _loaded.Count, _failures.Count);
+        return new ContentClientScanResult(entry, systems, _loaded.Count, _failures.Count);
     }
 
     public string FormatReport(int maxFails = 12)

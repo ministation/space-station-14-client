@@ -109,6 +109,7 @@ public class MainActivity : Activity
     ClydeRenderSystem? _renderSystem;
     AndroidUiHost? _uiHost;
     ContentClientLoadSystem? _contentClient;
+    ContentClientGameplaySystem? _contentGameplay;
     AndroidInputBridge? _inputBridge;
     readonly AndroidUiBinder _uiBinder = new();
     AndroidAudioPlayer? _audioPlayer;
@@ -182,7 +183,9 @@ public class MainActivity : Activity
         _clientLoop = boot.Loop;
         _uiHost = boot.Ui;
         _contentClient = boot.ContentClient;
+        _contentGameplay = boot.Gameplay;
         _contentClient.Log = msg => DiagLog.Info(msg);
+        _contentGameplay.Log = msg => DiagLog.Info(msg);
         _contentClient.AssembliesDirectorySource = () => _connect.Session.AssembliesDirectory;
         _inputBridge = new AndroidInputBridge(_uiHost.Input);
         ContentAssemblyHost.EnsureAssemblyResolveHook();

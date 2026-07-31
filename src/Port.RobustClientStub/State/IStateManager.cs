@@ -2,13 +2,17 @@ namespace Robust.Client.State;
 
 public abstract class State
 {
-    public virtual void Startup()
+    // Must stay protected — Content.Client overrides reduce access vs public base methods.
+    protected virtual void Startup()
     {
     }
 
-    public virtual void Shutdown()
+    protected virtual void Shutdown()
     {
     }
+
+    internal void StartupInternal() => Startup();
+    internal void ShutdownInternal() => Shutdown();
 
     public virtual void FrameUpdate(float frameTime) => _ = frameTime;
 }
@@ -29,8 +33,8 @@ public sealed class StateManager : IStateManager
 
     public void RequestStateChange(Type stateType)
     {
-        CurrentState?.Shutdown();
+        CurrentState?.ShutdownInternal();
         CurrentState = (State)Activator.CreateInstance(stateType)!;
-        CurrentState.Startup();
+        CurrentState.StartupInternal();
     }
 }

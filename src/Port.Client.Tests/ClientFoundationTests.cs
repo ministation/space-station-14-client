@@ -115,8 +115,33 @@ public class ClientFoundationTests
     {
         var boot = ClientBootstrap.CreateDefaultLoop();
         Assert.Contains(boot.Loop.Systems, s => s is ContentClientLoadSystem);
+        Assert.Contains(boot.Loop.Systems, s => s is ContentClientGameplaySystem);
+        Assert.Same(boot.ContentClient, boot.Gameplay.LoadSystem);
         boot.Loop.Start();
         boot.Loop.Shutdown();
+    }
+
+    [Fact]
+    public void VisualizerSystemStubIsEntitySystem()
+    {
+        Assert.True(typeof(Robust.Client.GameObjects.VisualizerSystem<>).IsSubclassOf(typeof(Robust.Shared.GameObjects.EntitySystem)));
+        Assert.True(typeof(Robust.Client.GameObjects.AppearanceSystem).IsSubclassOf(typeof(Robust.Shared.GameObjects.SharedAppearanceSystem)));
+        _ = new Robust.Client.UserInterface.CustomControls.DefaultWindow { Title = "t" };
+        _ = new Robust.Client.GameObjects.SpriteComponent();
+    }
+
+    [Fact]
+    public void ContentMetadataScanCountsClientSystemsWhenPresent()
+    {
+        var path = @"c:\ss14\space-station-14\bin\Content.Client\Content.Client.dll";
+        if (!File.Exists(path))
+            return; // optional local SS14 bin — CI may not have it
+
+        var scan = ContentMetadataScan.ScanAssemblyFile(path);
+        Assert.True(scan.EntitySystemCount > 100, $"systems={scan.EntitySystemCount}");
+        Assert.True(scan.VisualizerCount > 10, $"visualizers={scan.VisualizerCount}");
+        Assert.True(scan.EntryPointCount >= 1);
+        Assert.NotNull(scan.SampleVisualizer);
     }
 
     [Fact]
