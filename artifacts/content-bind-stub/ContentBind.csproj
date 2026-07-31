@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Robust.Client</AssemblyName>
+    <RootNamespace>Robust.Client</RootNamespace>
+    <AssemblyVersion>247.0.0.0</AssemblyVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameClient.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/MobileClientStub.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/BaseClient/IBaseClient.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameController/GameController.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameController/IGameController.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameObjects/AnimationPlayerSystem.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameObjects/AppearanceSystem.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameObjects/SpriteComponent.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameObjects/SpriteSystem.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/GameObjects/VisualizerSystem.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Generated/TypeShells.g.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Graphics/StyleBox.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Graphics/Clyde/IClyde.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Graphics/Eye/IEyeManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Graphics/Overlay/IOverlayManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/Input/InputManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/ResourceManagement/IResourceCache.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/State/IStateManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Control.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/IUserInterfaceManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/UIManager.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controllers/UIController.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/BoxContainer.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/Button.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/Container.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/Label.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/LayoutContainer.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/LineEdit.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/PanelContainer.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/RichTextLabel.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/ScrollContainer.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/Controls/TextureButton.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/CustomControls/BaseWindow.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/CustomControls/DefaultWindow.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/RichText/IMarkupTagHandler.cs" />
+    <Compile Include="C:/ss14/bots/robust-android-port/src/Port.RobustClientStub/UserInterface/RichText/MarkupDrawingContext.cs" />
+    <Reference Include="Robust.Shared"><HintPath>c:\ss14\space-station-14\bin\Content.Client\Robust.Shared.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Robust.Shared.Maths"><HintPath>c:\ss14\space-station-14\bin\Content.Client\Robust.Shared.Maths.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>
