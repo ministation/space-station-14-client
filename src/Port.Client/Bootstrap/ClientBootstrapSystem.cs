@@ -6,22 +6,24 @@ using Port.Content;
 namespace Port.Client.Bootstrap;
 
 /// <summary>
-/// Wires foundation systems for the full Android client. MainActivity should
-/// migrate game logic into systems registered here over subsequent PRs.
+/// Wires foundation systems for the full Android client.
 /// </summary>
 public static class ClientBootstrap
 {
-    public static ClientLoop CreateDefaultLoop(
+    public sealed record BootResult(ClientLoop Loop, AndroidUiHost Ui, ClydeRenderSystem? Render);
+
+    public static BootResult CreateDefaultLoop(
         PrototypeSpriteIndex? prototypes = null,
         ClydeRenderSystem? render = null)
     {
         var loop = new ClientLoop();
-        loop.Add(new AndroidUiHost());
+        var ui = new AndroidUiHost();
+        loop.Add(ui);
         if (prototypes is not null)
             loop.Add(new SpritePipelineSystem(new AuthoritativeSpritePipeline(prototypes)));
         if (render is not null)
             loop.Add(render);
-        return loop;
+        return new BootResult(loop, ui, render);
     }
 }
 

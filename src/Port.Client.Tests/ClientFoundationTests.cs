@@ -111,6 +111,23 @@ public class ClientFoundationTests
     }
 
     [Fact]
+    public void ObserveHudRootIsUiManagerRoot()
+    {
+        var host = new AndroidUiHost();
+        host.Initialize();
+        Assert.Same(host.ObserveHud, host.Ui.RootControl);
+        host.ObserveHud.SetStatus("ghost · z1.0");
+        host.ObserveHud.SetFps("60 FPS");
+        Assert.Equal("ghost · z1.0", host.ObserveHud.StatusLabel.Text);
+        Assert.Equal("60 FPS", host.ObserveHud.FpsLabel.Text);
+        host.Input.SetKey(Robust.Client.Input.Keyboard.Key.W, true);
+        Assert.True(host.Input.IsKeyDown(Robust.Client.Input.Keyboard.Key.W));
+        host.FrameUpdate(0.05f);
+        Assert.False(host.Input.WasKeyPressed(Robust.Client.Input.Keyboard.Key.W));
+        host.Shutdown();
+    }
+
+    [Fact]
     public void ClydeRenderSystemSyncsCameraToEye()
     {
         var view = new NullClydeWorldView();

@@ -7,11 +7,14 @@ using Android.Widget;
 using Port.Client;
 using Port.Client.Bootstrap;
 using Port.Client.Rendering;
+using Port.Client.Ui;
 using Port.Content;
 using Port.Net;
 using Port.Platform.Android;
 using Port.Platform.Android.Audio;
 using Port.Platform.Android.Graphics;
+using Port.Platform.Android.Input;
+using Port.Platform.Android.Ui;
 using System.Timers;
 using Timer = System.Timers.Timer;
 using View = Android.Views.View;
@@ -103,6 +106,9 @@ public class MainActivity : Activity
     GlesClearSurfaceView? _glView;
     GlesClydeBackend? _clyde;
     ClydeRenderSystem? _renderSystem;
+    AndroidUiHost? _uiHost;
+    AndroidInputBridge? _inputBridge;
+    readonly AndroidUiBinder _uiBinder = new();
     AndroidAudioPlayer? _audioPlayer;
 
     AndroidPlatformHost? _host;
@@ -168,7 +174,10 @@ public class MainActivity : Activity
         ClientFeatureFlags.StrictRsiStates = true;
         ClientFeatureFlags.LoadContentClientAssemblies = false;
         _renderSystem = new ClydeRenderSystem();
-        _clientLoop = ClientBootstrap.CreateDefaultLoop(render: _renderSystem);
+        var boot = ClientBootstrap.CreateDefaultLoop(render: _renderSystem);
+        _clientLoop = boot.Loop;
+        _uiHost = boot.Ui;
+        _inputBridge = new AndroidInputBridge(_uiHost.Input);
         _clientLoop.Start();
         // Landscape locked from loading onward. Portrait only on hub home.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
@@ -256,6 +265,18 @@ public class MainActivity : Activity
         base.OnConfigurationChanged(newConfig);
         // Keep lobby/observe UI after rotation without tearing down the session.
         RenderStatus();
+    }
+
+    public override bool DispatchKeyEvent(KeyEvent? e)
+    {
+        if (e is not null && (_uiObserving || _connect.Observing))
+        {
+            var down = e.Action == KeyEventActions.Down;
+            if (e.Action is KeyEventActions.Down or KeyEventActions.Up)
+                _inputBridge?.HandleKey(e.KeyCode, down);
+        }
+
+        return base.DispatchKeyEvent(e);
     }
 
     void ApplySafeAreaInsets()
@@ -405,6 +426,14 @@ public class MainActivity : Activity
         _observeHud = FindViewById<TextView>(Resource.Id.observe_hud);
         _observeFps = FindViewById<TextView>(Resource.Id.observe_fps);
         _observeDiag = FindViewById<TextView>(Resource.Id.observe_diag);
+        // Chat history stays on Android Spannable (colors); Robust hud holds plain text.
+        _uiBinder.BindViews(
+            _observeHud,
+            _observeFps,
+            chatHistory: null,
+            FindViewById<EditText>(Resource.Id.observe_chat_input),
+            FindViewById<Button>(Resource.Id.btn_observe_chat_channel),
+            _observeDiag);
         _observeDiagScroll = FindViewById(Resource.Id.observe_diag_scroll);
         _observeCopyBtn = FindViewById<Button>(Resource.Id.btn_observe_copy);
         _joinDebug = FindViewById<TextView>(Resource.Id.join_debug);
@@ -803,12 +832,19 @@ public class MainActivity : Activity
 
         void Send()
         {
-            if (input is null) return;
-            var text = input.Text?.Trim();
+            var hud = _uiHost?.ObserveHud;
+            if (hud is not null)
+                _uiBinder.PullChatInput(hud);
+            var text = (hud?.ChatInput.Text ?? input?.Text)?.Trim();
             if (string.IsNullOrEmpty(text)) return;
             var cmd = ChatChannelCmds[Math.Clamp(_chatChannelIdx, 0, ChatChannelCmds.Length - 1)];
             if (_connect.Session.SendChat(text, cmd))
-                input.Text = "";
+            {
+                if (hud is not null)
+                    _uiBinder.ClearChatInput(hud);
+                else if (input != null)
+                    input.Text = "";
+            }
         }
 
         if (send != null)
@@ -828,7 +864,21 @@ public class MainActivity : Activity
             channelBtn.Click += (_, _) =>
             {
                 _chatChannelIdx = (_chatChannelIdx + 1) % ChatChannelLabels.Length;
-                channelBtn.Text = ChatChannelLabels[_chatChannelIdx];
+                var label = ChatChannelLabels[_chatChannelIdx];
+                channelBtn.Text = label;
+                if (_uiHost?.ObserveHud is { } hud)
+                {
+                    hud.ChatChannelIndex = _chatChannelIdx;
+                    hud.ChatChannelButton.Text = label;
+                    hud.ChatInput.PlaceHolder = _chatChannelIdx switch
+                    {
+                        1 => "LOOC…",
+                        2 => "OOC…",
+                        3 => "шёпот…",
+                        4 => "действие…",
+                        _ => "E чтобы говорить…",
+                    };
+                }
                 if (input != null)
                 {
                     input.Hint = _chatChannelIdx switch
@@ -848,13 +898,15 @@ public class MainActivity : Activity
             filterBtn.Click += (_, _) =>
             {
                 _chatExpanded = !_chatExpanded;
+                if (_uiHost?.ObserveHud is { } hud)
+                    hud.ChatExpanded = _chatExpanded;
                 var lp = panel.LayoutParameters as FrameLayout.LayoutParams;
                 if (lp is null) return;
                 lp.Height = (int)(Resources!.DisplayMetrics!.Density * (_chatExpanded ? 180f : 44f));
                 panel.LayoutParameters = lp;
                 scroll.Visibility = _chatExpanded ? ViewStates.Visible : ViewStates.Gone;
             };
-    }
+        }
     }
 
     VirtualJoystickView? _joystick;
@@ -1280,37 +1332,44 @@ public class MainActivity : Activity
 
     void UpdateObserveOverlay()
     {
-        // Keep HUD light — Format() allocates + locks the GL gate every tick.
-        if (_observeHud != null)
+        // Robust ObserveHud is source of truth; XML TextViews are bound adapters.
+        var hud = _uiHost?.ObserveHud;
+        if (hud is not null)
         {
             var s = _connect.Session;
-            _observeHud.Text = $"{s.UserName ?? "ghost"} · z{s.Zoom:0.0}";
+            hud.SetStatus($"{s.UserName ?? "ghost"} · z{s.Zoom:0.0}");
+            var fps = _clyde?.Fps ?? _glView?.Renderer.Fps ?? 0f;
+            hud.SetFps($"{fps:0} FPS");
+            hud.ChatChannelIndex = _chatChannelIdx;
+            hud.ChatExpanded = _chatExpanded;
+            hud.ChatChannelButton.Text = ChatChannelLabels[Math.Clamp(_chatChannelIdx, 0, ChatChannelLabels.Length - 1)];
         }
 
-        if (_observeFps != null && _glView != null)
-            _observeFps.Text = $"{_glView.Renderer.Fps:0} FPS";
-
-        // Diag strings only when the panel is open.
         if (_observeDiagOpen)
             RefreshObserveDiag(force: false);
         RefreshObserveChatHistory();
+        if (hud is not null)
+            _uiBinder.PushFromHud(hud);
     }
 
     void RefreshObserveDiag(bool force)
     {
-        if (!_observeDiagOpen || _observeDiag is null)
+        if (!_observeDiagOpen)
             return;
         _diagUiTick++;
         if (!force && _diagUiTick % 4 != 0)
             return;
         var gles = _glView?.Renderer.FormatDiag() ?? "(no gles)";
         var world = _connect.Session.LastWorld;
-        _observeDiag.Text =
+        var text =
             $"{gles}\n\n" +
             $"world ents={world?.Entities.Count ?? 0} tiles={world?.Tiles?.Count ?? 0}\n" +
             $"hint={_connect.Session.LastEyeHint}\n" +
             $"detail={world?.Detail}\n\n" +
             DiagLog.Format(40);
+        _uiHost?.ObserveHud.SetDiag(text, visible: true);
+        if (_observeDiag != null)
+            _observeDiag.Text = text;
     }
 
     long _lastClipboardCopyMs;
@@ -1347,8 +1406,6 @@ public class MainActivity : Activity
     void RefreshObserveChatHistory()
     {
         var history = FindViewById<TextView>(Resource.Id.observe_chat_history);
-        if (history is null)
-            return;
         var ver = _connect.Session.ChatVersion;
         if (ver == _lastChatVersion)
             return;
@@ -1357,19 +1414,27 @@ public class MainActivity : Activity
         var chat = _connect.Session.ChatLines;
         if (chat.Count == 0)
         {
-            history.Text = "чат…";
+            _uiHost?.ObserveHud.SetChatHistory("чат…");
+            if (history != null)
+                history.Text = "чат…";
             return;
         }
 
         // Last ~40 lines — enough for PC-like panel without Spannable thrash.
         var start = Math.Max(0, chat.Count - 40);
+        var plain = new System.Text.StringBuilder();
         var sb = new Android.Text.SpannableStringBuilder();
         for (var i = start; i < chat.Count; i++)
         {
-            if (sb.Length() > 0) sb.Append('\n');
+            if (sb.Length() > 0)
+            {
+                sb.Append('\n');
+                plain.Append('\n');
+            }
             var c = chat[i];
             var lineStart = sb.Length();
             sb.Append(c.Text);
+            plain.Append(c.Text);
             sb.SetSpan(
                 new Android.Text.Style.ForegroundColorSpan(new Color(c.Argb)),
                 lineStart,
@@ -1377,7 +1442,9 @@ public class MainActivity : Activity
                 Android.Text.SpanTypes.ExclusiveExclusive);
         }
 
-        history.SetText(sb, TextView.BufferType.Spannable);
+        _uiHost?.ObserveHud.SetChatHistory(plain.ToString());
+        if (history != null)
+            history.SetText(sb, TextView.BufferType.Spannable);
         var scroll = FindViewById<ScrollView>(Resource.Id.observe_chat_scroll);
         scroll?.Post(() => scroll.FullScroll(FocusSearchDirection.Down));
     }
@@ -1557,6 +1624,7 @@ public class MainActivity : Activity
     {
         if (e.Event is null) return;
         var ev = e.Event;
+        _inputBridge?.HandleMotion(ev);
         switch (ev.ActionMasked)
         {
             case MotionEventActions.Down:
@@ -1572,8 +1640,16 @@ public class MainActivity : Activity
                 _connect.PanCamera(-(x - _lastTouchX) * sens, (y - _lastTouchY) * sens);
                 _lastTouchX = x;
                 _lastTouchY = y;
-                _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
-                _glView?.Renderer.SetZoom(_connect.Session.Zoom);
+                if (_clyde is not null)
+                {
+                    _clyde.Camera = new System.Numerics.Vector2(_connect.Session.CamX, _connect.Session.CamY);
+                    _clyde.Zoom = _connect.Session.Zoom;
+                }
+                else
+                {
+                    _glView?.Renderer.SetCamera(_connect.Session.CamX, _connect.Session.CamY);
+                    _glView?.Renderer.SetZoom(_connect.Session.Zoom);
+                }
                 break;
             case MotionEventActions.Up:
             case MotionEventActions.Cancel:
@@ -1744,6 +1820,8 @@ public class MainActivity : Activity
             if (_renderSystem is not null)
                 _renderSystem.CameraSource = null;
             _clyde = null;
+            _inputBridge = null;
+            _uiHost = null;
             _clientLoop?.Shutdown();
             _clientLoop = null;
             _renderSystem = null;
