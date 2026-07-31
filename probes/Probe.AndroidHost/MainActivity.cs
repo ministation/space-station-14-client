@@ -208,6 +208,7 @@ public class MainActivity : Activity
         _uiTimer.Elapsed += (_, _) =>
         {
             _host?.Clock.Pulse();
+            _clientLoop?.FrameUpdate(0.05f);
             var observing = _uiObserving || _connect.Observing;
             if (observing)
             {

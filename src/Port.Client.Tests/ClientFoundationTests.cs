@@ -105,7 +105,31 @@ public class ClientFoundationTests
         var host = new AndroidUiHost();
         host.Initialize();
         Assert.NotNull(host.Ui);
+        host.FrameUpdate(0.05f);
         host.Shutdown();
+    }
+
+    [Fact]
+    public void RobustClientStubShellsConstruct()
+    {
+        var gc = new Robust.Client.GameController();
+        gc.Startup();
+        Assert.True(gc.IsRunning);
+        gc.Tick(0.016f);
+        gc.Shutdown();
+        Assert.False(gc.IsRunning);
+
+        var clyde = new Robust.Client.Graphics.NullClyde();
+        clyde.FrameProcess(0.016f);
+        Assert.Equal(1, clyde.ScreenSize.X);
+
+        var eyes = new Robust.Client.Graphics.EyeManager();
+        Assert.NotNull(eyes.CurrentEye);
+
+        var input = new Robust.Client.Input.InputManager();
+        Assert.False(input.IsKeyDown(Robust.Client.Input.Keyboard.Key.W));
+
+        _ = new Robust.Client.GameObjects.SpriteSystem();
     }
 
     sealed class ProbeSystem(string name, List<string> order) : IClientSystem

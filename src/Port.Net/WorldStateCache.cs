@@ -1573,42 +1573,23 @@ public sealed class WorldStateCache
         if (_iconSmoothRemapCache.TryGetValue(cacheKey, out data))
             return true;
 
-        // Resolve once per proto|path then cache. Calling RsiHasNumberedBase / FromRsi for
-        // every wall on every MsgState ANR/crashes Android (disk thrash).
-        var inferred = IconSmoothInfer.FromRsi(_contentRoot, path, proto);
-        var fromProto = _protos?.TryGetIconSmooth(proto);
-        if (fromProto is { } sm)
-        {
-            data = sm;
-            // Goob/CD: YAML base "window" vs meta "rwindow0..7".
-            // Remap ONLY when YAML base has no numbered sheet (StateNameCache keeps this cheap).
-            // Blind remap broke WallReinforced: reinf_over → solid on solid.rsi.
-            // StrictRsiStates still allows this — meta proves YAML base is missing.
-            if (inferred is { } inf
-                && !string.IsNullOrEmpty(inf.StateBase)
-                && !string.Equals(sm.StateBase, inf.StateBase, StringComparison.OrdinalIgnoreCase)
-                && !IconSmoothInfer.RsiHasNumberedBase(_contentRoot, path, sm.StateBase)
-                && IconSmoothInfer.RsiHasNumberedBase(_contentRoot, path, inf.StateBase))
+        // Resolve once per proto|path then cache (RsiHasNumberedBase / FromRsi thrash ANRs).
+        var resolved = IconSmoothResolver.Resolve(
+            _protos,
+            _contentRoot,
+            proto,
+            path,
+            onRemapLog: msg =>
             {
-                data = new IconSmoothData(sm.Key, inf.StateBase, sm.Mode, sm.AdditionalKeys);
                 if (_iconSmoothRemapLogged.Add(cacheKey))
-                {
-                    Port.Content.DiagLog.Info(
-                        $"iconsmooth base remap {proto}: '{sm.StateBase}' → '{inf.StateBase}' ({path})");
-                }
-            }
-            _iconSmoothRemapCache[cacheKey] = data;
-            return true;
-        }
+                    Port.Content.DiagLog.Info(msg);
+            });
+        if (resolved is not { } dataResolved)
+            return false;
 
-        if (inferred is { } onlyInf)
-        {
-            data = onlyInf;
-            _iconSmoothRemapCache[cacheKey] = data;
-            return true;
-        }
-
-        return false;
+        data = dataResolved;
+        _iconSmoothRemapCache[cacheKey] = data;
+        return true;
     }
 
     /// <summary>
