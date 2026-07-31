@@ -1,11 +1,12 @@
+using Robust.Shared.GameObjects;
+
 namespace Robust.Client.GameObjects;
 
 /// <summary>
 /// SpriteComponent shell for Content.Client / AppearanceChangeEvent.
-/// Intentionally does <em>not</em> inherit vendor <c>Component</c> — Content packs bind ACZ Shared's
-/// <c>Component</c>, and <c>EntityQuery&lt;SpriteComponent&gt;</c> would otherwise fail the constraint
-/// across two Component type identities. Full component wiring lands with Shared unification.
+/// Must inherit the same <c>Component</c> identity as the Shared bound in the load ALC
+/// (content-bind stub or content-bin Robust.Client — never mix vendor Shared with ACZ Shared).
 /// </summary>
-public sealed class SpriteComponent
+public sealed class SpriteComponent : Component
 {
 }

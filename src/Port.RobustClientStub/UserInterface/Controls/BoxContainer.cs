@@ -1,7 +1,7 @@
 namespace Robust.Client.UserInterface.Controls;
 
 /// <summary>Layout container stub matching Robust.Client BoxContainer API surface.</summary>
-public class BoxContainer : Container
+public partial class BoxContainer : Container
 {
     public enum LayoutOrientation : byte
     {

@@ -132,7 +132,17 @@ static void EmitType(StringBuilder sb, string ns, string simple, string full)
         or "Robust.Client.GameObjects.SpriteSystem"
         or "Robust.Client.GameObjects.SpriteComponent"
         or "Robust.Client.UserInterface.CustomControls.DefaultWindow"
-        or "Robust.Client.UserInterface.Controllers.UIController")
+        or "Robust.Client.UserInterface.Controllers.UIController"
+        or "Robust.Client.Input.Keyboard"
+        or "Robust.Client.UserInterface.Control"
+        or "Robust.Client.UserInterface.CustomControls.BaseWindow"
+        or "Robust.Client.Graphics.StyleBoxTexture"
+        or "Robust.Client.UserInterface.Controls.BoxContainer"
+        or "Robust.Client.UserInterface.Controls.Label"
+        or "Robust.Client.UserInterface.Controls.LineEdit"
+        or "Robust.Client.UserInterface.Controls.LayoutContainer"
+        or "Robust.Client.ResourceManagement.TextureLoadedEventArgs"
+        or "Robust.Client.ResourceManagement.RsiLoadedEventArgs")
     {
         sb.AppendLine($"    // (hand-written) {simple}");
         return;
@@ -296,7 +306,7 @@ static void EmitClass(StringBuilder sb, string name, int arity, string bases,
     bool abstractClass = false, bool sealedClass = false)
 {
     var mods = abstractClass ? "abstract " : sealedClass ? "sealed " : "";
-    sb.Append("    public ").Append(mods).Append("class ").Append(name).Append(TypeParams(arity));
+    sb.Append("    public ").Append(mods).Append("partial class ").Append(name).Append(TypeParams(arity));
     if (!string.IsNullOrEmpty(bases)) sb.Append(' ').Append(bases);
     sb.AppendLine();
     sb.AppendLine("    {");
@@ -305,7 +315,7 @@ static void EmitClass(StringBuilder sb, string name, int arity, string bases,
 
 static void EmitInterface(StringBuilder sb, string name, int arity)
 {
-    sb.Append("    public interface ").Append(name).Append(TypeParams(arity)).AppendLine();
+    sb.Append("    public partial interface ").Append(name).Append(TypeParams(arity)).AppendLine();
     sb.AppendLine("    {");
     sb.AppendLine("    }");
 }

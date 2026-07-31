@@ -12,5 +12,12 @@
     <ProjectReference Include="..\Port.Net\Port.Net.csproj" />
     <ProjectReference Include="..\Port.RobustClientStub\Port.RobustClientStub.csproj" />
     <ProjectReference Include="..\Port.RobustServerStub\Port.RobustServerStub.csproj" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+  </ItemGroup>
+  <!-- Embed stub sources so Android can content-bind compile against ACZ Shared. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\Port.RobustClientStub\**\*.cs"
+                      Exclude="..\Port.RobustClientStub\obj\**\*;..\Port.RobustClientStub\bin\**\*"
+                      Link="StubSources\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

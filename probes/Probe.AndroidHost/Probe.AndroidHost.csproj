@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>org.ss14.mobilehub</ApplicationId>
-    <ApplicationVersion>305</ApplicationVersion>
-    <ApplicationDisplayVersion>0.3.5</ApplicationDisplayVersion>
+    <ApplicationVersion>306</ApplicationVersion>
+    <ApplicationDisplayVersion>0.3.6</ApplicationDisplayVersion>
     <ApplicationTitle>SS14 Hub</ApplicationTitle>
     <TrimMode>partial</TrimMode>
     <!-- AOT + aggressive trim strips NetSerializable types → serializer bootstrap fails. -->

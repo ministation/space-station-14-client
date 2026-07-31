@@ -1,7 +1,7 @@
 namespace Robust.Client.UserInterface.Controls;
 
 /// <summary>Text input stub matching Robust LineEdit for chat / forms.</summary>
-public class LineEdit : Control
+public partial class LineEdit : Control
 {
     public string Text { get; set; } = "";
     public string? PlaceHolder { get; set; }

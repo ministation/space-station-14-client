@@ -4,7 +4,7 @@ namespace Robust.Client.UserInterface;
 /// Control stub for Content.Client / UIKit type resolution on Android.
 /// Not a full Clyde UI implementation — layout/render arrive in later PRs.
 /// </summary>
-public class Control : IDisposable
+public partial class Control : IDisposable
 {
     readonly List<Control> _children = new();
 

@@ -9,9 +9,12 @@ namespace Port.Client.Content;
 /// </summary>
 public sealed class ContentClientLoadSystem : IClientSystem
 {
-    public ContentAssemblyHost Host { get; } = new();
+    public ContentAssemblyHost Host { get; private set; } = new();
     public string Status { get; private set; } = "idle";
-    public bool Attempted { get; private set; }
+    public bool Attempted { get; set; }
+
+    /// <summary>Probe / test hook to reuse an already-loaded host.</summary>
+    public void UseHost(ContentAssemblyHost host) => Host = host;
 
     public Func<string?>? AssembliesDirectorySource { get; set; }
     public Action<string>? Log { get; set; }

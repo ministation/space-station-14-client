@@ -16,6 +16,7 @@ Console.WriteLine($"dir={contentDir}");
 var host = new ContentAssemblyHost();
 var n = host.LoadFromDirectory(contentDir);
 Console.WriteLine(host.FormatReport(maxFails: 40));
+Console.WriteLine($"typeload={(host.FullTypeLoadOk ? "OK" : "PARTIAL")} {host.BindStubLog}");
 
 var fails = host.Failures.ToList();
 foreach (var asm in host.Loaded)
@@ -49,6 +50,33 @@ Console.WriteLine(
     $"--- gameplay systems~{gameplay.EntitySystemCount} visualizers~{gameplay.VisualizerCount} entry~{gameplay.EntryPointCount} typeFail={gameplay.TypeLoadFailures} ---");
 if (gameplay.SampleVisualizer is not null)
     Console.WriteLine("sample visualizer: " + gameplay.SampleVisualizer);
+
+if (host.FullTypeLoadOk)
+{
+    Console.WriteLine("--- entrypoint ---");
+    try
+    {
+        var entryAsm = host.Loaded.First(a =>
+            (a.GetName().Name ?? "").Equals("Content.Client", StringComparison.OrdinalIgnoreCase));
+        var entryType = entryAsm.GetExportedTypes().First(t => t.Name == "EntryPoint");
+        Console.WriteLine("EntryPoint type: " + entryType.FullName);
+        var systems = entryAsm.GetExportedTypes().Count(t =>
+            t is { IsClass: true, IsAbstract: false } && t.Name.EndsWith("System"));
+        Console.WriteLine($"exported concrete *System types: {systems}");
+
+        var load = new ContentClientLoadSystem();
+        load.UseHost(host);
+        load.Attempted = true;
+        var ep = new ContentEntryPointSystem { LoadSystem = load, Log = Console.WriteLine };
+        Console.WriteLine("entrypoint: " + ep.TryBootstrap());
+        var systemHost = new ContentClientSystemHost { LoadSystem = load, Log = Console.WriteLine };
+        Console.WriteLine("systems: " + systemHost.Bootstrap());
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("entrypoint probe: " + Flatten(ex));
+    }
+}
 
 Console.WriteLine($"--- loaded={n} fails={fails.Count} ---");
 var missing = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

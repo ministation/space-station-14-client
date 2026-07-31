@@ -77,6 +77,18 @@ public sealed class ContentAssemblyHost
             }
         }
 
+        // Content-bind Robust.Client against the Shared we just loaded (same Component identity).
+        try
+        {
+            _alc.PrefetchClientAssembly();
+            BindStubLog =
+                $"client={_alc.ClientAssembly.GetName().Name} v={_alc.ClientAssembly.GetName().Version} loc={ShortLoc(_alc.ClientAssembly)} via={ContentBindStubResolver.LastResolveLog}";
+        }
+        catch (Exception ex)
+        {
+            _failures.Add($"Robust.Client bind: {Flatten(ex)}");
+        }
+
         var count = 0;
         foreach (var path in files)
         {
@@ -95,8 +107,55 @@ public sealed class ContentAssemblyHost
             }
         }
 
-        Status = $"loaded={count} fail={_failures.Count} dir={directory}";
+        FullTypeLoadOk = TryFullTypeLoad(out var typeLoadNote);
+        Status = $"loaded={count} fail={_failures.Count} typeload={(FullTypeLoadOk ? "ok" : "partial")} {typeLoadNote} dir={directory}";
+        if (!string.IsNullOrEmpty(BindStubLog))
+            Status += " | " + BindStubLog;
         return count;
+    }
+
+    public bool FullTypeLoadOk { get; private set; }
+    public string? BindStubLog { get; private set; }
+    public ContentLoadContext? LoadContext => _alc;
+
+    bool TryFullTypeLoad(out string note)
+    {
+        note = "";
+        foreach (var asm in _loaded)
+        {
+            var name = asm.GetName().Name ?? "";
+            if (!name.EndsWith(".Client", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("Content.Client", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!name.Contains("Client", StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                var n = asm.GetExportedTypes().Length;
+                note = $"{name} types={n}";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                note = Flatten(ex);
+                _failures.Add($"typeload {name}: {note}");
+                return false;
+            }
+        }
+
+        note = "no client asm";
+        return false;
+    }
+
+    static string ShortLoc(Assembly asm)
+    {
+        try
+        {
+            var loc = asm.Location;
+            if (string.IsNullOrEmpty(loc)) return "dynamic";
+            return Path.GetFileName(loc);
+        }
+        catch { return "?"; }
     }
 
     public ContentClientScanResult ScanClientTypes()

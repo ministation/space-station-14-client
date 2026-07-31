@@ -8,12 +8,10 @@ namespace Robust.Client.GameObjects;
 /// Host does not run IoC subscriptions yet — type shape only.
 /// </summary>
 /// <remarks>
-/// Constraint is intentionally <c>class</c>, not <c>Component</c>: Content packs bind their own
-/// ACZ/content-bin <c>Component</c>, while this stub is compiled against vendor Shared — a
-/// <c>where T : Component</c> constraint fails type-load across those two Component identities.
+/// Loaded via content-bind stub / content-bin Robust.Client against the same Shared as Content.*.
 /// </remarks>
 public abstract class VisualizerSystem<T> : EntitySystem
-    where T : class
+    where T : Component
 {
     [Dependency] protected readonly AppearanceSystem AppearanceSystem = default!;
     [Dependency] protected readonly AnimationPlayerSystem AnimationSystem = default!;

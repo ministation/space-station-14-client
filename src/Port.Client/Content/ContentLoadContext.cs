@@ -5,22 +5,27 @@ using Robust.Client;
 namespace Port.Client.Content;
 
 /// <summary>
-/// Isolated ALC so ACZ/content-bin <c>Robust.Shared</c> wins over the app's vendor Shared.
-/// Default ALC fallback otherwise binds Content.Shared to the wrong API surface (e.g. IComponentDelta).
+/// Isolated ALC so ACZ/content-bin <c>Robust.Shared</c> wins over the app's vendor Shared,
+/// and <c>Robust.Client</c> shares that same Shared identity (content-bind / content-bin client).
 /// </summary>
 public sealed class ContentLoadContext : AssemblyLoadContext
 {
     readonly string _directory;
-    readonly Assembly _clientStub;
+    readonly Assembly _hostClientStub;
     readonly Assembly _serverStub;
+    Assembly? _resolvedClient;
 
-    public ContentLoadContext(string directory, bool isCollectible = true)
+    // Non-collectible: IoC DispatchProxy stubs live in Port.Client (default ALC) and must
+    // implement interfaces from content-bin/ACZ Shared loaded here.
+    public ContentLoadContext(string directory, bool isCollectible = false)
         : base("content-host", isCollectible)
     {
         _directory = Path.GetFullPath(directory);
-        _clientStub = typeof(MobileClientStub).Assembly;
+        _hostClientStub = typeof(MobileClientStub).Assembly;
         _serverStub = typeof(Robust.Server.MobileServerStub).Assembly;
     }
+
+    public Assembly ClientAssembly => _resolvedClient ?? _hostClientStub;
 
     protected override Assembly? Load(AssemblyName assemblyName)
     {
@@ -28,15 +33,27 @@ public sealed class ContentLoadContext : AssemblyLoadContext
             return null;
 
         if (assemblyName.Name.Equals("Robust.Client", StringComparison.OrdinalIgnoreCase))
-            return _clientStub;
+            return _resolvedClient ??= ContentBindStubResolver.ResolveClientAssembly(this, _directory, _hostClientStub);
 
         if (assemblyName.Name.Equals("Robust.Server", StringComparison.OrdinalIgnoreCase))
             return _serverStub;
 
         var local = Path.Combine(_directory, assemblyName.Name + ".dll");
         if (File.Exists(local))
+        {
+            // Never load content-bin Robust.Client via generic path — goes through resolver
+            // so we can prefer ContentBind / skip broken native clients.
+            if (assemblyName.Name.Equals("Robust.Client", StringComparison.OrdinalIgnoreCase))
+                return _resolvedClient ??= ContentBindStubResolver.ResolveClientAssembly(this, _directory, _hostClientStub);
+
             return LoadFromAssemblyPath(local);
+        }
 
         return null;
+    }
+
+    public void PrefetchClientAssembly()
+    {
+        _resolvedClient ??= ContentBindStubResolver.ResolveClientAssembly(this, _directory, _hostClientStub);
     }
 }

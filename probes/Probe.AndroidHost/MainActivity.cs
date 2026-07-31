@@ -110,6 +110,8 @@ public class MainActivity : Activity
     AndroidUiHost? _uiHost;
     ContentClientLoadSystem? _contentClient;
     ContentClientGameplaySystem? _contentGameplay;
+    ContentEntryPointSystem? _contentEntryPoint;
+    ContentClientSystemHost? _contentSystems;
     AndroidInputBridge? _inputBridge;
     readonly AndroidUiBinder _uiBinder = new();
     AndroidAudioPlayer? _audioPlayer;
@@ -184,8 +186,12 @@ public class MainActivity : Activity
         _uiHost = boot.Ui;
         _contentClient = boot.ContentClient;
         _contentGameplay = boot.Gameplay;
+        _contentEntryPoint = boot.EntryPoint;
+        _contentSystems = boot.Systems;
         _contentClient.Log = msg => DiagLog.Info(msg);
         _contentGameplay.Log = msg => DiagLog.Info(msg);
+        _contentEntryPoint.Log = msg => DiagLog.Info(msg);
+        _contentSystems.Log = msg => DiagLog.Info(msg);
         _contentClient.AssembliesDirectorySource = () => _connect.Session.AssembliesDirectory;
         _inputBridge = new AndroidInputBridge(_uiHost.Input);
         ContentAssemblyHost.EnsureAssemblyResolveHook();

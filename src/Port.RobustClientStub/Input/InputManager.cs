@@ -4,7 +4,7 @@ namespace Robust.Client.Input;
 /// Input manager with injectable key/pointer state for Android bridging.
 /// Content.Client resolves this type; full bind maps arrive later.
 /// </summary>
-public sealed class InputManager
+public sealed class InputManager : IInputManager
 {
     readonly HashSet<Keyboard.Key> _down = new();
     readonly Dictionary<Keyboard.Key, bool> _pressedThisFrame = new();

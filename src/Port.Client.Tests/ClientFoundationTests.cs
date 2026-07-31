@@ -116,7 +116,11 @@ public class ClientFoundationTests
         var boot = ClientBootstrap.CreateDefaultLoop();
         Assert.Contains(boot.Loop.Systems, s => s is ContentClientLoadSystem);
         Assert.Contains(boot.Loop.Systems, s => s is ContentClientGameplaySystem);
+        Assert.Contains(boot.Loop.Systems, s => s is ContentEntryPointSystem);
+        Assert.Contains(boot.Loop.Systems, s => s is ContentClientSystemHost);
         Assert.Same(boot.ContentClient, boot.Gameplay.LoadSystem);
+        Assert.Same(boot.ContentClient, boot.EntryPoint.LoadSystem);
+        Assert.Same(boot.ContentClient, boot.Systems.LoadSystem);
         boot.Loop.Start();
         boot.Loop.Shutdown();
     }

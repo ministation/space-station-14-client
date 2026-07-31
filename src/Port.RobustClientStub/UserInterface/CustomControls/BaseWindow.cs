@@ -1,7 +1,7 @@
 namespace Robust.Client.UserInterface.CustomControls;
 
 /// <summary>BaseWindow shell for Content.Client menus (WiresMenu, etc.).</summary>
-public class BaseWindow : Control
+public partial class BaseWindow : Control
 {
     public bool IsOpen { get; private set; }
 

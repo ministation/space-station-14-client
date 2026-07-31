@@ -16,7 +16,9 @@ public static class ClientBootstrap
         AndroidUiHost Ui,
         ClydeRenderSystem? Render,
         ContentClientLoadSystem ContentClient,
-        ContentClientGameplaySystem Gameplay);
+        ContentClientGameplaySystem Gameplay,
+        ContentEntryPointSystem EntryPoint,
+        ContentClientSystemHost Systems);
 
     public static BootResult CreateDefaultLoop(
         PrototypeSpriteIndex? prototypes = null,
@@ -26,14 +28,18 @@ public static class ClientBootstrap
         var ui = new AndroidUiHost();
         var contentClient = new ContentClientLoadSystem();
         var gameplay = new ContentClientGameplaySystem { LoadSystem = contentClient };
+        var entryPoint = new ContentEntryPointSystem { LoadSystem = contentClient };
+        var systems = new ContentClientSystemHost { LoadSystem = contentClient };
         loop.Add(ui);
         loop.Add(contentClient);
         loop.Add(gameplay);
+        loop.Add(entryPoint);
+        loop.Add(systems);
         if (prototypes is not null)
             loop.Add(new SpritePipelineSystem(new AuthoritativeSpritePipeline(prototypes)));
         if (render is not null)
             loop.Add(render);
-        return new BootResult(loop, ui, render, contentClient, gameplay);
+        return new BootResult(loop, ui, render, contentClient, gameplay, entryPoint, systems);
     }
 }
 
