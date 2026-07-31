@@ -4,6 +4,9 @@ using Android.Graphics;
 using Android.Util;
 using Android.Views;
 using Android.Widget;
+using Port.Client;
+using Port.Client.Bootstrap;
+using Port.Client.Ui;
 using Port.Content;
 using Port.Net;
 using Port.Platform.Android;
@@ -101,6 +104,7 @@ public class MainActivity : Activity
     AndroidAudioPlayer? _audioPlayer;
 
     AndroidPlatformHost? _host;
+    ClientLoop? _clientLoop;
     ConnectSession _connect = null!;
     readonly Ss14AuthClient _authClient = new();
     readonly ServerInfoClient _infoClient = new();
@@ -157,6 +161,13 @@ public class MainActivity : Activity
             catch { /* ignore */ }
         };
         base.OnCreate(savedInstanceState);
+        // Full-client foundation: YAML+meta sprites, Content.Client load still gated off.
+        ClientFeatureFlags.AuthoritativeSprites = true;
+        ClientFeatureFlags.StrictRsiStates = true;
+        ClientFeatureFlags.LoadContentClientAssemblies = false;
+        _clientLoop = new ClientLoop();
+        _clientLoop.Add(new AndroidUiHost());
+        _clientLoop.Start();
         // Landscape locked from loading onward. Portrait only on hub home.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
             || s_connect?.Observing == true || s_uiObserving)
@@ -1712,6 +1723,8 @@ public class MainActivity : Activity
             s_connect = null;
             s_uiObserving = false;
             _uiObserving = false;
+            _clientLoop?.Shutdown();
+            _clientLoop = null;
         }
 
         _host?.OnLifecycle(PlatformLifecycle.Destroyed);

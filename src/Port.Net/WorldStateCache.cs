@@ -1583,6 +1583,7 @@ public sealed class WorldStateCache
             // Goob/CD: YAML base "window" vs meta "rwindow0..7".
             // Remap ONLY when YAML base has no numbered sheet (StateNameCache keeps this cheap).
             // Blind remap broke WallReinforced: reinf_over → solid on solid.rsi.
+            // StrictRsiStates still allows this — meta proves YAML base is missing.
             if (inferred is { } inf
                 && !string.IsNullOrEmpty(inf.StateBase)
                 && !string.Equals(sm.StateBase, inf.StateBase, StringComparison.OrdinalIgnoreCase)
@@ -1596,7 +1597,6 @@ public sealed class WorldStateCache
                         $"iconsmooth base remap {proto}: '{sm.StateBase}' → '{inf.StateBase}' ({path})");
                 }
             }
-
             _iconSmoothRemapCache[cacheKey] = data;
             return true;
         }

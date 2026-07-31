@@ -1136,4 +1136,29 @@ public sealed class AuthoritativeSpriteTests
         Assert.Contains("x3", collapsed);
         Assert.Equal(1, collapsed.Split('\n').Length);
     }
+
+    [Fact]
+    public void AuthoritativeModeSkipsPathHeuristicWhenMetaMissing()
+    {
+        var prev = SpriteResolveOptions.AuthoritativeOnly;
+        SpriteResolveOptions.AuthoritativeOnly = true;
+        try
+        {
+            IconSmoothInfer.ClearCache();
+            // No content root / meta — path invent must not fire in authoritative mode.
+            var data = IconSmoothInfer.FromRsi(null, "Structures/Walls/solid.rsi", "WallSolid");
+            Assert.Null(data);
+
+            // Explicit opt-in still allows legacy invent for tests / rollback.
+            var legacy = IconSmoothInfer.FromRsi(
+                null, "Structures/Walls/solid.rsi", "WallSolid", allowPathHeuristic: true);
+            Assert.NotNull(legacy);
+            Assert.Equal("solid", legacy!.Value.StateBase);
+        }
+        finally
+        {
+            SpriteResolveOptions.AuthoritativeOnly = prev;
+            IconSmoothInfer.ClearCache();
+        }
+    }
 }

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Port.Client</RootNamespace>
+    <AssemblyName>Port.Client</AssemblyName>
+    <Description>Full Android SS14 client foundation — tick loop, sprite pipeline, content load policy.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Port.Content\Port.Content.csproj" />
+    <ProjectReference Include="..\Port.Net\Port.Net.csproj" />
+    <ProjectReference Include="..\Port.RobustClientStub\Port.RobustClientStub.csproj" />
+  </ItemGroup>
+</Project>
