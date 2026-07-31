@@ -14,9 +14,14 @@ public sealed class PortReflectionManager : ReflectionManager
         "Content.Shared._RMC14.",
         "Content.Shared.Goobstation.",
         "Content.Goobstation.Shared.",
+        "Content.Goobstation.Common.",
+        "Content.Goobstation.Maths.",
+        "Content.Goobstation.",
         "Goobstation.Shared.",
         "Content.Shared._White.",
         "Content.Shared.Corvax.",
+        "Content.Corvax.",
+        "Content.Corvax.Interfaces.Shared.",
     ];
 
     protected override IEnumerable<string> TypePrefixes => Prefixes;

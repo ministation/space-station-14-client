@@ -57,6 +57,9 @@ public sealed class SerializerBootstrap : IDisposable
                 return null;
             }
 
+            // Alphabetical load order is part of the type-map contract with this content pack.
+            // Reordering / optional-skipping packs shifted hash C71B907F5563 → F40B9C432034 and
+            // broke every MsgState (GetDeserializeTrampolineFromId NRE / IndexOutOfRange).
             var dlls = Directory.GetFiles(assembliesDirectory, "*.dll")
                 .OrderBy(p => Path.GetFileName(p), StringComparer.OrdinalIgnoreCase)
                 .ToArray();
@@ -106,6 +109,8 @@ public sealed class SerializerBootstrap : IDisposable
             };
 
             var loadedNames = new List<string>();
+            var skippedNames = new List<string>();
+            var failedNames = new List<string>();
             var contentAsms = new List<Assembly>();
 
             // GameState NetSerializable component types live in Shared content packs.
@@ -114,15 +119,10 @@ public sealed class SerializerBootstrap : IDisposable
             foreach (var path in dlls)
             {
                 var name = Path.GetFileName(path);
-                if (ShouldSkipContentDll(name))
-                {
-                    log?.Invoke($"serializer: skip {name}");
-                    continue;
-                }
-
                 if (!ShouldLoadForSerializer(name))
                 {
-                    log?.Invoke($"serializer: skip non-shared {name}");
+                    skippedNames.Add(name);
+                    log?.Invoke($"serializer: skip {name}");
                     continue;
                 }
 
@@ -149,12 +149,17 @@ public sealed class SerializerBootstrap : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    failedNames.Add(name);
                     log?.Invoke($"serializer: FAIL load {name}: {Flatten(ex)}");
                 }
             }
 
             if (contentAsms.Count == 0)
                 log?.Invoke("serializer: WARNING no shared content loaded — GameState decode may fail");
+            if (skippedNames.Count > 0)
+                log?.Invoke("serializer: skipped " + string.Join(", ", skippedNames));
+            if (failedNames.Count > 0)
+                log?.Invoke("serializer: failed " + string.Join(", ", failedNames));
 
             var container = new DependencyCollection();
             container.Register<ILogManager, LogManager>();
@@ -194,8 +199,21 @@ public sealed class SerializerBootstrap : IDisposable
                 throw;
             }
             var hash = serializer.GetSerializableTypesHashString();
+            var typeCount = 0;
+            try
+            {
+                if (serializer is RobustSerializer concrete)
+                    typeCount = concrete.GetTypeMap().Count;
+            }
+            catch { /* ignore */ }
+
             var status =
-                $"ready hash={hash[..Math.Min(12, hash.Length)]} asms={loadedNames.Count}/{dlls.Length}";
+                $"ready hash={hash[..Math.Min(12, hash.Length)]} asms={loadedNames.Count}/{dlls.Length} types={typeCount}";
+            if (failedNames.Count > 0)
+            {
+                var shortFails = string.Join(",", failedNames.Select(ShortDll));
+                status += $" fail={failedNames.Count}({shortFails})";
+            }
             log?.Invoke($"serializer: init OK {status}");
             if (loadedNames.Count > 0)
                 log?.Invoke("serializer: asms " + string.Join(", ", loadedNames));
@@ -220,50 +238,54 @@ public sealed class SerializerBootstrap : IDisposable
         }
     }
 
+    static string ShortDll(string fileName)
+    {
+        const string suffix = ".dll";
+        var n = fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^suffix.Length]
+            : fileName;
+        if (n.StartsWith("Content.", StringComparison.OrdinalIgnoreCase))
+            n = n["Content.".Length..];
+        return n.Length <= 40 ? n : n[..40];
+    }
+
     static bool ShouldSkipContentDll(string fileName)
     {
         if (fileName.StartsWith("Robust.Client", StringComparison.OrdinalIgnoreCase))
             return true;
         if (fileName.StartsWith("Robust.Server", StringComparison.OrdinalIgnoreCase))
             return true;
-        if (fileName.Contains("Content.Client", StringComparison.OrdinalIgnoreCase)
-            && !fileName.Contains("Content.Shared", StringComparison.OrdinalIgnoreCase))
+        // Only skip true client/server packs — not Content.Shared / *.Interfaces.Shared.
+        if (fileName.EndsWith(".Client.dll", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains(".Client.", StringComparison.OrdinalIgnoreCase))
             return true;
-        if (fileName.Contains("Content.Server", StringComparison.OrdinalIgnoreCase))
+        if (fileName.EndsWith(".Server.dll", StringComparison.OrdinalIgnoreCase)
+            || (fileName.Contains(".Server.", StringComparison.OrdinalIgnoreCase)
+                && !fileName.Contains("Database", StringComparison.OrdinalIgnoreCase)))
             return true;
         if (fileName.StartsWith("Avalonia", StringComparison.OrdinalIgnoreCase)
             || fileName.StartsWith("SDL", StringComparison.OrdinalIgnoreCase)
             || fileName.Contains("Clyde", StringComparison.OrdinalIgnoreCase))
+            return true;
+        // Client-only UI packs — not NetSerializable; load FAIL polluted fail= and DESER noise.
+        if (fileName.Contains("UIKit", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains(".UI.", StringComparison.OrdinalIgnoreCase))
             return true;
         return false;
     }
 
     static bool ShouldLoadForSerializer(string fileName)
     {
-        // Classic SS14: Content.Shared*.dll
-        if (fileName.Contains("Content.Shared", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Content.*.Shared.dll / Content.Shared.*.dll
-        if (fileName.StartsWith("Content.", StringComparison.OrdinalIgnoreCase)
-            && fileName.Contains(".Shared", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Fork modules: Goobstation.Shared.dll, Content.Shared._RMC14.dll already covered,
-        // but also AnyName.Shared.dll / *.Shared.*.dll
-        if (fileName.Contains(".Shared.", StringComparison.OrdinalIgnoreCase)
-            || fileName.EndsWith(".Shared.dll", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Content.* that isn't Client/Server (e.g. Content.Common.dll)
-        if (fileName.StartsWith("Content.", StringComparison.OrdinalIgnoreCase)
-            && !fileName.Contains("Client", StringComparison.OrdinalIgnoreCase)
-            && !fileName.Contains("Server", StringComparison.OrdinalIgnoreCase)
-            && !fileName.Contains("Integration", StringComparison.OrdinalIgnoreCase)
-            && !fileName.Contains("Tests", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return false;
+        // Load every non-skipped content DLL. NetSerializable lives in Shared/Common/Maths/
+        // Goobstation packs; holes → GetDeserializeTrampolineFromId IndexOutOfRange.
+        if (ShouldSkipContentDll(fileName))
+            return false;
+        if (fileName.Contains("Integration", StringComparison.OrdinalIgnoreCase)
+            || fileName.Contains("Tests", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+            || fileName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase))
+            return false;
+        return fileName.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
     }
 
     static string Flatten(Exception ex)

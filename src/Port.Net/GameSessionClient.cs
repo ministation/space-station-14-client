@@ -160,6 +160,16 @@ public sealed class GameSessionClient : IDisposable
     readonly Port.Content.TilePrototypeIndex _tileProtos = new();
     public Port.Content.AczOnDemandFetcher TextureFetcher { get; } = new();
 
+    public GameSessionClient()
+    {
+        // After ACZ writes RSI/meta, drop sticky IconSmooth remaps so window→rwindow can apply.
+        TextureFetcher.OnFilesWritten = path =>
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+                _worldCache.InvalidateIconSmoothPath(path);
+        };
+    }
+
     public void ConfigureTextureFetcher(string statusBaseUrl, Port.Content.ContentManifest manifest, string filesRoot)
     {
         try
@@ -279,12 +289,22 @@ public sealed class GameSessionClient : IDisposable
         }
 
         IsObserving = true;
-        _spawnWarpPending = true;
         _panOffX = 0;
         _panOffY = 0;
-        Set(GameSessionPhase.Observing, "ghost flight — awaiting MsgState / spawn warp");
+        // Already have a live eye on the station (joined in-round / admin) — do NOT yank
+        // to alphabetical first warp ("Automated Trade Station").
+        var eyePos = LastEye?.LocalPosition ?? default;
+        var alreadyPlaced = eyePos.LengthSquared() > 1f
+                            && LastWorld is { Entities.Count: > 50 };
+        _spawnWarpPending = !alreadyPlaced;
+        Set(GameSessionPhase.Observing,
+            alreadyPlaced
+                ? "ghost flight — already on map"
+                : "ghost flight — awaiting MsgState / spawn warp");
+        if (alreadyPlaced)
+            Note("observe: keep current eye — skip auto spawn warp");
 
-        // Ask server for warp targets; first response auto-warps to observer spawn.
+        // One warps request for the picker UI; auto-spawn only if still pending.
         try { RequestGhostWarps(); } catch { /* serializer may not be ready yet */ }
 
         _ = Task.Run(() =>
@@ -297,6 +317,7 @@ public sealed class GameSessionClient : IDisposable
                 {
                     _protoSprites.EnsureLoaded(ContentFilesRoot, Note);
                     _tileProtos.EnsureLoaded(ContentFilesRoot, Note);
+                    _worldCache.SetContentRoot(ContentFilesRoot);
                     _worldCache.SetPrototypeIndex(_protoSprites);
                     _worldCache.SetTileIndex(_tileProtos);
                 }
@@ -310,12 +331,15 @@ public sealed class GameSessionClient : IDisposable
                 }
                 catch { /* on-demand later */ }
                 try { EnsureKeyMap(); } catch { /* ignore */ }
-                try { RequestGhostWarps(); } catch { /* ignore */ }
-                // Retry warps a few times until spawn completes (serializer/timing).
-                for (var i = 0; i < 8 && _spawnWarpPending && IsObserving; i++)
+
+                // At most one retry — storms of GhostWarpsRequest flooded the net thread.
+                if (_spawnWarpPending && IsObserving)
                 {
-                    Thread.Sleep(500);
-                    try { RequestGhostWarps(); } catch { /* ignore */ }
+                    Thread.Sleep(800);
+                    if (_spawnWarpPending && IsObserving)
+                    {
+                        try { RequestGhostWarps(); } catch { /* ignore */ }
+                    }
                 }
 
                 if (_serializer is { HasMappedStrings: false } && _mapStrHash is { Length: > 0 })
@@ -333,10 +357,11 @@ public sealed class GameSessionClient : IDisposable
                     }
                 }
 
-                // Fallback command used by some forks (safe — not mapstr).
+                // Fallback only if spawn warp never completed — "ghost" after a live
+                // observer session can kick/desync some forks and looks like a client crash.
                 try
                 {
-                    if (IsConnected && LocalStatus != SessionStatus.InGame)
+                    if (IsConnected && _spawnWarpPending && LocalStatus != SessionStatus.InGame)
                     {
                         SendNamed("MsgConCmd", NetDeliveryMethod.ReliableUnordered, m => m.Write("ghost"));
                         Note(">> ghost (fallback)");
@@ -1439,34 +1464,129 @@ public sealed class GameSessionClient : IDisposable
             _worldCache.RemoveEntities(leaving);
             if (LastWorld is { } world && leaving.Count > 0)
             {
-                var drop = new HashSet<NetEntity>(leaving);
-                var kept = world.Entities.Where(e => !drop.Contains(e.Entity)).ToList();
-                var audioKept = world.Audio?.Where(a => !drop.Contains(a.Entity)).ToList()
-                                ?? (IReadOnlyList<WorldAudioCue>)Array.Empty<WorldAudioCue>();
-                // Rebuild floors from remaining grids — old area tiles must not linger after warp.
-                var tiles = _worldCache.RebuildTilesNearEye(40f);
+                // Cheap HashSet filter — keep draw list in sync without LINQ / tile rebuild.
+                // RebuildTilesNearEye every leave wiped pos cache and hitch'd at store~800+.
+                var leaveSet = new HashSet<NetEntity>(leaving);
+                var filtered = FilterLeftEntities(world.Entities, leaveSet);
                 LastWorld = world with
                 {
-                    Entities = kept,
-                    Tiles = tiles,
-                    Audio = audioKept,
+                    Entities = filtered,
                     Detail = world.Detail + $" leavePvs={leaving.Count}",
                 };
+                // Debounce UI full pushes — left=1 every tick was copying 1200 ents and killing FPS.
+                var nowMs = Environment.TickCount64;
+                if (leaving.Count >= 16 || nowMs - _lastWorldPushEpochMs >= 300)
+                {
+                    WorldPushEpoch++;
+                    _lastWorldPushEpochMs = nowMs;
+                }
+
+                if (leaving.Count > 64)
+                {
+                    _panOffX = 0;
+                    _panOffY = 0;
+                    NotifyTextureLoadBurst();
+                }
             }
 
-            // Reset free-cam pan after large leave so camera recenters on new PVS bubble.
-            if (leaving.Count > 64)
+            // Sample LeavePvs notes — storms of left=100–4000 flooded the diag ring.
+            if (leaving.Count >= 64 || (_leavePvsLogBudget-- > 0))
             {
-                _panOffX = 0;
-                _panOffY = 0;
+                if (_leavePvsLogBudget < 0)
+                    _leavePvsLogBudget = 0;
+                Note($"MsgStateLeavePvs tick={tick} left={leaving.Count} store={_worldCache.XformCount}");
             }
-
-            Note($"MsgStateLeavePvs tick={tick} left={leaving.Count} store={_worldCache.XformCount}");
+            else if (leaving.Count > 0 && Environment.TickCount64 - _lastLeavePvsNoteMs > 2000)
+            {
+                _lastLeavePvsNoteMs = Environment.TickCount64;
+                _leavePvsLogBudget = 3;
+                Note($"MsgStateLeavePvs tick={tick} left={leaving.Count} store={_worldCache.XformCount}");
+            }
         }
         catch (Exception ex)
         {
             Note($"MsgStateLeavePvs FAIL: {ex.Message}");
         }
+    }
+
+    static IReadOnlyList<WorldEntityDraw> FilterLeftEntities(
+        IReadOnlyList<WorldEntityDraw> entities, HashSet<NetEntity> leaving)
+    {
+        if (entities.Count == 0 || leaving.Count == 0)
+            return entities;
+        List<WorldEntityDraw>? kept = null;
+        for (var i = 0; i < entities.Count; i++)
+        {
+            var e = entities[i];
+            if (leaving.Contains(e.Entity))
+            {
+                if (kept is null)
+                {
+                    kept = new List<WorldEntityDraw>(entities.Count - 1);
+                    for (var j = 0; j < i; j++)
+                        kept.Add(entities[j]);
+                }
+
+                continue;
+            }
+
+            kept?.Add(e);
+        }
+
+        return kept ?? entities;
+    }
+
+    long _lastLeavePvsNoteMs;
+    long _lastWorldPushEpochMs;
+    long _lastDeserNoteMs;
+    int _leavePvsLogBudget = 8;
+
+    /// <summary>
+    /// Commit draw snapshot. Never replace a rich entity list with a starved one just because
+    /// tiles are still present (LeavePvs+partial apply → draw=2, walls "gone").
+    /// </summary>
+    void CommitWorldSnapshot(WorldSnapshot? world)
+    {
+        if (world is null)
+            return;
+
+        var prev = LastWorld;
+        if (prev is null)
+        {
+            LastWorld = world;
+            return;
+        }
+
+        var newN = world.Entities.Count;
+        var oldN = prev.Entities.Count;
+        // Starved entity draw while tiles remain — keep previous walls/props.
+        if (newN < 16 && oldN >= 64)
+        {
+            LastWorld = prev with
+            {
+                Eye = world.Eye ?? prev.Eye,
+                Tiles = (world.Tiles?.Count ?? 0) > 0 ? world.Tiles : prev.Tiles,
+                Audio = world.Audio ?? prev.Audio,
+                ToSequence = world.ToSequence,
+                Detail = world.Detail + " keepEnts",
+            };
+            WorldPushEpoch++;
+            return;
+        }
+
+        if (newN > 0 || (world.Tiles?.Count ?? 0) > 0)
+            LastWorld = world;
+    }
+
+    /// <summary>Bumped on LeavePvs draw-list edits so UI can push without waiting for ToSequence.</summary>
+    public int WorldPushEpoch { get; private set; }
+
+    /// <summary>Optional hook — Android host arms GLES load burst after big PVS moves.</summary>
+    public Action? OnTextureLoadBurst { get; set; }
+
+    void NotifyTextureLoadBurst()
+    {
+        try { OnTextureLoadBurst?.Invoke(); } catch { /* ignore */ }
     }
 
     readonly List<ChatLine> _chatLines = new();
@@ -1549,6 +1669,8 @@ public sealed class GameSessionClient : IDisposable
     bool _warpCyclePending;
     int _warpCycleIndex = -1;
 
+    long _lastGhostWarpsRequestMs;
+
     public void RequestGhostWarps()
     {
         if (!IsConnected || _serializer is not { HasMappedStrings: true } boot)
@@ -1556,6 +1678,11 @@ public sealed class GameSessionClient : IDisposable
             Note("RequestGhostWarps deferred — serializer not ready");
             return;
         }
+
+        var now = Environment.TickCount64;
+        if (now - _lastGhostWarpsRequestMs < 750)
+            return; // debounce UI / observe retry storms
+        _lastGhostWarpsRequestMs = now;
 
         if (!boot.Reflection.TryLooseGetType("Content.Shared.Ghost.GhostWarpsRequestEvent", out var type)
             && !boot.Reflection.TryLooseGetType("GhostWarpsRequestEvent", out type))
@@ -1989,21 +2116,31 @@ public sealed class GameSessionClient : IDisposable
         list.Add(new GhostWarpEntry(ent, name, isWp, cat, sub));
     }
 
-    bool _spawnWarpPending;
+    volatile bool _spawnWarpPending;
 
     static GhostWarpEntry PickObserverSpawn(IReadOnlyList<GhostWarpEntry> list)
     {
-        // Mirror GameTicker.GetObserverSpawnPoint: prefer Observer spawn warp points.
+        // Prefer real observer/station spawns. Alphabetical first among equal scores used to
+        // pick "Automated Trade Station" and yank ghosts off the main station.
         static int Score(GhostWarpEntry w)
         {
             var n = w.DisplayName ?? "";
             var score = w.IsWarpPoint ? 100 : 0;
-            if (n.Contains("Observer", StringComparison.OrdinalIgnoreCase)) score += 50;
-            if (n.Contains("наблюд", StringComparison.OrdinalIgnoreCase)) score += 50;
-            if (n.Contains("Spawn", StringComparison.OrdinalIgnoreCase)) score += 30;
-            if (n.Contains("спавн", StringComparison.OrdinalIgnoreCase)) score += 30;
+            if (n.Contains("Observer", StringComparison.OrdinalIgnoreCase)) score += 80;
+            if (n.Contains("наблюд", StringComparison.OrdinalIgnoreCase)) score += 80;
+            if (n.Contains("Spawn", StringComparison.OrdinalIgnoreCase)) score += 40;
+            if (n.Contains("спавн", StringComparison.OrdinalIgnoreCase)) score += 40;
+            if (n.Contains("Station", StringComparison.OrdinalIgnoreCase)
+                && !n.Contains("Trade", StringComparison.OrdinalIgnoreCase))
+                score += 25;
             if (n.Contains("Arrive", StringComparison.OrdinalIgnoreCase)) score += 10;
             if (n.Contains("Late", StringComparison.OrdinalIgnoreCase)) score += 10;
+            if (n.Contains("Trade", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Automated", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Outpost", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("CentComm", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("Центрком", StringComparison.OrdinalIgnoreCase))
+                score -= 80;
             return score;
         }
 
@@ -2399,12 +2536,7 @@ public sealed class GameSessionClient : IDisposable
                 {
                     LastEye = eye;
                     SyncGhostFlagsFromWorld();
-                    // Keep last non-empty world; never wipe sprites/tiles on empty delta blips.
-                    if (world is not null
-                        && (world.Entities.Count > 0 || (world.Tiles?.Count ?? 0) > 0))
-                        LastWorld = world;
-                    else if (LastWorld is null && world is not null)
-                        LastWorld = world;
+                    CommitWorldSnapshot(world);
                     LastEyeHint = eye!.Detail;
                     // PC eye alignment: camera follows parent grid + InputMover relative
                     // rotation, never the ghost/entity facing that changes during movement.
@@ -2425,19 +2557,19 @@ public sealed class GameSessionClient : IDisposable
                 else
                 {
                     LastEye = eye;
-                    if (world is { Entities.Count: > 0 })
-                        LastWorld = world;
+                    // DESER must NOT replace LastWorld or ACK — ACK'ing a failed tick tells the
+                    // server we applied state we didn't → PVS desync → walls vanish (draw=2).
                     LastEyeHint = err;
-                    if (StatesReceived <= 8 || StatesReceived % 50 == 0)
+                    if (err.Contains("DRAW_FAIL", StringComparison.OrdinalIgnoreCase)
+                        || StatesReceived <= 8
+                        || (StatesReceived % 40 == 0 && !err.Contains("DESER", StringComparison.Ordinal)))
                         Note($"GameState decode: {err}");
-                    // Always ack so the server keeps sending full/delta PVS.
-                    var ackTick = eye?.ToSequence.Value ?? tick.Value;
-                    try
+                    else if (err.Contains("DESER", StringComparison.Ordinal)
+                             && Environment.TickCount64 - _lastDeserNoteMs >= 5000)
                     {
-                        if (ackTick != 0)
-                            SendNamed("MsgStateAck", NetDeliveryMethod.Unreliable, m => m.Write(ackTick));
+                        _lastDeserNoteMs = Environment.TickCount64;
+                        Note($"GameState decode: {err} (no ack)");
                     }
-                    catch { /* ignore */ }
                 }
             }
             else
@@ -2550,6 +2682,7 @@ public sealed class GameSessionClient : IDisposable
             _protoSprites.EnsureLoaded(ContentFilesRoot, Note);
             _tileProtos.Invalidate();
             _tileProtos.EnsureLoaded(ContentFilesRoot, Note);
+            _worldCache.SetContentRoot(ContentFilesRoot);
             _worldCache.SetPrototypeIndex(_protoSprites);
             _worldCache.SetTileIndex(_tileProtos);
         }
@@ -2745,7 +2878,10 @@ public sealed class GameSessionClient : IDisposable
             if (_log.Count > 100)
                 _log.RemoveRange(0, _log.Count - 80);
         }
+        Port.Content.DiagLog.Info(line);
     }
+
+    public IReadOnlyList<string> RecentLog(int max = 60) => SnapshotLog(max);
 
     IReadOnlyList<string> SnapshotLog(int max = 16)
     {

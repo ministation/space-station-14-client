@@ -87,8 +87,27 @@ public sealed class RsiAtlas
             loaded = null;
         }
 
-        lock (Gate) Cache[rsiPathOrDirectory] = loaded;
+        // Never cache misses — ACZ may finish writing .rsic/meta after the first probe.
+        // Sticky null made ~all RSI permanently unloadable after an early race.
+        if (loaded is not null)
+        {
+            lock (Gate) Cache[rsiPathOrDirectory] = loaded;
+        }
+
         return loaded;
+    }
+
+    public static void ClearCache()
+    {
+        lock (Gate) Cache.Clear();
+    }
+
+    /// <summary>Drop one path so a re-download / repaired file can be reparsed.</summary>
+    public static void Invalidate(string? rsiPathOrDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(rsiPathOrDirectory))
+            return;
+        lock (Gate) Cache.Remove(rsiPathOrDirectory);
     }
 
     static Loaded? LoadRsic(string path)
@@ -217,6 +236,31 @@ public sealed class RsiAtlas
         if (!atlas.States.TryGetValue(stateName, out var state))
             return new UvRect(0, 0, 0, 0, 0, 0);
 
+        if (folderPerStateSheet && dirOverride >= 0)
+        {
+            // IconSmooth: trust DirOverride + sheet pixel size, not meta DirCount.
+            // Meta often says directions:1 (or LoadFolder AtlasW=full.png) which would clamp
+            // every corner to dir0 → white L brackets.
+            var dimX = Math.Max(1, atlasW / Math.Max(1, atlas.FrameW));
+            var dimY = Math.Max(1, atlasH / Math.Max(1, atlas.FrameH));
+            var cells = Math.Max(1, dimX * dimY);
+            var dirCell = Math.Clamp(dirOverride, 0, cells - 1);
+            var col = dirCell % dimX;
+            var row = dirCell / dimX;
+            return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, col, row);
+        }
+
+        // Packed .rsic: meta sometimes drops directions:4 while still packing 4 frames.
+        // Clamping DirOverride to DirCount-1 (=0) yields four identical SE corners (white L).
+        if (dirOverride >= 0 && state.DirCount <= 1 && state.TotalFrames >= 4)
+        {
+            var sheetIndex = state.SheetOffset + Math.Clamp(dirOverride, 0, state.TotalFrames - 1);
+            var dimPackedFix = Math.Max(1, atlasW / Math.Max(1, atlas.FrameW));
+            var fcol = sheetIndex % dimPackedFix;
+            var frow = sheetIndex / dimPackedFix;
+            return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, fcol, frow);
+        }
+
         var dir = dirOverride >= 0
             ? Math.Clamp(dirOverride, 0, Math.Max(0, state.DirCount - 1))
             : DirectionIndex(rotationRadians, state.DirCount);
@@ -242,10 +286,10 @@ public sealed class RsiAtlas
             return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, col, row);
         }
 
-        var sheetIndex = state.SheetOffset + indexInState;
+        var sheetIndex2 = state.SheetOffset + indexInState;
         var dimPacked = Math.Max(1, atlasW / atlas.FrameW);
-        var scol = sheetIndex % dimPacked;
-        var srow = sheetIndex / dimPacked;
+        var scol = sheetIndex2 % dimPacked;
+        var srow = sheetIndex2 / dimPacked;
         return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, scol, srow);
     }
 

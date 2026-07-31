@@ -340,12 +340,12 @@ public sealed class AczContentClient
                 var plain = new ZstdSharp.Decompressor().Unwrap(data, uncompressed).ToArray();
                 if (plain.Length != uncompressed)
                     throw new InvalidDataException($"zstd size mismatch {plain.Length}/{uncompressed} for {path}");
-                await File.WriteAllBytesAsync(outPath, plain, ct);
+                await WriteFileAtomicAsync(outPath, plain, ct);
                 writtenLen = plain.Length;
             }
             else
             {
-                await File.WriteAllBytesAsync(outPath, data, ct);
+                await WriteFileAtomicAsync(outPath, data, ct);
                 writtenLen = data.Length;
             }
 
@@ -436,19 +436,19 @@ public sealed class AczContentClient
                     if (plain.Length != uncompressed)
                         throw new InvalidDataException(
                             $"zstd size mismatch {plain.Length}/{uncompressed} for {entry.Path}");
-                    await File.WriteAllBytesAsync(outPath, plain, ct);
+                    await WriteFileAtomicAsync(outPath, plain, ct);
                     onFile?.Invoke(entry, plain.Length);
                 }
                 catch (Exception ex)
                 {
-                    await File.WriteAllBytesAsync(outPath + ".zst", data, ct);
+                    await WriteFileAtomicAsync(outPath + ".zst", data, ct);
                     throw new InvalidDataException(
                         $"zstd inflate failed for {entry.Path}: {ex.Message}", ex);
                 }
             }
             else
             {
-                await File.WriteAllBytesAsync(outPath, data, ct);
+                await WriteFileAtomicAsync(outPath, data, ct);
                 onFile?.Invoke(entry, data.Length);
             }
 
@@ -462,6 +462,17 @@ public sealed class AczContentClient
     {
         relative = relative.Replace('\\', '/').TrimStart('/');
         return Path.Combine(rootDir, relative.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    /// <summary>
+    /// Write to <c>.tmp</c> then rename — GLES must never DecodeFile a half-written ACZ blob
+    /// (native Skia/SIGSEGV with no managed UNHANDLED).
+    /// </summary>
+    public static async Task WriteFileAtomicAsync(string outPath, byte[] bytes, CancellationToken ct)
+    {
+        var tmp = outPath + ".tmp";
+        await File.WriteAllBytesAsync(tmp, bytes, ct);
+        File.Move(tmp, outPath, overwrite: true);
     }
 
     static async Task EnsureOkAsync(HttpResponseMessage resp, string what, CancellationToken ct)

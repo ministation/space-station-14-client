@@ -42,7 +42,9 @@ public readonly record struct WorldEntityDraw(
     bool IsGhost = false,
     float ScaleX = 1f,
     float ScaleY = 1f,
-    float RotationOffset = 0f);
+    float RotationOffset = 0f,
+    /// <summary>PC SpriteComponent.SnapCardinals — force RSI dir 0.</summary>
+    bool SnapCardinals = false);
 
 public sealed record WorldSnapshot(
     EyeSnapshot? Eye,
@@ -78,7 +80,7 @@ public readonly record struct WorldAudioCue(
 
 public static class GameStateDecoder
 {
-    const int MaxDrawEntities = 3500;
+    const int MaxDrawEntities = 20_000;
 
     public static bool TryDecode(
         IRobustSerializer serializer,
@@ -325,6 +327,8 @@ public static class GameStateDecoder
         public bool Visible = true;
         public int DrawDepth = 50;
         public bool NoRotation;
+        /// <summary>PC SpriteComponent.SnapCardinals — RSI dir snaps to cardinals / dir0.</summary>
+        public bool SnapCardinals;
         public readonly List<LayerVis> Layers = new();
     }
 
@@ -524,10 +528,21 @@ public static class GameStateDecoder
                     if (name.Equals("Shader", StringComparison.Ordinal)) continue;
                     var v = lt.GetProperty(name)?.GetValue(layer)
                             ?? lt.GetField(name)?.GetValue(layer);
+                    if (v is null) continue;
                     if (v is string mk && !string.IsNullOrWhiteSpace(mk) && mk.Length < 96)
                     {
                         mapKey = mk;
                         break;
+                    }
+                    // Enum map keys (DoorVisualLayers.Base) arrive as non-string.
+                    if (v is Enum || v.GetType().IsEnum)
+                    {
+                        var es = v.ToString();
+                        if (!string.IsNullOrWhiteSpace(es) && es.Length < 96)
+                        {
+                            mapKey = es;
+                            break;
+                        }
                     }
                 }
 
@@ -596,12 +611,41 @@ public static class GameStateDecoder
 
             // Never shrink a richer prototype stack with a sparse/wrong network layer list
             // (one "virology" layer used to wipe computer body+keyboard).
+            // Also never replace YAML door stacks with state-less network layers.
             if (parsed.Count > 0 && (vis.Layers.Count == 0 || parsed.Count >= vis.Layers.Count))
             {
-                vis.Layers.Clear();
-                vis.Layers.AddRange(parsed);
+                var parsedHasStates = false;
+                foreach (var l in parsed)
+                {
+                    if (!string.IsNullOrWhiteSpace(l.State))
+                    {
+                        parsedHasStates = true;
+                        break;
+                    }
+                }
+
+                var prevHasStates = false;
+                foreach (var l in vis.Layers)
+                {
+                    if (!string.IsNullOrWhiteSpace(l.State))
+                    {
+                        prevHasStates = true;
+                        break;
+                    }
+                }
+
+                if (!(prevHasStates && !parsedHasStates))
+                {
+                    vis.Layers.Clear();
+                    vis.Layers.AddRange(parsed);
+                }
             }
         }
+
+        var snapNet = t.GetProperty("SnapCardinals")?.GetValue(state)
+                      ?? t.GetField("SnapCardinals")?.GetValue(state);
+        if (snapNet is bool sc)
+            vis.SnapCardinals = sc;
 
         if (vis.Path is not null || vis.Layers.Count > 0 || vis.HasColor || !vis.Visible)
             sprites[ent] = vis;
@@ -622,6 +666,7 @@ public static class GameStateDecoder
             Visible = src.Visible,
             DrawDepth = src.DrawDepth,
             NoRotation = src.NoRotation,
+            SnapCardinals = src.SnapCardinals,
         };
         clone.Layers.AddRange(src.Layers);
         return clone;

@@ -13,14 +13,15 @@ public sealed class AndroidAudioPlayer : IDisposable
     SoundPool? _pool;
     readonly Dictionary<string, int> _soundIds = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, byte> _loading = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<int, string> _sampleToPath = new();
     readonly Dictionary<int, StreamPlay> _streams = new(); // entity id → play
     readonly HashSet<int> _oneShotPlayed = new();
-    readonly Queue<(string Path, int SoundId)> _loadDone = new();
     string? _contentRoot;
     AczOnDemandFetcher? _fetcher;
     float _earX, _earY;
     float _master = 0.85f;
-    bool _ready;
+    int _loadsThisTick;
+    const int MaxLoadsPerTick = 1;
 
     sealed class StreamPlay
     {
@@ -60,9 +61,8 @@ public sealed class AndroidAudioPlayer : IDisposable
     {
         if (_pool is not null)
             return;
-        _pool = new SoundPool(12, global::Android.Media.Stream.Music, 0);
+        _pool = new SoundPool(8, global::Android.Media.Stream.Music, 0);
         _pool.SetOnLoadCompleteListener(new LoadListener(this));
-        _ready = true;
     }
 
     public void PlayGlobalOneShot(string fileName, float volumeDb = 0f)
@@ -71,9 +71,12 @@ public sealed class AndroidAudioPlayer : IDisposable
         {
             EnsurePool();
             var path = NormalizeAudioPath(fileName);
-            var soundId = EnsureSoundLocked(path);
-            if (soundId == 0)
-                return;
+            if (!_soundIds.TryGetValue(path, out var soundId) || soundId == 0)
+            {
+                EnsureSoundLocked(path);
+                return; // play next tick when OnLoadComplete fires
+            }
+
             var gain = VolumeDbToGain(volumeDb) * _master;
             if (gain < 0.01f)
                 return;
@@ -87,7 +90,7 @@ public sealed class AndroidAudioPlayer : IDisposable
         {
             EnsurePool();
             _frame++;
-            DrainLoaded();
+            _loadsThisTick = 0;
 
             var seen = new HashSet<int>();
             foreach (var cue in cues)
@@ -107,7 +110,6 @@ public sealed class AndroidAudioPlayer : IDisposable
                     var maxD = MathF.Max(1f, cue.MaxDistance);
                     if (dist > maxD)
                         continue;
-                    // Inverse-distance style falloff (PC OpenAL InverseDistanceClamped approx).
                     var refD = 1f;
                     var atten = refD / (refD + MathF.Max(0f, dist - refD));
                     gain *= Math.Clamp(atten, 0.05f, 1f);
@@ -124,16 +126,20 @@ public sealed class AndroidAudioPlayer : IDisposable
                     continue;
                 }
 
-                // One-shots: play once per audio entity id.
                 if (!cue.Loop && _oneShotPlayed.Contains(id))
                     continue;
 
-                var soundId = EnsureSoundLocked(path);
-                if (soundId == 0)
+                // Never Play before OnLoadComplete — early Play of .ogg crashes native SoundPool.
+                if (!_soundIds.TryGetValue(path, out var soundId) || soundId == 0)
+                {
+                    EnsureSoundLocked(path);
                     continue;
+                }
 
                 var loop = cue.Loop ? -1 : 0;
-                var stream = _pool!.Play(soundId, gain, gain, 1, loop, 1f);
+                int stream;
+                try { stream = _pool!.Play(soundId, gain, gain, 1, loop, 1f); }
+                catch { continue; }
                 if (stream == 0)
                     continue;
 
@@ -148,7 +154,6 @@ public sealed class AndroidAudioPlayer : IDisposable
                     _oneShotPlayed.Add(id);
             }
 
-            // Stop streams whose entities left PVS / finished.
             List<int>? dead = null;
             foreach (var (id, play) in _streams)
             {
@@ -169,7 +174,6 @@ public sealed class AndroidAudioPlayer : IDisposable
                 }
             }
 
-            // Bound one-shot memory.
             if (_oneShotPlayed.Count > 400)
                 _oneShotPlayed.Clear();
         }
@@ -180,6 +184,8 @@ public sealed class AndroidAudioPlayer : IDisposable
         if (_soundIds.TryGetValue(relativePath, out var id))
             return id;
         if (_loading.ContainsKey(relativePath))
+            return 0;
+        if (_loadsThisTick >= MaxLoadsPerTick)
             return 0;
 
         var full = ResolveLocal(relativePath);
@@ -195,6 +201,7 @@ public sealed class AndroidAudioPlayer : IDisposable
         try
         {
             _loading[relativePath] = 0;
+            _loadsThisTick++;
             var sid = _pool!.Load(full, 1);
             if (sid == 0)
             {
@@ -202,9 +209,9 @@ public sealed class AndroidAudioPlayer : IDisposable
                 return 0;
             }
 
-            // OnLoadComplete will publish; some devices load sync — stash anyway.
-            _soundIds[relativePath] = sid;
-            return sid;
+            // Wait for OnLoadComplete before Play — do not stash as ready yet.
+            _sampleToPath[sid] = relativePath;
+            return 0;
         }
         catch
         {
@@ -232,8 +239,7 @@ public sealed class AndroidAudioPlayer : IDisposable
             candidates =
             [
                 Path.Combine(_contentRoot, "Audio", rest.Replace('/', Path.DirectorySeparatorChar)),
-                Path.Combine(_contentRoot, "Resources", "Audio", rest.Replace('/', Path.DirectorySeparatorChar)),
-                Path.Combine(_contentRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)),
+                Path.Combine(_contentRoot, rest.Replace('/', Path.DirectorySeparatorChar)),
             ];
         }
 
@@ -244,41 +250,18 @@ public sealed class AndroidAudioPlayer : IDisposable
         }
 
         return _fetcher?.TryLocalPath(relativePath)
-               ?? _fetcher?.TryLocalPath(relativePath.StartsWith("Audio/", StringComparison.OrdinalIgnoreCase)
-                   ? relativePath
-                   : "Audio/" + relativePath);
-    }
-
-    void DrainLoaded()
-    {
-        while (_loadDone.Count > 0)
-        {
-            var (path, sid) = _loadDone.Dequeue();
-            _soundIds[path] = sid;
-            _loading.Remove(path);
-        }
+               ?? _fetcher?.TryLocalPath("Audio/" + relativePath.TrimStart('/'));
     }
 
     void OnLoaded(int sampleId, bool success)
     {
         lock (_gate)
         {
-            if (!success)
-            {
-                foreach (var (k, _) in _loading.ToArray())
-                {
-                    if (_soundIds.ContainsKey(k)) continue;
-                    // Can't map sampleId→path easily; leave loading until retry.
-                }
+            if (!_sampleToPath.Remove(sampleId, out var path))
                 return;
-            }
-
-            // SoundPool load-complete: sample already stored in EnsureSoundLocked for sync loads.
-            foreach (var k in _loading.Keys.ToArray())
-            {
-                if (_soundIds.ContainsKey(k))
-                    _loading.Remove(k);
-            }
+            _loading.Remove(path);
+            if (success)
+                _soundIds[path] = sampleId;
         }
     }
 
@@ -292,7 +275,6 @@ public sealed class AndroidAudioPlayer : IDisposable
         return p;
     }
 
-    /// <summary>PC SharedAudioSystem.VolumeToGain — dB → linear gain.</summary>
     public static float VolumeDbToGain(float volumeDb)
     {
         if (float.IsNegativeInfinity(volumeDb) || volumeDb < -60f)
@@ -310,9 +292,9 @@ public sealed class AndroidAudioPlayer : IDisposable
             }
 
             _streams.Clear();
-            _pool?.Release();
+            try { _pool?.SetOnLoadCompleteListener(null); } catch { /* */ }
+            try { _pool?.Release(); } catch { /* */ }
             _pool = null;
-            _ready = false;
         }
     }
 

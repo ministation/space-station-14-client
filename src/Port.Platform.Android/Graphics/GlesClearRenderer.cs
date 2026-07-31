@@ -70,10 +70,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     string _lastError = "";
     bool _ready;
     EntitySprite[] _entities = Array.Empty<EntitySprite>();
+    EntitySprite[] _entitiesBack = Array.Empty<EntitySprite>();
     int _entityCount;
     TileSprite[] _tiles = Array.Empty<TileSprite>();
+    TileSprite[] _tilesBack = Array.Empty<TileSprite>();
     int _tileCount;
     SpeechBubbleSprite[] _bubbles = Array.Empty<SpeechBubbleSprite>();
+    SpeechBubbleSprite[] _bubblesBack = Array.Empty<SpeechBubbleSprite>();
     int _bubbleCount;
     string? _contentFilesRoot;
     Port.Content.AczOnDemandFetcher? _texFetcher;
@@ -81,8 +84,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     int _texturedLast;
     int _tilesDrawnLast;
     int _texMissLast;
+    int _uvMissLast;
     int _rsiPathLast;
     int _texCached;
+    int _pendingTexLast;
+    int _loadFailLast;
+    string _lastMissSample = "";
+    long _lastDiagFrame;
     bool _fovEnabled = true;
     bool _lightingEnabled = true;
     float _ambientLight = 0.78f;
@@ -125,13 +133,20 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     readonly HashSet<string> _queuedTex = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, long> _texRetryAtFrame = new(StringComparer.OrdinalIgnoreCase);
     readonly List<string> _texEvictScratch = new();
+    long _texBytes;
 
     /// <summary>
-    /// Soft GPU budget. Disappearing sprites came from thrashing under a tight cap —
-    /// keep a large residency window and never evict currently/recently visible keys.
+    /// Soft residency budget — must-loads always proceed (evict unpinned first).
+    /// Hard pin of IconSmooth sheets filled the old 2k cache and walls vanished.
     /// </summary>
-    const int MaxTexCache = 12288;
-    const int LoadsPerFrame = 384;
+    const int MaxTexCache = 12_000;
+    const long MaxTexBytes = 512L * 1024 * 1024;
+    // PNG/atlas decode on the GL thread — keep budgets modest to avoid frame spikes.
+    const int LoadsPerFrame = 8;
+    const int LoadsPerFrameBurst = 16;
+    long _burstLoadsUntilFrame;
+    int _pendingBurstFrames; // set from any thread; consumed on GL thread
+    readonly Dictionary<string, int> _texFailCount = new(StringComparer.OrdinalIgnoreCase);
     const string ParallaxLayerPath = "Textures/Parallaxes/layer1.png";
     const float ParallaxSlowness = 0.998046875f;
     readonly HashSet<string> _iconSmoothPrefetched = new(StringComparer.OrdinalIgnoreCase);
@@ -140,7 +155,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     // Clyde-style texture batching: one draw call per RSI bind.
     readonly List<TexQuad> _texQuads = new(2048);
-    const int MaxBatchQuads = 384;
+    const int MaxBatchQuads = 1024;
     float[] _batchPos = new float[MaxBatchQuads * 12];
     float[] _batchUv = new float[MaxBatchQuads * 12];
     float[] _batchCol = new float[MaxBatchQuads * 24];
@@ -175,8 +190,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     float[] _uvScratch = new float[6 * 2];
     float[] _texPosScratch = new float[6 * 2];
 
-    const int MaxEntities = 4800;
-    const int MaxTileSolidQuads = 12000;
+    const int MaxEntities = 16_000;
+    const int MaxTileSolidQuads = 24_000;
     const int MaxVerts = MaxTileSolidQuads * 6; // tiles + entity solid fallbacks share scratch
     const float PixelsPerTile = 32f;
 
@@ -296,10 +311,12 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     {
         lock (_gate)
         {
-            if (_entities.Length < count)
-                _entities = new EntitySprite[Math.Max(count, 256)];
+            // Double-buffer: never Array.Copy into the array GL is currently reading.
+            if (_entitiesBack.Length < count)
+                _entitiesBack = new EntitySprite[Math.Max(count, 256)];
             if (count > 0)
-                Array.Copy(entities, _entities, count);
+                Array.Copy(entities, _entitiesBack, count);
+            (_entities, _entitiesBack) = (_entitiesBack, _entities);
             _entityCount = count;
         }
     }
@@ -308,10 +325,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     {
         lock (_gate)
         {
-            if (_tiles.Length < count)
-                _tiles = new TileSprite[Math.Max(count, 512)];
+            if (_tilesBack.Length < count)
+                _tilesBack = new TileSprite[Math.Max(count, 512)];
             if (count > 0)
-                Array.Copy(tiles, _tiles, count);
+                Array.Copy(tiles, _tilesBack, count);
+            (_tiles, _tilesBack) = (_tilesBack, _tiles);
             _tileCount = count;
         }
     }
@@ -320,10 +338,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     {
         lock (_gate)
         {
-            if (_bubbles.Length < count)
-                _bubbles = new SpeechBubbleSprite[Math.Max(count, 16)];
+            if (_bubblesBack.Length < count)
+                _bubblesBack = new SpeechBubbleSprite[Math.Max(count, 16)];
             if (count > 0)
-                Array.Copy(bubbles, _bubbles, count);
+                Array.Copy(bubbles, _bubblesBack, count);
+            (_bubbles, _bubblesBack) = (_bubblesBack, _bubbles);
             _bubbleCount = count;
         }
     }
@@ -336,10 +355,49 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 return $"gles: ERROR {_lastError}";
             if (!_ready)
                 return "gles: waiting for surface";
-            return _ghostMode
-                ? $"ents={_entityCount} tiles={_tileCount} tex={_texturedLast}/{_texCached}"
-                : $"gles: OK {_width}x{_height}";
+            if (!_ghostMode)
+                return $"gles: OK {_width}x{_height}";
+            var miss = _texMissLast + _uvMissLast;
+            var ratio = _rsiPathLast > 0 ? (100f * _texturedLast / _rsiPathLast) : 0f;
+            return $"ents={_entityCount} tiles={_tileCount}/{_tilesDrawnLast} " +
+                   $"texOK={_texturedLast}/{_rsiPathLast}({ratio:0}%) " +
+                   $"missTex={_texMissLast} missUv={_uvMissLast} " +
+                   $"cache={_texCached} pend={_pendingTexLast} retry={_loadFailLast}";
         }
+    }
+
+    /// <summary>Multi-line sprite/texture report for clipboard / debug panel.</summary>
+    public string FormatDiag()
+    {
+        lock (_gate)
+        {
+            var sb = new System.Text.StringBuilder(512);
+            sb.AppendLine(Format());
+            if (!string.IsNullOrEmpty(_lastError))
+                sb.AppendLine($"lastError: {_lastError}");
+            sb.AppendLine($"contentRoot: {_contentFilesRoot ?? "(null)"}");
+            sb.AppendLine($"fetcher: {(_texFetcher?.IsReady == true ? "ready" : "no")} " +
+                          $"idx={_texFetcher?.IndexedRsicCount ?? 0}");
+            sb.AppendLine($"fps={_fps:0.0} frames={_frames} zoom={_zoom:0.00} " +
+                          $"cam=({_camX:0.0},{_camY:0.0})");
+            if (!string.IsNullOrEmpty(_lastMissSample))
+                sb.AppendLine($"lastMiss: {_lastMissSample}");
+            sb.AppendLine($"texBytes={_texBytes / (1024 * 1024.0):0.0}MB " +
+                          $"queued={_queuedTex.Count} pendingQ={_pendingTexLoad.Count}");
+            return sb.ToString().TrimEnd();
+        }
+    }
+
+    void NoteMiss(string reason, string? path, string? state)
+    {
+        _lastMissSample = $"{reason} {path ?? "?"} | {state ?? "-"}";
+        // Rate-limit DiagLog — once / ~45 frames (~0.75s).
+        if (_frames - _lastDiagFrame < 45)
+            return;
+        _lastDiagFrame = _frames;
+        Port.Content.DiagLog.Warn($"gles {_lastMissSample} " +
+                                  $"ok={_texturedLast}/{_rsiPathLast} missT={_texMissLast} missU={_uvMissLast} " +
+                                  $"cache={_texCached} pend={_pendingTexLoad.Count}");
     }
 
     public void OnSurfaceCreated(IGL10? gl, EGLConfig? config)
@@ -389,7 +447,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         _pendingRsiLoad.Clear();
         _queuedTex.Clear();
         _texRetryAtFrame.Clear();
+        _texFailCount.Clear();
         _texNeeded.Clear();
+        _burstLoadsUntilFrame = 0;
         // Bubble textures are also GL objects — clear without delete on context loss.
         if (deleteGlObjects)
         {
@@ -406,6 +466,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         _bubbleTex.Clear();
         _texQuads.Clear();
         _texCached = 0;
+        _texBytes = 0;
     }
 
     public void OnSurfaceChanged(IGL10? gl, int width, int height)
@@ -455,22 +516,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             _frames++;
             _fpsWindowFrames++;
             _texNeeded.Clear();
-            // Pin every sprite/tile path used this frame BEFORE any load/evict (walls were
-            // disappearing mid-flight when tile loads evicted RSI not yet marked needed).
-            for (var i = 0; i < count; i++)
-            {
-                var p = ents[i].RsiPath;
-                if (string.IsNullOrEmpty(p)) continue;
-                _texNeeded.Add(MakeTexKey(p, ents[i].StateName));
-                _texNeeded.Add(p);
-            }
-            for (var i = 0; i < tileCount; i++)
-            {
-                var p = tiles[i].RsiPath;
-                if (string.IsNullOrEmpty(p)) continue;
-                _texNeeded.Add(MakeTexKey(p, tiles[i].StateName));
-                _texNeeded.Add(p);
-            }
+            // Only pin what can be on-screen — marking all 1200 ents prevented eviction and
+            // burned CPU before frustum cull. DrawEntities/DrawTiles add the rest.
             var nowMs = Environment.TickCount64;
             if (_fpsWindowStartMs == 0)
                 _fpsWindowStartMs = nowMs;
@@ -507,23 +554,51 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             return;
         }
 
-        var cosR = MathF.Cos(-camRot);
-        var sinR = MathF.Sin(-camRot);
+        try
+        {
+            var cosR = MathF.Cos(-camRot);
+            var sinR = MathF.Sin(-camRot);
 
-        // Space backdrop (PC Default parallax layer1 + starfield) instead of black grid.
-        DrawParallaxBackground(camX, camY, zoom, cosR, sinR, contentRoot, texFetcher);
-        PumpTextureLoads(contentRoot, texFetcher);
-        DrawTiles(tiles, tileCount, camX, camY, zoom, cosR, sinR, contentRoot, texFetcher, lightOn ? ambient : 1f);
+            // Consume cross-thread burst arm (LeavePvs) on the GL thread only.
+            var burstArm = Interlocked.Exchange(ref _pendingBurstFrames, 0);
+            if (burstArm > 0)
+                _burstLoadsUntilFrame = Math.Max(_burstLoadsUntilFrame, _frames + burstArm);
 
-        if (count > 0)
-            DrawEntities(ents, count, camX, camY, zoom, cosR, sinR, camRot, contentRoot, texFetcher, lightOn ? ambient : 1f);
+            // Space backdrop (PC Default parallax layer1 + starfield) instead of black grid.
+            DrawParallaxBackground(camX, camY, zoom, cosR, sinR, contentRoot, texFetcher);
+            // Draw first (marks _texNeeded for visible only), then decode — avoids pinning 1k offscreen.
+            DrawTiles(tiles, tileCount, camX, camY, zoom, cosR, sinR, contentRoot, texFetcher, lightOn ? ambient : 1f);
 
-        DrawSpeechBubbles(bubbles, bubbleCount, camX, camY, zoom, cosR, sinR);
+            if (count > 0)
+                DrawEntities(ents, count, camX, camY, zoom, cosR, sinR, camRot, contentRoot, texFetcher, lightOn ? ambient : 1f);
 
-        if (fovOn)
-            DrawFovOcclusionApprox(ents, count, camX, camY, zoom, cosR, sinR);
-        else if (lightOn)
-            DrawSoftVignette(0.22f);
+            PumpTextureLoads(contentRoot, texFetcher);
+
+            DrawSpeechBubbles(bubbles, bubbleCount, camX, camY, zoom, cosR, sinR);
+
+            // GlGetError every frame syncs the GPU (same class of stall as GlIsTexture).
+            // Sample rarely; OnSurfaceCreated already drops caches on context loss.
+            if ((_frames & 255) == 0)
+            {
+                var glErr = GLES20.GlGetError();
+                if (glErr != GLES20.GlNoError)
+                {
+                    Port.Content.DiagLog.Warn($"gles GL error 0x{glErr:X} — dropping texture caches");
+                    DropAllTextureCaches(deleteGlObjects: false);
+                }
+            }
+
+            if (fovOn)
+                DrawFovOcclusionApprox(ents, count, camX, camY, zoom, cosR, sinR);
+            else if (lightOn)
+                DrawSoftVignette(0.22f);
+        }
+        catch (Exception ex)
+        {
+            // Never let a managed draw bug kill the GL thread / whole process.
+            Port.Content.DiagLog.Error($"gles OnDrawFrame {ex.GetType().Name}: {ex.Message}");
+            try { DropAllTextureCaches(deleteGlObjects: false); } catch { /* ignore */ }
+        }
     }
 
     void DrawEntities(
@@ -537,7 +612,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var vert = 0;
         var textured = 0;
         var rsiPaths = 0;
-        var viewPad = 200f / zoom;
+        var missTex = 0;
+        var missUv = 0;
+        // Screen AABB + modest margin — load/draw only what the eye can see.
+        var viewPad = MathF.Max(96f, 160f / MathF.Max(0.35f, zoom));
         var animTime = _frames / 60.0;
         _texQuads.Clear();
 
@@ -555,6 +633,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         if (controlledPath is not null)
             QueueTexturePriority(controlledPath, controlledState);
 
+        var nameplates = 0;
+        const int maxNameplates = 12;
         for (var i = 0; i < count; i++)
         {
             ref readonly var e = ref ents[i];
@@ -568,11 +648,23 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             if (MathF.Abs(sx) > halfW + viewPad || MathF.Abs(sy) > halfH + viewPad)
                 continue;
 
-            if (!string.IsNullOrEmpty(e.Label))
+            if (!string.IsNullOrEmpty(e.RsiPath))
+            {
+                _texNeeded.Add(MakeTexKey(e.RsiPath!, e.StateName));
+                _texNeeded.Add(e.RsiPath!);
+            }
+
+            if (!string.IsNullOrEmpty(e.Label)
+                && (e.IsControlled || nameplates < maxNameplates))
             {
                 DrawNameplate(sx, sy + 28f, e.Label!, e.IsControlled);
+                nameplates++;
                 if (string.IsNullOrEmpty(e.RsiPath))
                     continue;
+            }
+            else if (!string.IsNullOrEmpty(e.Label) && string.IsNullOrEmpty(e.RsiPath))
+            {
+                continue;
             }
 
             var texKey = !string.IsNullOrEmpty(e.RsiPath) ? MakeTexKey(e.RsiPath!, e.StateName) : null;
@@ -582,6 +674,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 if (contentRoot is not null)
                 {
                     // Skip queue without explicit state — prevents first-meta PNG binding.
+                    // Never pin IconSmooth sheets — that filled the cache and walls vanished.
                     if (!string.IsNullOrWhiteSpace(e.StateName) || e.IsControlled)
                         QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled), e.StateName ?? "animated");
                     if (e.DirOverride >= 0 && !string.IsNullOrWhiteSpace(e.StateName))
@@ -592,38 +685,36 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             TexEntry tex = default;
             string? cacheKey = null;
             var hasTex = false;
+            // Trust CPU cache ids — GlIsTexture every sprite was a GPU sync stall.
+            // Context loss clears caches in OnSurfaceCreated / DropAllTextureCaches.
             if (texKey is not null
                 && TryGetCachedTex(texKey, e.RsiPath!, out tex, out cacheKey)
                 && tex.Id != 0)
             {
-                if (!GLES20.GlIsTexture(tex.Id))
-                {
-                    // Dead GL id after context loss — remove only its canonical owner.
-                    _texCache.Remove(cacheKey!);
-                    _texLastUsed.Remove(cacheKey!);
-                    _queuedTex.Remove(texKey);
-                    QueueTexture(e.RsiPath!, PreferPinPath(e.RsiPath!, e.IsControlled), e.StateName);
-                }
-                else
-                {
-                    hasTex = true;
-                    _texCache[cacheKey!] = tex with { LastUsedFrame = _frames };
-                    _texLastUsed[cacheKey!] = _frames;
-                }
+                hasTex = true;
+                _texCache[cacheKey!] = tex with { LastUsedFrame = _frames };
+                _texLastUsed[cacheKey!] = _frames;
             }
 
-            // PC: NoRotation keeps the quad upright; RSI dir still follows entity world yaw
-            // (not camera). Using eyeRelRot for noRot wallmount lights smeared 4-dir sheets.
+            // PC: NoRotation keeps the quad upright. Wallmount lights / SnapCardinals force
+            // RSI dir 0 so 4-dir sheets don't spin with camera or entity yaw.
             var dirRot = e.NoRotation ? e.Rotation : e.Rotation - camRot;
             var drawRot = e.RotationOffset;
+            var dirOv = e.DirOverride >= 0
+                ? e.DirOverride
+                : (e.NoRotation ? 0 : -1);
             if (hasTex)
             {
                 if (string.IsNullOrWhiteSpace(e.StateName) && !e.IsControlled)
                     continue;
                 var stateForUv = e.StateName ?? (e.IsControlled ? "animated" : null);
-                var uv = ResolveUv(tex, stateForUv, dirRot, animTime, e.DirOverride);
+                var uv = ResolveUv(tex, stateForUv, dirRot, animTime, dirOv);
                 if (uv.FrameW < 1f || uv.FrameH < 1f)
-                    continue; // missing IconSmooth/state — skip garbage draw
+                {
+                    missUv++;
+                    NoteMiss("uv0", e.RsiPath, e.StateName);
+                    continue;
+                }
                 var sizeX = Math.Max(8f, uv.FrameW) * zoom * (e.ScaleX == 0 ? 1f : MathF.Abs(e.ScaleX));
                 var sizeY = Math.Max(8f, uv.FrameH) * zoom * (e.ScaleY == 0 ? 1f : MathF.Abs(e.ScaleY));
 
@@ -642,7 +733,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
             // Avoid colored debug squares for missing RSI; better to hide until loaded.
             if (!string.IsNullOrEmpty(e.RsiPath))
+            {
+                missTex++;
+                NoteMiss("noTex", e.RsiPath, e.StateName);
                 continue;
+            }
 
             // Keep a faint placeholder only for color-only entities.
             if (vert + 6 > MaxVerts)
@@ -707,7 +802,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             _texturedLast = textured;
             _rsiPathLast = rsiPaths;
             _texCached = _texCache.Count;
-            _texMissLast = _texRetryAtFrame.Count;
+            _texMissLast = missTex;
+            _uvMissLast = missUv;
+            _pendingTexLast = _pendingTexLoad.Count;
+            _loadFailLast = _texRetryAtFrame.Count;
         }
     }
 
@@ -1087,6 +1185,12 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     Port.Content.RsiAtlas.UvRect ResolveUv(TexEntry tex, string? state, float rotation, double time, int dirOverride = -1)
     {
+        // IconSmooth corners: FolderMode PNGs are one state × N dirs. Prefer geometric cells
+        // BEFORE Sample — meta DirCount=1 or LoadFolder AtlasW=full.png (32) collapses every
+        // DirOverride to dir0, which draws four stacked SE corners (white L brackets).
+        if (dirOverride >= 0 && tex.FolderMode && TryDirCellUv(tex, dirOverride, out var folderDirUv))
+            return folderDirUv;
+
         // Prefer RSI meta atlas Sample (exact state + directions + delays) whenever available.
         if (tex.AtlasKey is not null
             && (_atlasMeta.TryGetValue(tex.AtlasKey, out var atlas)
@@ -1096,14 +1200,68 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             // first state PNG (often 32×32), which turns 4-dir 128×32 sheets into a full strip.
             var ow = tex.AtlasPixelW > 0 ? tex.AtlasPixelW : 0;
             var oh = tex.AtlasPixelH > 0 ? tex.AtlasPixelH : 0;
-            return Port.Content.RsiAtlas.Sample(
-                atlas, state, rotation, time,
-                folderPerStateSheet: tex.FolderMode, dirOverride,
-                overrideAtlasW: ow, overrideAtlasH: oh);
+            foreach (var stateAlt in Port.Content.RsiMeta.PreferredStateAlternates(state))
+            {
+                var sampled = Port.Content.RsiAtlas.Sample(
+                    atlas, stateAlt, rotation, time,
+                    folderPerStateSheet: tex.FolderMode, dirOverride,
+                    overrideAtlasW: ow, overrideAtlasH: oh);
+                if (sampled.FrameW >= 1f && sampled.FrameH >= 1f)
+                {
+                    // Packed .rsic with DirCount=1 still collapses IconSmooth dirs — fix via strip.
+                    if (dirOverride >= 0
+                        && atlas.States.TryGetValue(stateAlt, out var st)
+                        && st.DirCount <= 1
+                        && TryDirCellUv(tex, dirOverride, out var stripUv))
+                        return stripUv;
+                    return sampled;
+                }
+            }
         }
 
-        // No meta: first cell only — never the whole packed sheet.
+        // Meta missing: geometric dir strip, else first cell only.
+        if (dirOverride >= 0 && TryDirCellUv(tex, dirOverride, out var dirUv))
+            return dirUv;
+
         return SingleCellUv(tex);
+    }
+
+    /// <summary>
+    /// Geometric UV for a direction cell on a per-state sheet (IconSmooth solidN.png etc.).
+    /// Refuses large packed atlases where dir index ≠ sheet column.
+    /// </summary>
+    static bool TryDirCellUv(TexEntry tex, int dirOverride, out Port.Content.RsiAtlas.UvRect uv)
+    {
+        uv = default;
+        var aw = tex.AtlasPixelW > 0 ? tex.AtlasPixelW : 0;
+        var ah = tex.AtlasPixelH > 0 ? tex.AtlasPixelH : 0;
+        var fw = (int)MathF.Max(1f, tex.FrameW);
+        var fh = (int)MathF.Max(1f, tex.FrameH);
+        if (aw < fw || ah < fh)
+            return false;
+
+        var dimX = Math.Max(1, aw / fw);
+        var dimY = Math.Max(1, ah / fh);
+        var cells = dimX * dimY;
+        if (cells <= 1)
+            return false; // single cell — DirOverride cannot help
+
+        // Per-state IconSmooth sheets are 4×1 or 1×4 (sometimes 4×2 for anim). Packed
+        // .rsic atlases are much larger — never treat those as dir strips.
+        if (!tex.FolderMode && cells > 8)
+            return false;
+        if (!tex.FolderMode && dimX > 1 && dimY > 1 && cells > 4)
+            return false;
+
+        var dir = Math.Clamp(dirOverride, 0, cells - 1);
+        var col = dir % dimX;
+        var row = dir / dimX;
+        var u0 = (col * fw) / (float)aw;
+        var v0 = (row * fh) / (float)ah;
+        var u1 = Math.Min(1f, ((col + 1) * fw) / (float)aw);
+        var v1 = Math.Min(1f, ((row + 1) * fh) / (float)ah);
+        uv = new Port.Content.RsiAtlas.UvRect(u0, v0, u1, v1, fw, fh);
+        return true;
     }
 
     static bool ShouldAnimate(string? state) =>
@@ -1156,6 +1314,10 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             return;
         }
 
+        // Hard cap — poisoned world snapshots with 10k tiles killed the GL thread.
+        if (tileCount > 3_000)
+            tileCount = 3_000;
+
         var halfW = _width * 0.5f;
         var halfH = _height * 0.5f;
         var size = PixelsPerTile * zoom;
@@ -1180,8 +1342,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             var tileRot = t.Rotation + camTileRot
                           + (t.RotationMirroring % 4) * (MathF.PI * 0.5f);
 
-            if (!string.IsNullOrEmpty(t.RsiPath) && contentRoot is not null)
-                QueueTexture(t.RsiPath!, pin: false, state: t.StateName);
+            if (!string.IsNullOrEmpty(t.RsiPath))
+            {
+                _texNeeded.Add(MakeTexKey(t.RsiPath!, t.StateName));
+                _texNeeded.Add(t.RsiPath!);
+                if (contentRoot is not null)
+                    QueueTexture(t.RsiPath!, pin: false, state: t.StateName);
+            }
 
             var hasTex = false;
             TexEntry tex = default;
@@ -1191,23 +1358,13 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 && TryGetCachedTex(texKey, t.RsiPath!, out tex, out cacheKey)
                 && tex.Id != 0)
             {
-                if (!GLES20.GlIsTexture(tex.Id))
+                hasTex = true;
+                _texCache[cacheKey!] = tex with
                 {
-                    _texCache.Remove(cacheKey!);
-                    _texLastUsed.Remove(cacheKey!);
-                    _queuedTex.Remove(texKey);
-                    QueueTexture(t.RsiPath!, pin: false, state: t.StateName);
-                }
-                else
-                {
-                    hasTex = true;
-                    _texCache[cacheKey!] = tex with
-                    {
-                        LastUsedFrame = _frames,
-                        Pinned = tex.Pinned
-                    };
-                    _texLastUsed[cacheKey!] = _frames;
-                }
+                    LastUsedFrame = _frames,
+                    Pinned = tex.Pinned
+                };
+                _texLastUsed[cacheKey!] = _frames;
             }
 
             if (hasTex)
@@ -1304,8 +1461,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         if (contentRoot is null)
             return;
         if (!TryGetCachedTex(ParallaxLayerPath, ParallaxLayerPath, out var tex, out var cacheKey)
-            || tex.Id == 0
-            || !GLES20.GlIsTexture(tex.Id))
+            || tex.Id == 0)
             return;
 
         _texCache[cacheKey!] = tex with { LastUsedFrame = _frames, Pinned = true };
@@ -1673,17 +1829,37 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         }
 
         // Packed .rsic only: bare path shares one atlas. Folder RSI must never cross-hit.
+        // If the atlas lacks this state (and aliases), fall through to folder PNG load.
         if (key != rsiPath
             && _texCache.TryGetValue(rsiPath, out existing)
             && !existing.FolderMode)
         {
-            _texCache[rsiPath] = existing with
+            var atlasOk = true;
+            if (!string.IsNullOrWhiteSpace(state)
+                && (_atlasMeta.TryGetValue(rsiPath, out var cachedAtlas)
+                    || (existing.AtlasKey is not null && _atlasMeta.TryGetValue(existing.AtlasKey, out cachedAtlas))))
             {
-                LastUsedFrame = _frames,
-                Pinned = existing.Pinned || pin,
-            };
-            _texLastUsed[rsiPath] = _frames;
-            return;
+                atlasOk = false;
+                foreach (var alt in Port.Content.RsiMeta.PreferredStateAlternates(state))
+                {
+                    if (cachedAtlas.States.ContainsKey(alt))
+                    {
+                        atlasOk = true;
+                        break;
+                    }
+                }
+            }
+
+            if (atlasOk)
+            {
+                _texCache[rsiPath] = existing with
+                {
+                    LastUsedFrame = _frames,
+                    Pinned = existing.Pinned || pin,
+                };
+                _texLastUsed[rsiPath] = _frames;
+                return;
+            }
         }
 
         if (_queuedTex.Contains(key))
@@ -1716,18 +1892,18 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     void PrefetchIconSmoothSheet(string rsiPath, string stateName, Port.Content.AczOnDemandFetcher? fetcher)
     {
         // state like solid3 / riveted0 → base "solid" / "riveted"
-        var i = stateName.Length - 1;
-        while (i >= 0 && char.IsDigit(stateName[i]))
-            i--;
-        if (i < 0 || i >= stateName.Length - 1)
+        if (!Port.Content.IconSmoothInfer.TrySplitNumbered(stateName, out var stateBase, out _))
             return;
-        var stateBase = stateName[..(i + 1)];
         var prefetchKey = rsiPath + "|" + stateBase;
         if (!_iconSmoothPrefetched.Add(prefetchKey))
             return;
-        fetcher?.EnsureIconSmoothSheet(rsiPath, stateBase, Port.Content.IconSmoothMode.Corners);
-        for (var n = 0; n <= 7; n++)
-            QueueTexture(rsiPath, pin: false, state: stateBase + n);
+
+        // Only kick ACZ for the packed atlas / this state's PNG.
+        // Do NOT FromRsi (disk) or QueueTexture(0..15) on the GL thread — that OOM/ANR'd after warp.
+        if (fetcher is null || !fetcher.IsReady)
+            return;
+        foreach (var cand in Port.Content.AczOnDemandFetcher.CandidateTexturePaths(rsiPath, stateName))
+            fetcher.EnsureFile(cand);
     }
 
     static void PrependPending(Queue<string> q, string key)
@@ -1769,6 +1945,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             if (entry.Pinned) continue;
             if (_texNeeded.Contains(path)) continue;
             if (IsFloorTileKey(path)) continue;
+            if (IsIconSmoothWallKey(path)) continue;
             if (_recentlyVisibleUntil.TryGetValue(path, out var until) && _frames <= until)
                 continue;
             _texEvictScratch.Add(path);
@@ -1797,6 +1974,22 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             || path.Contains("/Tiles/", StringComparison.OrdinalIgnoreCase)
             || path.Contains("Textures/Tiles", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Protect IconSmooth wall/window sheets from cache thrash (blink).</summary>
+    static bool IsIconSmoothWallKey(string path)
+    {
+        var p = path.Replace('\\', '/');
+        if (!(p.Contains("/Walls/", StringComparison.OrdinalIgnoreCase)
+              || p.Contains("/Windows/", StringComparison.OrdinalIgnoreCase)
+              || p.Contains("Grille", StringComparison.OrdinalIgnoreCase)))
+            return false;
+        // Folder RSI keys are "path|solid3" — numbered fill states.
+        var bar = p.LastIndexOf('|');
+        if (bar < 0) return true;
+        var state = p[(bar + 1)..];
+        return Port.Content.RsiMeta.LooksLikeIconSmoothStateName(state)
+               || Port.Content.IconSmoothInfer.TrySplitNumbered(state, out _, out _);
+    }
+
     /// <summary>
     /// Last resort when cache is full of recently-visible entries but a must-load needs a slot.
     /// Still never touches pinned or currently-needed keys.
@@ -1809,6 +2002,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             if (entry.Pinned) continue;
             if (_texNeeded.Contains(path)) continue;
             if (IsFloorTileKey(path)) continue;
+            // Prefer keeping recently-seen wall sheets; allow eviction of stale ones when full.
+            if (_recentlyVisibleUntil.TryGetValue(path, out var until) && _frames <= until)
+                continue;
             _texEvictScratch.Add(path);
         }
 
@@ -1835,10 +2031,60 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             return;
         if (e.Id != 0)
             GLES20.GlDeleteTextures(1, new[] { e.Id }, 0);
+        _texBytes = Math.Max(0, _texBytes - TextureBytes(e));
         _texCache.Remove(path);
         _texLastUsed.Remove(path);
         _queuedTex.Remove(path);
         _recentlyVisibleUntil.Remove(path);
+    }
+
+    static long TextureBytes(TexEntry entry)
+    {
+        var w = entry.AtlasPixelW > 0 ? entry.AtlasPixelW : (int)MathF.Max(1, entry.FrameW);
+        var h = entry.AtlasPixelH > 0 ? entry.AtlasPixelH : (int)MathF.Max(1, entry.FrameH);
+        return (long)w * h * 4;
+    }
+
+    void StoreTexture(string key, TexEntry entry)
+    {
+        if (_texCache.TryGetValue(key, out var previous))
+        {
+            if (previous.Id != 0 && previous.Id != entry.Id)
+                GLES20.GlDeleteTextures(1, new[] { previous.Id }, 0);
+            _texBytes = Math.Max(0, _texBytes - TextureBytes(previous));
+        }
+
+        _texCache[key] = entry;
+        _texBytes += TextureBytes(entry);
+        TrimTextureBudget();
+    }
+
+    void TrimTextureBudget()
+    {
+        if (_texCache.Count <= MaxTexCache && _texBytes <= MaxTexBytes)
+            return;
+
+        _texEvictScratch.Clear();
+        foreach (var (key, entry) in _texCache)
+        {
+            if (entry.Pinned || _texNeeded.Contains(key))
+                continue;
+            _texEvictScratch.Add(key);
+        }
+
+        _texEvictScratch.Sort((a, b) =>
+        {
+            var la = _texCache.TryGetValue(a, out var ea) ? ea.LastUsedFrame : 0;
+            var lb = _texCache.TryGetValue(b, out var eb) ? eb.LastUsedFrame : 0;
+            return la.CompareTo(lb);
+        });
+
+        foreach (var key in _texEvictScratch)
+        {
+            if (_texCache.Count <= MaxTexCache && _texBytes <= MaxTexBytes)
+                break;
+            EvictOne(key);
+        }
     }
 
     void PumpTextureLoads(string? contentRoot, Port.Content.AczOnDemandFetcher? fetcher)
@@ -1846,7 +2092,11 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         if (contentRoot is null)
             return;
 
-        for (var n = 0; n < LoadsPerFrame && _pendingTexLoad.Count > 0; n++)
+        var loadsBudget = _frames < _burstLoadsUntilFrame ? LoadsPerFrameBurst : LoadsPerFrame;
+        if (_pendingTexLoad.Count > 40 || _texRetryAtFrame.Count > 20)
+            loadsBudget = Math.Max(loadsBudget, LoadsPerFrameBurst);
+
+        for (var n = 0; n < loadsBudget && _pendingTexLoad.Count > 0; n++)
         {
             var key = _pendingTexLoad.Dequeue();
             SplitTexKey(key, out var path, out var preferredState);
@@ -1854,13 +2104,14 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
             {
                 var mustLoad = _texNeeded.Contains(key) || _texNeeded.Contains(path)
                                || (_recentlyVisibleUntil.TryGetValue(key, out var until) && _frames <= until);
-                if (_texCache.Count >= MaxTexCache)
+                if (_texCache.Count >= MaxTexCache || _texBytes >= MaxTexBytes)
                 {
                     // Aggressive room-making for visible keys; never refuse a must-load.
-                    TryEvictTextures(mustLoad ? 96 : 32);
-                    if (_texCache.Count >= MaxTexCache && mustLoad)
-                        ForceEvictOldestUnneeded(48);
-                    if (_texCache.Count >= MaxTexCache && !mustLoad)
+                    TryEvictTextures(mustLoad ? 256 : 64);
+                    if ((_texCache.Count >= MaxTexCache || _texBytes >= MaxTexBytes) && mustLoad)
+                        ForceEvictOldestUnneeded(128);
+                    // Soft budget only — always load currently needed textures.
+                    if ((_texCache.Count >= MaxTexCache || _texBytes >= MaxTexBytes) && !mustLoad)
                     {
                         _pendingTexLoad.Enqueue(key);
                         continue;
@@ -1883,25 +2134,25 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                                 ? path
                                 : "Textures/" + path.TrimStart('/'));
                         _queuedTex.Remove(key);
-                        _texRetryAtFrame[key] = _frames + 12;
+                        ScheduleTexRetry(key, soft: true);
                         continue;
                     }
 
                     var entry = LoadPngTextureEntry(pngFull);
                     if (entry.Id != 0)
                     {
-                        _texCache[path] = entry with
+                        StoreTexture(path, entry with
                         {
                             LastUsedFrame = _frames,
                             Pinned = wantPin,
-                        };
+                        });
                         _queuedTex.Remove(key);
-                        _texRetryAtFrame.Remove(key);
+                        ClearTexRetry(key);
                     }
                     else
                     {
                         _queuedTex.Remove(key);
-                        _texRetryAtFrame[key] = _frames + 36;
+                        ScheduleTexRetry(key, soft: false);
                     }
 
                     continue;
@@ -1920,7 +2171,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     _ = Port.Content.RsiMeta.TryGetPreviewFrameOrFetch(
                         contentRoot, path, fetcher, preferredState: preferredState);
                     _queuedTex.Remove(key);
-                    _texRetryAtFrame[key] = _frames + 12;
+                    ScheduleTexRetry(key, soft: true);
+                    NoteMiss("noSrc", path, preferredState);
                     continue;
                 }
 
@@ -1937,7 +2189,8 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     }
 
                     _queuedTex.Remove(key);
-                    _texRetryAtFrame[key] = _frames + 24;
+                    ScheduleTexRetry(key, soft: true);
+                    NoteMiss(src.Value.IsRsic ? "noFrame.rsic" : "noFrame.folder", path, preferredState);
                     continue;
                 }
 
@@ -1947,33 +2200,66 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                 if (rsiEntry.Id != 0)
                 {
                     var pinned = wantPin
-                                 || LooksLikeGhostPath(path)
-                                 || (_recentlyVisibleUntil.TryGetValue(key, out var pinUntil) && _frames <= pinUntil);
-                    _texCache[storeKey] = rsiEntry with
+                                 || LooksLikeGhostPath(path);
+                    StoreTexture(storeKey, rsiEntry with
                     {
                         LastUsedFrame = _frames,
                         Pinned = pinned,
-                    };
+                    });
                     if (atlas is not null)
                     {
                         _atlasMeta[src.Value.Path] = atlas;
                         _atlasMeta[path] = atlas;
                     }
                     _queuedTex.Remove(key);
-                    _texRetryAtFrame.Remove(key);
+                    ClearTexRetry(key);
                 }
                 else
                 {
                     _queuedTex.Remove(key);
-                    _texRetryAtFrame[key] = _frames + 36;
+                    ScheduleTexRetry(key, soft: false);
                 }
             }
             catch
             {
                 _queuedTex.Remove(key);
-                _texRetryAtFrame[key] = _frames + 20;
+                ScheduleTexRetry(key, soft: false);
             }
         }
+    }
+
+    /// <summary>Briefly raise LoadsPerFrame after LeavePvs / warp storms (any thread).</summary>
+    public void ArmTextureLoadBurst(int durationFrames = 60)
+    {
+        var frames = Math.Max(1, durationFrames);
+        // GL thread consumes via Interlocked.Exchange — never touch _frames here.
+        int prev;
+        do
+        {
+            prev = _pendingBurstFrames;
+        } while (Interlocked.CompareExchange(ref _pendingBurstFrames, Math.Max(prev, frames), prev) != prev);
+    }
+
+    void ScheduleTexRetry(string key, bool soft)
+    {
+        _texFailCount.TryGetValue(key, out var fails);
+        fails++;
+        _texFailCount[key] = fails;
+        // Soft misses (ACZ still arriving): short retry. Hard/permanent: back off ~2s after N fails.
+        int delay;
+        if (fails >= 8)
+            delay = 120; // ~2s at 60fps
+        else if (soft)
+            delay = fails <= 2 ? 12 : 36;
+        else
+            delay = fails <= 2 ? 20 : 48;
+        _texRetryAtFrame[key] = _frames + delay;
+    }
+
+    void ClearTexRetry(string key)
+    {
+        _texRetryAtFrame.Remove(key);
+        _texFailCount.Remove(key);
     }
 
     bool TryMakeRoomForTexture()
@@ -2045,7 +2331,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var entry = LoadPngTextureEntry(pngFull);
         if (entry.Id != 0)
         {
-            _texCache[path] = entry;
+            StoreTexture(path, entry);
             _texLastUsed[path] = _frames;
             _texRetryAtFrame.Remove(path);
         }
@@ -2099,7 +2385,7 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         var rsiEntry = LoadTextureEntry(frame.Value, atlas, atlasKey, folderMode);
         if (rsiEntry.Id != 0)
         {
-            _texCache[storeKey] = rsiEntry;
+            StoreTexture(storeKey, rsiEntry);
             if (atlas is not null)
             {
                 _atlasMeta[atlasKey] = atlas;
@@ -2159,28 +2445,39 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
 
     static TexEntry LoadPngTextureEntry(string pngPath)
     {
-        var opts = new BitmapFactory.Options { InScaled = false };
-        using var bmp = BitmapFactory.DecodeFile(pngPath, opts);
-        if (bmp is null)
-            return default;
+        try
+        {
+            if (!LooksLikeCompletePng(pngPath))
+                return default;
+            var opts = new BitmapFactory.Options { InScaled = false };
+            using var bmp = BitmapFactory.DecodeFile(pngPath, opts);
+            if (bmp is null)
+                return default;
 
-        var tex = new int[1];
-        GLES20.GlGenTextures(1, tex, 0);
-        GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
-        GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
-        var w = bmp.Width;
-        var h = bmp.Height;
-        // SS14 tile sheets pack many 32×32 variants — always address one cell, never the whole strip.
-        const float cell = 32f;
-        var fw = w >= 32 ? cell : w;
-        var fh = h >= 32 ? cell : h;
-        var u1 = Math.Min(1f, fw / Math.Max(1, w));
-        var v1 = Math.Min(1f, fh / Math.Max(1, h));
-        return new TexEntry(tex[0], fw, fh, 0, 0, u1, v1, null, false, 0, false, w, h);
+            var tex = new int[1];
+            GLES20.GlGenTextures(1, tex, 0);
+            GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
+            GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
+            var w = bmp.Width;
+            var h = bmp.Height;
+            // SS14 tile sheets pack many 32×32 variants — always address one cell, never the whole strip.
+            const float cell = 32f;
+            var fw = w >= 32 ? cell : w;
+            var fh = h >= 32 ? cell : h;
+            var u1 = Math.Min(1f, fw / Math.Max(1, w));
+            var v1 = Math.Min(1f, fh / Math.Max(1, h));
+            bmp.Recycle();
+            return new TexEntry(tex[0], fw, fh, 0, 0, u1, v1, null, false, 0, false, w, h);
+        }
+        catch (Exception ex)
+        {
+            Port.Content.DiagLog.Warn($"tex png FAIL {System.IO.Path.GetFileName(pngPath)}: {ex.GetType().Name}");
+            return default;
+        }
     }
 
     static TexEntry LoadTextureEntry(
@@ -2189,48 +2486,87 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
         string atlasKey,
         bool folderMode)
     {
-        var opts = new BitmapFactory.Options { InScaled = false };
-        using var bmp = BitmapFactory.DecodeFile(frame.PngPath, opts);
-        if (bmp is null)
+        try
+        {
+            if (!LooksLikeCompletePng(frame.PngPath))
+                return default;
+            var opts = new BitmapFactory.Options { InScaled = false };
+            using var bmp = BitmapFactory.DecodeFile(frame.PngPath, opts);
+            if (bmp is null)
+                return default;
+
+            var tex = new int[1];
+            GLES20.GlGenTextures(1, tex, 0);
+            GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
+            GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
+
+            var fw = atlas?.FrameW ?? Math.Max(1, frame.FrameW);
+            var fh = atlas?.FrameH ?? Math.Max(1, frame.FrameH);
+            var aw = bmp.Width;
+            var ah = bmp.Height;
+            // Always store first-frame UVs as safe default; Sample overrides when atlas meta exists.
+            var u1 = Math.Min(1f, fw / (float)Math.Max(1, aw));
+            var v1 = Math.Min(1f, fh / (float)Math.Max(1, ah));
+            bmp.Recycle();
+            return new TexEntry(tex[0], fw, fh, 0f, 0f, u1, v1, atlasKey, folderMode, 0, false, aw, ah);
+        }
+        catch (Exception ex)
+        {
+            Port.Content.DiagLog.Warn($"tex rsi FAIL {System.IO.Path.GetFileName(frame.PngPath)}: {ex.GetType().Name}");
             return default;
-
-        var tex = new int[1];
-        GLES20.GlGenTextures(1, tex, 0);
-        GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
-        GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
-
-        var fw = atlas?.FrameW ?? Math.Max(1, frame.FrameW);
-        var fh = atlas?.FrameH ?? Math.Max(1, frame.FrameH);
-        var aw = bmp.Width;
-        var ah = bmp.Height;
-        // Always store first-frame UVs as safe default; Sample overrides when atlas meta exists.
-        var u1 = Math.Min(1f, fw / (float)Math.Max(1, aw));
-        var v1 = Math.Min(1f, fh / (float)Math.Max(1, ah));
-        bmp.Recycle();
-        return new TexEntry(tex[0], fw, fh, 0f, 0f, u1, v1, atlasKey, folderMode, 0, false, aw, ah);
+        }
     }
 
     static int LoadTexture(string pngPath)
     {
-        var opts = new BitmapFactory.Options { InScaled = false };
-        using var bmp = BitmapFactory.DecodeFile(pngPath, opts);
-        if (bmp is null)
-            return 0;
+        try
+        {
+            if (!LooksLikeCompletePng(pngPath))
+                return 0;
+            var opts = new BitmapFactory.Options { InScaled = false };
+            using var bmp = BitmapFactory.DecodeFile(pngPath, opts);
+            if (bmp is null)
+                return 0;
 
-        var tex = new int[1];
-        GLES20.GlGenTextures(1, tex, 0);
-        GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
-        GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
-        GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
-        bmp.Recycle();
-        return tex[0];
+            var tex = new int[1];
+            GLES20.GlGenTextures(1, tex, 0);
+            GLES20.GlBindTexture(GLES20.GlTexture2d, tex[0]);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMinFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureMagFilter, GLES20.GlNearest);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapS, GLES20.GlClampToEdge);
+            GLES20.GlTexParameteri(GLES20.GlTexture2d, GLES20.GlTextureWrapT, GLES20.GlClampToEdge);
+            GLUtils.TexImage2D(GLES20.GlTexture2d, 0, bmp, 0);
+            bmp.Recycle();
+            return tex[0];
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>Reject truncated ACZ downloads before Skia touches them.</summary>
+    static bool LooksLikeCompletePng(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length < 33) // sig+IHDR minimum
+                return false;
+            Span<byte> hdr = stackalloc byte[8];
+            using var fs = File.OpenRead(path);
+            if (fs.Read(hdr) != 8)
+                return false;
+            return hdr[0] == 0x89 && hdr[1] == (byte)'P' && hdr[2] == (byte)'N' && hdr[3] == (byte)'G';
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     void EnsureBuffers(int verts)

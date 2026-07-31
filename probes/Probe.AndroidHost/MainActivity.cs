@@ -1,3 +1,4 @@
+using Android.Content;
 using Android.Content.PM;
 using Android.Graphics;
 using Android.Util;
@@ -52,8 +53,14 @@ public class MainActivity : Activity
     TextView? _lobbyContentStatus;
     TextView? _observeHud;
     TextView? _observeFps;
+    TextView? _observeDiag;
+    View? _observeDiagScroll;
     TextView? _joinDebug;
     TextView? _debugToggle;
+    Button? _copyLogBtn;
+    Button? _observeCopyBtn;
+    bool _observeDiagOpen;
+    int _diagUiTick;
     TextView? _downloadLabel;
     TextView? _downloadPct;
     ProgressBar? _downloadProgress;
@@ -123,6 +130,7 @@ public class MainActivity : Activity
     int _chatChannelIdx;
     bool _chatExpanded = true;
     Robust.Shared.Timing.GameTick _lastPushedWorldTick;
+    int _lastPushedWorldEpoch;
     static readonly string[] ChatChannelLabels = ["Рядом", "LOOC", "OOC", "Шёпот", "Emote"];
     static readonly string[] ChatChannelCmds = ["say", "looc", "ooc", "whisper", "me"];
 
@@ -130,6 +138,24 @@ public class MainActivity : Activity
     {
         SodiumAndroidBootstrap.EnsureLoaded();
         ZstdAndroidBootstrap.EnsureLoaded();
+        // Capture managed crashes into diag before the process dies.
+        global::Android.Runtime.AndroidEnvironment.UnhandledExceptionRaiser += (_, args) =>
+        {
+            try
+            {
+                DiagLog.Error($"UNHANDLED {args.Exception?.GetType().Name}: {args.Exception?.Message}");
+            }
+            catch { /* ignore */ }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            try
+            {
+                if (args.ExceptionObject is Exception ex)
+                    DiagLog.Error($"FATAL {ex.GetType().Name}: {ex.Message}");
+            }
+            catch { /* ignore */ }
+        };
         base.OnCreate(savedInstanceState);
         // Landscape locked from loading onward. Portrait only on hub home.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
@@ -183,9 +209,10 @@ public class MainActivity : Activity
                 if (observing)
                 {
                     _uiTick++;
-                    // Camera every tick; entity push every tick while observing (stops pop-in flicker).
-                    PushWorldToGl(forceEntities: true);
-                    if ((_uiTick & 1) == 0)
+                    // Camera every tick; full entity/tile/audio only when ToSequence changes.
+                    PushWorldToGl(forceEntities: false);
+                    // Overlay + FPS ≤4 Hz (every 5 × 50ms).
+                    if (_uiTick % 5 == 0)
                         UpdateObserveOverlay();
                     var now = Environment.TickCount64;
                     if (now - _lastFullUiMs > 1500)
@@ -363,8 +390,12 @@ public class MainActivity : Activity
         _lobbyContentStatus = FindViewById<TextView>(Resource.Id.lobby_content_status);
         _observeHud = FindViewById<TextView>(Resource.Id.observe_hud);
         _observeFps = FindViewById<TextView>(Resource.Id.observe_fps);
+        _observeDiag = FindViewById<TextView>(Resource.Id.observe_diag);
+        _observeDiagScroll = FindViewById(Resource.Id.observe_diag_scroll);
+        _observeCopyBtn = FindViewById<Button>(Resource.Id.btn_observe_copy);
         _joinDebug = FindViewById<TextView>(Resource.Id.join_debug);
         _debugToggle = FindViewById<TextView>(Resource.Id.debug_toggle);
+        _copyLogBtn = FindViewById<Button>(Resource.Id.btn_copy_log);
         _downloadLabel = FindViewById<TextView>(Resource.Id.download_label);
         _downloadPct = FindViewById<TextView>(Resource.Id.download_pct);
         _downloadProgress = FindViewById<ProgressBar>(Resource.Id.download_progress);
@@ -392,7 +423,7 @@ public class MainActivity : Activity
         _refreshHubBtn = FindViewById<Button>(Resource.Id.btn_refresh_hub);
         _observeGl = FindViewById<FrameLayout>(Resource.Id.observe_gl);
 
-        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn, _refreshHubBtn, _loadingCancelBtn })
+        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn, _refreshHubBtn, _loadingCancelBtn, _copyLogBtn, _observeCopyBtn })
             ClearMaterialTint(b);
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_up));
         ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_down));
@@ -413,7 +444,37 @@ public class MainActivity : Activity
                 _debugOpen = !_debugOpen;
                 if (_joinDebug != null)
                     _joinDebug.Visibility = _debugOpen ? ViewStates.Visible : ViewStates.Gone;
+                if (_copyLogBtn != null)
+                    _copyLogBtn.Visibility = _debugOpen ? ViewStates.Visible : ViewStates.Gone;
                 _debugToggle.Text = _debugOpen ? "Скрыть журнал" : GetString(Resource.String.debug_toggle);
+            };
+        }
+
+        if (_copyLogBtn != null)
+            _copyLogBtn.Click += (_, _) => CopyDiagToClipboard();
+        if (_observeCopyBtn != null)
+            _observeCopyBtn.Click += (_, _) => CopyDiagToClipboard();
+        if (_observeHud != null)
+        {
+            _observeHud.Click += (_, _) =>
+            {
+                _observeDiagOpen = !_observeDiagOpen;
+                if (_observeDiagScroll != null)
+                    _observeDiagScroll.Visibility = _observeDiagOpen ? ViewStates.Visible : ViewStates.Gone;
+                RefreshObserveDiag(force: true);
+            };
+            _observeHud.LongClick += (_, e) =>
+            {
+                CopyDiagToClipboard();
+                e.Handled = true;
+            };
+        }
+        if (_joinDebug != null)
+        {
+            _joinDebug.LongClick += (_, e) =>
+            {
+                CopyDiagToClipboard();
+                e.Handled = true;
             };
         }
 
@@ -575,6 +636,12 @@ public class MainActivity : Activity
             RefreshGhostActionButtons();
             PushWorldToGl();
         });
+
+        _connect.Session.OnTextureLoadBurst = () =>
+        {
+            try { _glView?.Renderer.ArmTextureLoadBurst(); }
+            catch { /* ignore */ }
+        };
 
         WireObserveChat();
     }
@@ -876,6 +943,10 @@ public class MainActivity : Activity
         var all = _hub.All;
         var servers = FilterServers(all);
 
+        // Select before building rows so first paint shows the selected style.
+        if (_selected is null && all.Count > 0)
+            SelectServer(all.FirstOrDefault(s => s.Favorite) ?? all[0]);
+
         if (servers.Count == 0)
         {
             var empty = new TextView(this)
@@ -901,16 +972,24 @@ public class MainActivity : Activity
                 Orientation = Orientation.Vertical,
                 Clickable = true,
                 Focusable = true,
+                ContentDescription = $"Сервер {server.Name}. {server.SummaryLine}",
             };
-            row.SetBackgroundResource(Resource.Drawable.hub_server_row);
-            row.SetPadding(pad, pad, pad, pad);
+            row.SetMinimumHeight((int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 72, Resources!.DisplayMetrics));
+            row.SetBackgroundResource(selected
+                ? Resource.Drawable.hub_server_row_selected
+                : Resource.Drawable.hub_server_row);
+            // Extra start pad when selected so text clears the beige accent bar.
+            var startPad = selected ? pad + (int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 6, Resources.DisplayMetrics) : pad;
+            row.SetPadding(startPad, pad, pad, pad);
+            row.Elevation = TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, selected ? 6 : 1, Resources.DisplayMetrics);
             var lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MatchParent,
                 ViewGroup.LayoutParams.WrapContent);
             lp.BottomMargin = pad / 2;
             row.LayoutParameters = lp;
-            if (selected)
-                row.SetBackgroundColor(Color.ParseColor("#525A66"));
 
             var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
             head.SetGravity(GravityFlags.CenterVertical);
@@ -921,9 +1000,17 @@ public class MainActivity : Activity
                 TextSize = 20,
                 Clickable = true,
                 Focusable = true,
+                Gravity = GravityFlags.Center,
+                ContentDescription = server.Favorite
+                    ? $"Убрать {server.Name} из избранного"
+                    : $"Добавить {server.Name} в избранное",
             };
+            favBtn.SetMinimumWidth((int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
+            favBtn.SetMinimumHeight((int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
             favBtn.SetTextColor(Color.ParseColor(server.Favorite ? "#E8C96A" : "#A8A295"));
-            favBtn.SetPadding(0, 0, pad, 0);
+            favBtn.SetPadding(0, 0, pad / 2, 0);
 
             var textCol = new LinearLayout(this)
             {
@@ -934,16 +1021,17 @@ public class MainActivity : Activity
             var title = new TextView(this)
             {
                 Text = server.Name,
-                TextSize = 14,
+                TextSize = selected ? 15 : 14,
             };
-            title.SetTextColor(Color.ParseColor("#F3F0E8"));
+            title.SetTypeface(null, selected ? TypefaceStyle.Bold : TypefaceStyle.Normal);
+            title.SetTextColor(Color.ParseColor(selected ? "#FFF8E7" : "#F3F0E8"));
 
             var meta = new TextView(this)
             {
                 Text = server.SummaryLine,
                 TextSize = 11,
             };
-            meta.SetTextColor(Color.ParseColor("#D4C5A9"));
+            meta.SetTextColor(Color.ParseColor(selected ? "#E8D9B8" : "#D4C5A9"));
 
             var addr = new TextView(this)
             {
@@ -957,18 +1045,53 @@ public class MainActivity : Activity
             textCol.AddView(meta);
             textCol.AddView(addr);
 
+            if (selected)
+            {
+                var selectedBadge = new TextView(this)
+                {
+                    Text = "ВЫБРАН",
+                    TextSize = 9,
+                    Gravity = GravityFlags.Center,
+                };
+                selectedBadge.SetTextColor(Color.ParseColor("#1E232A"));
+                selectedBadge.SetBackgroundResource(Resource.Drawable.ms_badge);
+                selectedBadge.SetPadding(pad / 2, pad / 4, pad / 2, pad / 4);
+                var badgeLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WrapContent,
+                    ViewGroup.LayoutParams.WrapContent)
+                {
+                    LeftMargin = pad / 2,
+                    RightMargin = pad / 2,
+                };
+                selectedBadge.LayoutParameters = badgeLp;
+                head.AddView(favBtn);
+                head.AddView(textCol);
+                head.AddView(selectedBadge);
+            }
+            else
+            {
+                head.AddView(favBtn);
+                head.AddView(textCol);
+            }
+
             var expandBtn = new TextView(this)
             {
                 Text = expanded ? "▲" : "▼",
                 TextSize = 14,
                 Clickable = true,
                 Focusable = true,
+                Gravity = GravityFlags.Center,
+                ContentDescription = expanded
+                    ? $"Свернуть описание {server.Name}"
+                    : $"Развернуть описание {server.Name}",
             };
+            expandBtn.SetMinimumWidth((int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
+            expandBtn.SetMinimumHeight((int)TypedValue.ApplyDimension(
+                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
             expandBtn.SetTextColor(Color.ParseColor("#D4C5A9"));
-            expandBtn.SetPadding(pad, 0, 0, 0);
+            expandBtn.SetPadding(pad / 2, 0, 0, 0);
 
-            head.AddView(favBtn);
-            head.AddView(textCol);
             head.AddView(expandBtn);
             row.AddView(head);
 
@@ -1013,9 +1136,6 @@ public class MainActivity : Activity
 
             _serverList.AddView(row);
         }
-
-        if (_selected is null && all.Count > 0)
-            SelectServer(all.FirstOrDefault(s => s.Favorite) ?? all[0]);
     }
 
     async Task LoadDescriptionAsync(HubServerEntry server)
@@ -1140,12 +1260,13 @@ public class MainActivity : Activity
         catch { /* ignore */ }
     }
 
-    GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[4800];
+    GlesClearRenderer.EntitySprite[] _spriteScratch = new GlesClearRenderer.EntitySprite[8192];
     GlesClearRenderer.TileSprite[] _tileScratch = new GlesClearRenderer.TileSprite[12000];
     readonly GlesClearRenderer.SpeechBubbleSprite[] _bubbleScratch = new GlesClearRenderer.SpeechBubbleSprite[64];
 
     void UpdateObserveOverlay()
     {
+        // Keep HUD light — Format() allocates + locks the GL gate every tick.
         if (_observeHud != null)
         {
             var s = _connect.Session;
@@ -1155,7 +1276,58 @@ public class MainActivity : Activity
         if (_observeFps != null && _glView != null)
             _observeFps.Text = $"{_glView.Renderer.Fps:0} FPS";
 
+        // Diag strings only when the panel is open.
+        if (_observeDiagOpen)
+            RefreshObserveDiag(force: false);
         RefreshObserveChatHistory();
+    }
+
+    void RefreshObserveDiag(bool force)
+    {
+        if (!_observeDiagOpen || _observeDiag is null)
+            return;
+        _diagUiTick++;
+        if (!force && _diagUiTick % 4 != 0)
+            return;
+        var gles = _glView?.Renderer.FormatDiag() ?? "(no gles)";
+        var world = _connect.Session.LastWorld;
+        _observeDiag.Text =
+            $"{gles}\n\n" +
+            $"world ents={world?.Entities.Count ?? 0} tiles={world?.Tiles?.Count ?? 0}\n" +
+            $"hint={_connect.Session.LastEyeHint}\n" +
+            $"detail={world?.Detail}\n\n" +
+            DiagLog.Format(40);
+    }
+
+    long _lastClipboardCopyMs;
+
+    void CopyDiagToClipboard()
+    {
+        try
+        {
+            var now = Environment.TickCount64;
+            if (now - _lastClipboardCopyMs < 1500)
+                return; // debounce multi-tap / long-press storms
+            _lastClipboardCopyMs = now;
+
+            var gles = _glView?.Renderer.FormatDiag();
+            var report = _connect.BuildClipboardReport(gles);
+            var cm = (ClipboardManager?)GetSystemService(ClipboardService);
+            if (cm is null)
+            {
+                Toast.MakeText(this, Resource.String.toast_copy_fail, ToastLength.Short)?.Show();
+                return;
+            }
+
+            cm.PrimaryClip = ClipData.NewPlainText("ss14-diag", report);
+            Toast.MakeText(this, Resource.String.toast_copied, ToastLength.Short)?.Show();
+            DiagLog.Info($"clipboard copied ({report.Length} chars)");
+        }
+        catch (Exception ex)
+        {
+            DiagLog.Error($"clipboard FAIL: {ex.Message}");
+            Toast.MakeText(this, $"{GetString(Resource.String.toast_copy_fail)}: {ex.Message}", ToastLength.Long)?.Show();
+        }
     }
 
     void RefreshObserveChatHistory()
@@ -1218,7 +1390,8 @@ public class MainActivity : Activity
             return;
         }
 
-        var worldChanged = world.ToSequence != _lastPushedWorldTick;
+        var worldChanged = world.ToSequence != _lastPushedWorldTick
+                           || s.WorldPushEpoch != _lastPushedWorldEpoch;
         if (!forceEntities && !worldChanged)
         {
             // Camera-only update — skip entity/tile copy & audio.
@@ -1226,13 +1399,14 @@ public class MainActivity : Activity
         }
 
         _lastPushedWorldTick = world.ToSequence;
+        _lastPushedWorldEpoch = s.WorldPushEpoch;
 
         // WorldStateCache already sorts by DrawDepth — avoid re-OrderBy on UI thread.
         var showGhosts = s.ShowOtherGhosts;
         if (_spriteScratch.Length < world.Entities.Count)
-            Array.Resize(ref _spriteScratch, Math.Min(32_000, Math.Max(world.Entities.Count, _spriteScratch.Length * 2)));
+            Array.Resize(ref _spriteScratch, Math.Max(world.Entities.Count, _spriteScratch.Length * 2));
         var n = 0;
-        var limit = Math.Min(world.Entities.Count, _spriteScratch.Length);
+        var limit = world.Entities.Count;
         for (var i = 0; i < world.Entities.Count && n < limit; i++)
         {
             var e = world.Entities[i];

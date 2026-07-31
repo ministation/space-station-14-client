@@ -71,6 +71,7 @@ public sealed class ConnectSession
         Busy = true;
         _joinSettled = false;
         _log.Clear();
+        Port.Content.DiagLog.Clear();
         try
         {
             Session.Disconnect("reconnect");
@@ -277,9 +278,49 @@ public sealed class ConnectSession
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff} {msg}";
         _log.Add(line);
-        if (_log.Count > 200)
-            _log.RemoveRange(0, _log.Count - 150);
-        DebugLog = string.Join('\n', _log.TakeLast(40));
+        if (_log.Count > 300)
+            _log.RemoveRange(0, _log.Count - 220);
+        DebugLog = string.Join('\n', _log.TakeLast(80));
+        Port.Content.DiagLog.Info(msg);
+    }
+
+    /// <summary>Full report for clipboard — connect log + session + sprite diag lines.</summary>
+    public string BuildClipboardReport(string? glesDiag = null)
+    {
+        var sb = new System.Text.StringBuilder(4096);
+        sb.AppendLine("=== SS14 Android Hub diag ===");
+        sb.AppendLine($"utc={DateTime.UtcNow:O}");
+        sb.AppendLine($"summary={Summary}");
+        sb.AppendLine($"endpoint={Endpoint}");
+        sb.AppendLine($"busy={Busy} lobby={InLobby} observe={Observing}");
+        if (LastInfo is { } info)
+            sb.AppendLine($"engine={info.EngineVersion} acz={info.Acz} auth={info.AuthMode}");
+        if (LastStatus is { } st)
+            sb.AppendLine($"status={st.Name} {st.Players}/{st.MaxPlayers} map={st.Map}");
+        sb.AppendLine();
+        sb.AppendLine("--- session ---");
+        sb.AppendLine(Session.Format());
+        if (!string.IsNullOrWhiteSpace(Session.LastEyeHint))
+            sb.AppendLine($"eyeHint={Session.LastEyeHint}");
+        if (Session.LastWorld is { } w)
+            sb.AppendLine($"world ents={w.Entities.Count} tiles={w.Tiles?.Count ?? 0} detail={w.Detail}");
+        sb.AppendLine();
+        if (!string.IsNullOrWhiteSpace(glesDiag))
+        {
+            sb.AppendLine("--- gles ---");
+            sb.AppendLine(glesDiag);
+            sb.AppendLine();
+        }
+
+        sb.AppendLine("--- connect log ---");
+        sb.AppendLine(Port.Content.DiagLog.CollapseRepeated(_log.TakeLast(120)));
+        sb.AppendLine();
+        sb.AppendLine("--- session log ---");
+        sb.AppendLine(Port.Content.DiagLog.CollapseRepeated(Session.RecentLog(60)));
+        sb.AppendLine();
+        sb.AppendLine("--- diag ring ---");
+        sb.AppendLine(Port.Content.DiagLog.Format(160));
+        return sb.ToString();
     }
 
     void NotifyDebug() => DebugChanged?.Invoke();

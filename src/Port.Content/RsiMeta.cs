@@ -83,8 +83,20 @@ public static class RsiMeta
         };
         foreach (var c in rsicCandidates)
         {
-            if (File.Exists(c))
-                return new RsiSource(c, IsRsic: true);
+            if (!File.Exists(c))
+                continue;
+            // If packed atlas parses but lacks the requested state, fall through to folder
+            // PNGs (IconSmooth solidN / furniture states). Do not trap on a useless .rsic.
+            if (!string.IsNullOrWhiteSpace(preferredState))
+            {
+                var atlas = RsiAtlas.TryLoad(c);
+                if (atlas is not null && !AtlasHasAnyState(atlas, preferredState))
+                    continue;
+                // Do NOT reject 1-dir numbered states (grille_damaged_0, gsensor0, …).
+                // IconSmooth 4-dir DirOverride is handled in RsiAtlas.Sample / GLES ResolveUv.
+            }
+
+            return new RsiSource(c, IsRsic: true);
         }
 
         var dirRel = noExt + ".rsi";
@@ -103,8 +115,7 @@ public static class RsiMeta
             // IconSmooth needs solid0..7 — accepting incomplete folders traps us forever.
             if (!string.IsNullOrWhiteSpace(preferredState))
             {
-                var exact = Path.Combine(c, preferredState + ".png");
-                if (!File.Exists(exact))
+                if (ResolveExistingStatePng(c, preferredState) is null)
                     continue;
                 return new RsiSource(c, IsRsic: false);
             }
@@ -153,6 +164,16 @@ public static class RsiMeta
         if (File.Exists(rsiPathOrDirectory)
             && rsiPathOrDirectory.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
         {
+            // If meta parsed and lacks the state → refuse (caller / FindRsiSource can use folder).
+            // If meta is not yet readable (null) → still bind the PNG so sprites appear;
+            // ResolveUv falls back to SingleCellUv until atlas meta succeeds.
+            if (!string.IsNullOrWhiteSpace(preferredState))
+            {
+                var atlas = RsiAtlas.TryLoad(rsiPathOrDirectory);
+                if (atlas is not null && !AtlasHasAnyState(atlas, preferredState))
+                    return null;
+            }
+
             var size = PngTextChunk.TryReadRsicFrameSize(rsiPathOrDirectory) ?? (32, 32);
             return new FrameInfo(rsiPathOrDirectory, size.W, size.H, 0);
         }
@@ -169,16 +190,17 @@ public static class RsiMeta
         // Preferred state is required for folder RSI — never pick the first PNG (chairs→sofa).
         if (string.IsNullOrWhiteSpace(preferredState))
             return null;
-        var preferred = doc.States.FirstOrDefault(s =>
-            string.Equals(s.Name, preferredState, StringComparison.OrdinalIgnoreCase));
-        if (preferred is null)
+        var resolvedPng = ResolveExistingStatePng(rsiPathOrDirectory, preferredState);
+        if (resolvedPng is null)
             return null;
-        var preferredPng = Path.Combine(rsiPathOrDirectory, preferred.Name + ".png");
-        if (!File.Exists(preferredPng))
+        var stateName = Path.GetFileNameWithoutExtension(resolvedPng);
+        var preferred = doc.States.FirstOrDefault(s =>
+            string.Equals(s.Name, stateName, StringComparison.OrdinalIgnoreCase));
+        if (preferred is null)
             return null;
         var state = preferred;
 
-        var png = Path.Combine(rsiPathOrDirectory, state.Name + ".png");
+        var png = resolvedPng;
         if (!File.Exists(png))
             return null;
 
@@ -216,26 +238,80 @@ public static class RsiMeta
         return null;
     }
 
-    /// <summary>IconSmooth connection keys like wall12 / window3 — must not load under the wrong PNG.</summary>
+    /// <summary>IconSmooth connection keys like solid3 / riveted12 / wall7 — any numbered base.</summary>
     public static bool LooksLikeIconSmoothStateName(string? stateName)
     {
-        if (string.IsNullOrWhiteSpace(stateName) || stateName.Length < 2)
+        if (!IconSmoothInfer.TrySplitNumbered(stateName ?? "", out var bas, out var n))
             return false;
-        var i = stateName.Length - 1;
-        while (i >= 0 && char.IsDigit(stateName[i]))
-            i--;
-        if (i < 0 || i == stateName.Length - 1)
+        if (n is < 0 or > 15)
             return false;
-        var digits = stateName.Length - 1 - i;
-        if (digits is < 1 or > 2)
+        if (bas.Equals("full", StringComparison.OrdinalIgnoreCase)
+            || bas.Equals("icon", StringComparison.OrdinalIgnoreCase))
             return false;
-        var bas = stateName[..(i + 1)];
-        return bas.Equals("wall", StringComparison.OrdinalIgnoreCase)
-               || bas.Equals("window", StringComparison.OrdinalIgnoreCase)
-               || bas.Equals("reinforced", StringComparison.OrdinalIgnoreCase)
-               || bas.Equals("reinforced_window", StringComparison.OrdinalIgnoreCase)
-               || bas.Equals("grille", StringComparison.OrdinalIgnoreCase)
-               || bas.Equals("diagonal", StringComparison.OrdinalIgnoreCase)
-               || bas.StartsWith("diagonal_", StringComparison.OrdinalIgnoreCase);
+        return true;
+    }
+
+    /// <summary>
+    /// Goob/CD windows: YAML IconSmooth base is often <c>window</c> while PNGs are <c>rwindowN</c>.
+    /// Lights: PC Appearance maps On→<c>base</c>; Goob RSI states use <c>normal</c>.
+    /// Damage layers: server may emit <c>grille_damaged_4</c> while RSI only ships 0..3.
+    /// </summary>
+    public static IEnumerable<string> PreferredStateAlternates(string? preferredState)
+    {
+        if (string.IsNullOrWhiteSpace(preferredState))
+            yield break;
+        yield return preferredState;
+        if (preferredState.StartsWith("window", StringComparison.OrdinalIgnoreCase)
+            && !preferredState.StartsWith("rwindow", StringComparison.OrdinalIgnoreCase))
+            yield return "r" + preferredState;
+        else if (preferredState.StartsWith("rwindow", StringComparison.OrdinalIgnoreCase)
+                 && preferredState.Length > 1)
+            yield return preferredState[1..];
+        else if (preferredState.Equals("base", StringComparison.OrdinalIgnoreCase))
+            yield return "normal";
+        else if (preferredState.Equals("normal", StringComparison.OrdinalIgnoreCase))
+            yield return "base";
+        else if (preferredState.Equals("off", StringComparison.OrdinalIgnoreCase))
+        {
+            yield return "base";
+            yield return "normal";
+        }
+
+        // Clamp damage tiers (grille_damaged_4 → _3.._0) without touching IconSmooth solidN keys.
+        if (IconSmoothInfer.TrySplitNumbered(preferredState, out var stateBase, out var tier)
+            && tier > 0
+            && stateBase.Contains("damaged", StringComparison.OrdinalIgnoreCase))
+        {
+            for (var i = tier - 1; i >= 0; i--)
+                yield return stateBase + i;
+            if (stateBase.StartsWith("grille_damaged", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "grille_broken";
+                yield return "grille";
+            }
+        }
+    }
+
+    static bool AtlasHasAnyState(RsiAtlas.Loaded atlas, string preferredState)
+    {
+        foreach (var alt in PreferredStateAlternates(preferredState))
+        {
+            if (atlas.States.ContainsKey(alt))
+                return true;
+        }
+
+        return false;
+    }
+
+    static string? ResolveExistingStatePng(string rsiDirectory, string preferredState)
+    {
+        foreach (var alt in PreferredStateAlternates(preferredState))
+        {
+            var png = Path.Combine(rsiDirectory, alt + ".png");
+            if (File.Exists(png))
+                return png;
+        }
+
+        return null;
     }
 }

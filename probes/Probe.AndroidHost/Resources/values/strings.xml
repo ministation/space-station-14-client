@@ -22,6 +22,10 @@
     <string name="lobby_title">Лобби</string>
     <string name="players_title">Игроки</string>
     <string name="debug_toggle">Журнал</string>
+    <string name="btn_copy_log">Копировать лог / ошибку</string>
+    <string name="btn_copy_short">📋 Лог</string>
+    <string name="toast_copied">Скопировано в буфер</string>
+    <string name="toast_copy_fail">Не удалось скопировать</string>
     <string name="touch_hint">Перетащите для камеры · тач-зоны по краям</string>
     <string name="beta_banner">PUBLIC BETA · open hub</string>
 </resources>

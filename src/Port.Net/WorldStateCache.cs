@@ -17,7 +17,8 @@ namespace Port.Net;
 /// </summary>
 public sealed class WorldStateCache
 {
-    const int MaxDrawTiles = 12000;
+    /// <summary>Mobile hard cap — 10k+ tiles (all maps, eyeMap invalid) OOMs / crashes GLES.</summary>
+    const int MaxDrawTiles = 2_400;
     const int ChunkDefault = 16;
     /// <summary>PC DrawDepth.BelowFloor (Default=0).</summary>
     const int BelowFloorDepth = -13;
@@ -41,14 +42,30 @@ public sealed class WorldStateCache
     readonly HashSet<(int Parent, int X, int Y, string Key)> _smoothTilesScratch = new();
     readonly Dictionary<NetEntity, (IconSmoothData Data, string Path, int Depth, int Parent, int Tx, int Ty)> _smoothByEntScratch = new();
     readonly List<WorldEntityDraw> _drawListScratch = new(4096);
+    WorldEntityDraw[] _lastDrawSnapshot = Array.Empty<WorldEntityDraw>();
+    Vector2 _lastTileFocus;
+    NetEntity _lastGoodEyeMap;
+    Vector2 _lastGoodWorldEye;
+    readonly HashSet<NetEntity> _movedScratch = new();
     readonly HashSet<NetEntity> _ghostEntities = new();
     readonly Dictionary<NetEntity, AudioVisual> _audio = new();
     /// <summary>DoorComponent.State — Open/Closed/Opening/Closing (PC DoorSystem visualizer).</summary>
     readonly Dictionary<NetEntity, string> _doorStates = new();
+    /// <summary>AppearanceComponent visual key → value (PC GenericVisualizer input).</summary>
+    readonly Dictionary<NetEntity, Dictionary<string, string>> _appearance = new();
+    /// <summary>Entities that already received a one-shot YAML visual compose (not every tick).</summary>
+    readonly HashSet<NetEntity> _composedFromProto = new();
+    readonly Dictionary<NetEntity, string> _composedProtoId = new();
+    /// <summary>Cached IconSmooth YAML→meta StateBase remaps (proto|path → data). Log once.</summary>
+    readonly Dictionary<string, IconSmoothData> _iconSmoothRemapCache = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> _iconSmoothRemapLogged = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Last non-empty floor draw — keep across LeavePvs/warp until new chunks arrive.</summary>
     IReadOnlyList<WorldTileDraw> _lastTiles = Array.Empty<WorldTileDraw>();
+    string? _contentRoot;
     Vector2 _lastEyeOffset;
     bool _lastDrawFov = true;
+    long _lastDeserLogMs;
+    string? _lastDeserKind;
 
     sealed class AudioVisual
     {
@@ -119,9 +136,48 @@ public sealed class WorldStateCache
                 _ghostEntities.Remove(del);
                 _audio.Remove(del);
                 _doorStates.Remove(del);
+                _appearance.Remove(del);
+                _composedFromProto.Remove(del);
+                _composedProtoId.Remove(del);
+                _mapUidCache.Remove(del);
+            }
+
+            // Once per batch — clearing inside the loop was O(n²) after big LeavePvs.
+            if (entities.Count > 0)
+            {
                 _mapUidCache.Clear();
+                // Force full draw rebuild after PVS leave — fast-path snapshot would keep ghosts.
+                if (entities.Count >= 8 || _lastDrawSnapshot.Length == 0)
+                    _lastDrawSnapshot = Array.Empty<WorldEntityDraw>();
+                else
+                    _lastDrawSnapshot = FilterDrawSnapshot(_lastDrawSnapshot, entities);
             }
         }
+    }
+
+    static WorldEntityDraw[] FilterDrawSnapshot(WorldEntityDraw[] prev, IReadOnlyList<NetEntity> leaving)
+    {
+        var set = new HashSet<NetEntity>(leaving);
+        var n = 0;
+        for (var i = 0; i < prev.Length; i++)
+        {
+            if (!set.Contains(prev[i].Entity))
+                n++;
+        }
+
+        if (n == prev.Length)
+            return prev;
+        if (n == 0)
+            return Array.Empty<WorldEntityDraw>();
+        var arr = new WorldEntityDraw[n];
+        var w = 0;
+        for (var i = 0; i < prev.Length; i++)
+        {
+            if (!set.Contains(prev[i].Entity))
+                arr[w++] = prev[i];
+        }
+
+        return arr;
     }
 
     /// <summary>Rebuild floor tiles near the controlled eye after LeavePvs (drop stale areas).</summary>
@@ -129,7 +185,8 @@ public sealed class WorldStateCache
     {
         lock (this)
         {
-            _worldPosCache.Clear();
+            // Do NOT wipe _worldPosCache here — LeavePvs storms were O(store) re-resolve hitches.
+            // Deleted ents already drop their cache entries in RemoveEntities.
             if (!_lastControlled.IsValid() || !_xforms.ContainsKey(_lastControlled))
                 return _lastTiles; // keep prior floors until eye/grid data returns
             var focus = ResolveWorldPos(_lastControlled);
@@ -149,6 +206,16 @@ public sealed class WorldStateCache
     public void SetTileIndex(TilePrototypeIndex? index)
     {
         lock (this) _tiles = index;
+    }
+
+    public void SetContentRoot(string? contentFilesRoot)
+    {
+        lock (this)
+        {
+            _contentRoot = contentFilesRoot;
+            _iconSmoothRemapCache.Clear();
+            _iconSmoothRemapLogged.Clear();
+        }
     }
 
     public void Clear()
@@ -171,10 +238,19 @@ public sealed class WorldStateCache
             _ghostEntities.Clear();
             _audio.Clear();
             _doorStates.Clear();
+            _appearance.Clear();
+            _composedFromProto.Clear();
+            _composedProtoId.Clear();
+            _iconSmoothRemapCache.Clear();
+            _iconSmoothRemapLogged.Clear();
             _lastEyeOffset = default;
             _lastDrawFov = true;
             _lastControlled = default;
             _lastTiles = Array.Empty<WorldTileDraw>();
+            _lastDrawSnapshot = Array.Empty<WorldEntityDraw>();
+            _lastTileFocus = default;
+            _lastGoodEyeMap = default;
+            _lastGoodWorldEye = default;
             PrototypeHits = 0;
         }
     }
@@ -200,8 +276,40 @@ public sealed class WorldStateCache
         error = "";
         try
         {
-            using var stream = new MemoryStream(payload, writable: false);
-            serializer.DeserializeDirect(stream, out GameState state);
+            GameState state;
+            try
+            {
+                using var stream = new MemoryStream(payload, writable: false);
+                serializer.DeserializeDirect(stream, out state);
+            }
+            catch (Exception deserEx)
+            {
+                var msg = string.IsNullOrWhiteSpace(deserEx.Message) ? "fail" : deserEx.Message;
+                if (deserEx.InnerException is { } inner && !string.IsNullOrWhiteSpace(inner.Message))
+                    msg += $" → {inner.GetType().Name}: {inner.Message}";
+                var frame = deserEx.StackTrace?
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .FirstOrDefault(l => l.Contains("Robust", StringComparison.OrdinalIgnoreCase)
+                                         || l.Contains("NetSerializer", StringComparison.OrdinalIgnoreCase)
+                                         || l.Contains("Content.", StringComparison.OrdinalIgnoreCase));
+                var detail =
+                    $"DESER {deserEx.GetType().Name}: {msg}" +
+                    $" (payload={payload.Length:N0}B storeXf={_xforms.Count})" +
+                    (frame is null ? "" : $" @ {frame.Trim()}");
+                // Rate-limit — unique payload sizes were flooding the ring and clipboard after warp.
+                var now = Environment.TickCount64;
+                var kind = deserEx.GetType().Name;
+                // Same DESER kind after warp can fire dozens of times — keep ring usable.
+                if (now - _lastDeserLogMs >= 5000 || !string.Equals(kind, _lastDeserKind, StringComparison.Ordinal))
+                {
+                    _lastDeserLogMs = now;
+                    _lastDeserKind = kind;
+                    Port.Content.DiagLog.Error($"Apply FAIL {detail}");
+                }
+                error = detail;
+                return false;
+            }
+
             toSequence = state.ToSequence;
 
             SessionState? me = null;
@@ -241,6 +349,10 @@ public sealed class WorldStateCache
                     _containerOccludes.Clear();
                     _ghostEntities.Clear();
                     _audio.Clear();
+                    _lastDrawSnapshot = Array.Empty<WorldEntityDraw>();
+                    _lastTileFocus = default;
+                    _lastGoodEyeMap = default;
+                    _lastGoodWorldEye = default;
                     _lastEyeOffset = default;
                     _lastDrawFov = true;
                     _lastControlled = default;
@@ -270,6 +382,7 @@ public sealed class WorldStateCache
 
                 var packetMaps = 0;
                 var invalidatePos = false;
+                _movedScratch.Clear();
                 NetEntity ctrlScan = default;
                 if (me?.ControlledEntity is { } cScan && cScan.IsValid())
                     ctrlScan = cScan;
@@ -278,93 +391,122 @@ public sealed class WorldStateCache
 
                 foreach (var es in entities)
                 {
-                    foreach (var change in es.ComponentChanges.Span)
+                    try
                     {
-                        if (change.State is null)
-                            continue;
-
-                        if (TryReadTransform(change.State, out var xf))
+                        foreach (var change in es.ComponentChanges.Span)
                         {
-                            // Legacy Leave-PVS signal: NaN local position.
-                            if (float.IsNaN(xf.LocalPosition.X) || float.IsNaN(xf.LocalPosition.Y))
-                            {
-                                _xforms.Remove(es.NetEntity);
-                                _sprites.Remove(es.NetEntity);
-                                _movers.Remove(es.NetEntity);
-                                _prototypes.Remove(es.NetEntity);
-                                _names.Remove(es.NetEntity);
-                                _grids.Remove(es.NetEntity);
-                                _gridChunkSize.Remove(es.NetEntity);
-                                _closedContainers.Remove(es.NetEntity);
-                                _openContainers.Remove(es.NetEntity);
-                                _containerOccludes.Remove(es.NetEntity);
-                                _ghostEntities.Remove(es.NetEntity);
-                                _audio.Remove(es.NetEntity);
-                                invalidatePos = true;
+                            if (change.State is null)
                                 continue;
-                            }
 
-                            _xforms[es.NetEntity] = xf;
-                            // Parent/grid motion invalidates descendant world caches — clear once per packet.
-                            invalidatePos = true;
-                            packetXforms++;
-                            continue;
-                        }
-
-                        if (change.State is MetaDataComponentState meta)
-                        {
-                            packetMeta++;
-                            if (!string.IsNullOrWhiteSpace(meta.Name))
-                                _names[es.NetEntity] = meta.Name!;
-                            if (!string.IsNullOrWhiteSpace(meta.PrototypeId))
+                            try
                             {
-                                _prototypes[es.NetEntity] = meta.PrototypeId!;
-                                TryAttachPrototypeSprite(es.NetEntity, meta.PrototypeId!);
+                                if (TryReadTransform(change.State, out var xf))
+                                {
+                                    // Legacy Leave-PVS signal: NaN local position.
+                                    if (float.IsNaN(xf.LocalPosition.X) || float.IsNaN(xf.LocalPosition.Y))
+                                    {
+                                        _xforms.Remove(es.NetEntity);
+                                        _sprites.Remove(es.NetEntity);
+                                        _movers.Remove(es.NetEntity);
+                                        _prototypes.Remove(es.NetEntity);
+                                        _names.Remove(es.NetEntity);
+                                        _grids.Remove(es.NetEntity);
+                                        _gridChunkSize.Remove(es.NetEntity);
+                                        _closedContainers.Remove(es.NetEntity);
+                                        _openContainers.Remove(es.NetEntity);
+                                        _containerOccludes.Remove(es.NetEntity);
+                                        _ghostEntities.Remove(es.NetEntity);
+                                        _audio.Remove(es.NetEntity);
+                                        invalidatePos = true;
+                                        continue;
+                                    }
+
+                                    _xforms[es.NetEntity] = xf;
+                                    // Per-entity invalidate — full wipe every Δxf was O(store) re-resolve hitches.
+                                    _worldPosCache.Remove(es.NetEntity);
+                                    _mapUidCache.Remove(es.NetEntity);
+                                    _movedScratch.Add(es.NetEntity);
+                                    // Grid/map roots move whole stations — wipe descendant caches once.
+                                    if (_grids.ContainsKey(es.NetEntity) || _mapEntities.Contains(es.NetEntity))
+                                        invalidatePos = true;
+                                    packetXforms++;
+                                    continue;
+                                }
+
+                                if (change.State is MetaDataComponentState meta)
+                                {
+                                    packetMeta++;
+                                    if (!string.IsNullOrWhiteSpace(meta.Name))
+                                        _names[es.NetEntity] = meta.Name!;
+                                    if (!string.IsNullOrWhiteSpace(meta.PrototypeId))
+                                    {
+                                        _prototypes[es.NetEntity] = meta.PrototypeId!;
+                                        TryAttachPrototypeSprite(es.NetEntity, meta.PrototypeId!);
+                                    }
+                                    continue;
+                                }
+
+                                // MapComponent — marks MapUid roots so we can separate stacked maps.
+                                if (change.State is MapComponentState
+                                    || change.State.GetType().Name.Contains("MapComponentState", StringComparison.Ordinal))
+                                {
+                                    _mapEntities.Add(es.NetEntity);
+                                    invalidatePos = true;
+                                    packetMaps++;
+                                    continue;
+                                }
+
+                                if (TryApplyGrid(es.NetEntity, change.State))
+                                {
+                                    packetGrids++;
+                                    continue;
+                                }
+
+                                if (TryReadInputMover(change.State, out var mover))
+                                {
+                                    _movers[es.NetEntity] = mover;
+                                    continue;
+                                }
+
+                                if (ctrlScan.IsValid() && es.NetEntity == ctrlScan)
+                                    TryApplyGhostFlags(change.State);
+
+                                if (IsGhostComponentState(change.State))
+                                    _ghostEntities.Add(es.NetEntity);
+
+                                if (TryApplyContainerState(es.NetEntity, change.State))
+                                    continue;
+
+                                if (TryExtractAudio(change.State, es.NetEntity))
+                                    continue;
+
+                                if (TryReadDoorState(change.State, out var doorState))
+                                    _doorStates[es.NetEntity] = doorState;
+
+                                if (AppearanceVisuals.TryExtract(change.State, out var appVisuals))
+                                    _appearance[es.NetEntity] = appVisuals;
+
+                                var before = _sprites.Count;
+                                GameStateDecoder.TryExtractSpritePublic(change.State, es.NetEntity, _sprites);
+                                if (_sprites.Count != before || _sprites.ContainsKey(es.NetEntity))
+                                    packetSprites++;
                             }
-                            continue;
+                            catch (Exception compEx) when (
+                                compEx is IndexOutOfRangeException or NullReferenceException
+                                    or InvalidCastException or KeyNotFoundException)
+                            {
+                                // One bad component must not abort the rest of the entity / packet.
+                                Port.Content.DiagLog.Warn(
+                                    $"Apply skip component {change.State.GetType().Name} on {es.NetEntity}: {compEx.GetType().Name}: {compEx.Message}");
+                            }
                         }
-
-                        // MapComponent — marks MapUid roots so we can separate stacked maps.
-                        if (change.State is MapComponentState
-                            || change.State.GetType().Name.Contains("MapComponentState", StringComparison.Ordinal))
-                        {
-                            _mapEntities.Add(es.NetEntity);
-                            invalidatePos = true;
-                            packetMaps++;
-                            continue;
-                        }
-
-                        if (TryApplyGrid(es.NetEntity, change.State))
-                        {
-                            packetGrids++;
-                            continue;
-                        }
-
-                        if (TryReadInputMover(change.State, out var mover))
-                        {
-                            _movers[es.NetEntity] = mover;
-                            continue;
-                        }
-
-                        if (ctrlScan.IsValid() && es.NetEntity == ctrlScan)
-                            TryApplyGhostFlags(change.State);
-
-                        if (IsGhostComponentState(change.State))
-                            _ghostEntities.Add(es.NetEntity);
-
-                        if (TryApplyContainerState(es.NetEntity, change.State))
-                            continue;
-
-                        if (TryExtractAudio(change.State, es.NetEntity))
-                            continue;
-
-                        if (TryReadDoorState(change.State, out var doorState))
-                            _doorStates[es.NetEntity] = doorState;
-
-                        var before = _sprites.Count;
-                        GameStateDecoder.TryExtractSpritePublic(change.State, es.NetEntity, _sprites);
-                        if (_sprites.Count != before || _sprites.ContainsKey(es.NetEntity))
-                            packetSprites++;
+                    }
+                    catch (Exception entEx) when (
+                        entEx is IndexOutOfRangeException or NullReferenceException
+                            or InvalidCastException or KeyNotFoundException)
+                    {
+                        Port.Content.DiagLog.Warn(
+                            $"Apply skip entity {es.NetEntity}: {entEx.GetType().Name}: {entEx.Message}");
                     }
                 }
 
@@ -374,26 +516,41 @@ public sealed class WorldStateCache
                     _mapUidCache.Clear();
                 }
 
-                // Late bind: structures/furniture always take YAML states (PC netsync:false).
-                // Network Sprite often ships a partial/wrong layer list (one screen, wrong door).
+                // Late bind: attach YAML visuals ONCE per entity (PC netsync:false).
+                // Re-running ForcePrototypeSprite every MsgState wiped door/storage/network deltas
+                // and fought IconSmooth — see sprite pipeline audit.
                 foreach (var (ent, proto) in _prototypes)
                 {
                     if (!_sprites.TryGetValue(ent, out var spr))
                     {
                         TryAttachPrototypeSprite(ent, proto);
+                        MarkComposed(ent, proto);
                         continue;
                     }
 
-                    if (!IsPlayerLike(proto, spr))
+                    if (IsPlayerLike(proto, spr))
                     {
-                        ForcePrototypeSprite(ent, proto, spr);
+                        if (spr.Layers.Count == 0)
+                            EnsurePrototypeLayers(ent, proto, spr);
+                        else if (!spr.FromNetwork && string.IsNullOrEmpty(spr.Path))
+                            TryAttachPrototypeSprite(ent, proto);
                         continue;
                     }
 
-                    if (spr.Layers.Count == 0)
-                        EnsurePrototypeLayers(ent, proto, spr);
-                    else if (!spr.FromNetwork && string.IsNullOrEmpty(spr.Path))
-                        TryAttachPrototypeSprite(ent, proto);
+                    if (!NeedsPrototypeCompose(ent, proto, spr))
+                    {
+                        // Refresh Appearance / door overlays without wiping the YAML stack.
+                        if (_appearance.ContainsKey(ent) || _doorStates.ContainsKey(ent))
+                        {
+                            AppearanceVisuals.ApplyToSprite(
+                                spr, _appearance.GetValueOrDefault(ent), _doorStates.GetValueOrDefault(ent));
+                            _sprites[ent] = spr;
+                        }
+                        continue;
+                    }
+
+                    ForcePrototypeSprite(ent, proto, spr);
+                    MarkComposed(ent, proto);
                 }
 
                 NetEntity controlled = default;
@@ -422,6 +579,26 @@ public sealed class WorldStateCache
                     rot = new Angle(ResolveWorldRot(controlled));
                     eyeMap = ResolveMapUid(controlled);
                     foundXform = true;
+                    // After LeavePvs/DESER the parent chain can break → eyeMap invalid and
+                    // worldEye collapses to 0. Reuse last good eye so we don't dump all maps.
+                    if (!eyeMap.IsValid() && _lastGoodEyeMap.IsValid())
+                        eyeMap = _lastGoodEyeMap;
+                    var eyeOk = worldEye.LengthSquared() > 1f
+                                || (_lastGoodWorldEye.LengthSquared() < 1f);
+                    if (!eyeOk && _lastGoodWorldEye.LengthSquared() > 1f)
+                        worldEye = _lastGoodWorldEye;
+                    else if (eyeOk && eyeMap.IsValid())
+                    {
+                        _lastGoodEyeMap = eyeMap;
+                        _lastGoodWorldEye = worldEye;
+                    }
+                }
+                else if (_lastGoodWorldEye.LengthSquared() > 1f)
+                {
+                    // Controlled xform missing mid-warp — keep camera/tiles on last good station.
+                    worldEye = _lastGoodWorldEye;
+                    eyeMap = _lastGoodEyeMap;
+                    foundXform = eyeMap.IsValid() || _lastGoodWorldEye.LengthSquared() > 1f;
                 }
 
                 if (controlled.IsValid())
@@ -464,24 +641,86 @@ public sealed class WorldStateCache
                     _lastDrawFov = drawFov;
                 }
 
+                // Entity store is already updated. Isolate draw rebuild so a single
+                // IndexOutOfRange in IconSmooth/tiles cannot discard a whole MsgState.
+                try
+                {
+                // Fast path (PC-like): tiny visual-static deltas only patch positions —
+                // skip full IconSmooth occupancy + sort (was hitching every MsgState at draw~1200).
+                const float viewTiles = 18f;
+                var tilesSane = _lastTiles.Count > 0 && _lastTiles.Count <= MaxDrawTiles;
+                // Never fast-path a ghost-only snapshot while the store still has a station —
+                // that locked walls at draw=2 after LeavePvs storms.
+                var drawSane = _lastDrawSnapshot.Length >= 24
+                               || _xforms.Count < 80
+                               || _lastDrawSnapshot.Length >= Math.Max(8, _sprites.Count / 4);
+                if (state.FromSequence != GameTick.Zero
+                    && packetSprites == 0 && packetMeta == 0 && packetGrids == 0 && packetMaps == 0
+                    && entities.Count <= 32
+                    && _lastDrawSnapshot.Length > 0
+                    && drawSane
+                    && foundXform
+                    && eyeMap.IsValid()
+                    && worldEye.LengthSquared() > 1f
+                    && tilesSane
+                    && !invalidatePos)
+                {
+                    var patched = PatchDrawSnapshot(_lastDrawSnapshot, controlled, worldEye);
+                    _lastDrawSnapshot = patched;
+                    var eyeMoved = MathF.Abs(worldEye.X - _lastTileFocus.X) > 2.5f
+                                   || MathF.Abs(worldEye.Y - _lastTileFocus.Y) > 2.5f;
+                    IReadOnlyList<WorldTileDraw> tilesFast = _lastTiles;
+                    if (eyeMoved || _lastTiles.Count == 0)
+                    {
+                        tilesFast = BuildTileDrawList(worldEye, viewTiles, eyeMap);
+                        if (tilesFast.Count > 0)
+                        {
+                            _lastTiles = tilesFast;
+                            _lastTileFocus = worldEye;
+                        }
+                        else
+                            tilesFast = _lastTiles;
+                    }
+
+                    var audioFast = BuildAudioCueList(worldEye, viewTiles, eyeMap);
+                    var detailFast =
+                        $"from={state.FromSequence.Value} ents={entities.Count} " +
+                        $"Δxf={packetXforms} Δspr=0 Δmeta=0 Δgrid=0 Δmap=0 " +
+                        $"store={_xforms.Count}/{_sprites.Count} maps={_mapEntities.Count} tiles={tilesFast.Count} " +
+                        $"audio={audioFast.Count} draw={patched.Length} fast " +
+                        $"eyeMap={(eyeMap.IsValid() ? eyeMap.ToString() : "-")} " +
+                        $"ctrl={(controlled.IsValid() ? controlled.ToString() : "-")}";
+                    eye = new EyeSnapshot(
+                        controlled, worldEye, rot, eyeOff, drawFov,
+                        entities.Count, players.Count, state.ToSequence, detailFast);
+                    world = new WorldSnapshot(eye, patched, state.ToSequence, detailFast, tilesFast, audioFast);
+                    error = detailFast;
+                    return true;
+                }
+
+                // Drop poisoned tile caches from prior eyeMap=- all-maps dumps.
+                if (_lastTiles.Count > MaxDrawTiles)
+                    _lastTiles = Array.Empty<WorldTileDraw>();
+
                 var drawList = _drawListScratch;
                 drawList.Clear();
                 if (drawList.Capacity < Math.Min(_xforms.Count * 2, 20_000))
                     drawList.Capacity = Math.Min(_xforms.Count * 2, 20_000);
                 Vector2 sum = default;
                 var nSum = 0;
-                // Viewport stream: only draw near the eye (+ margin). Far store kept until LeavePvs.
-                // Wider than a phone screen at zoom-out so free-cam pan still has floors.
-                const float viewTiles = 56f;
+                // Viewport + modest margin only — far entities stay in store but don't
+                // compete for RSI loads (was 56 tiles → texture thrash, walls missing).
                 var viewR2 = viewTiles * viewTiles;
 
                 // IconSmooth occupancy: parent/grid-local lookup matching PC Snapgrid.
-                // Include NoSprite contributors; keep all same-map smoothers (no distance
-                // cull) so edge walls don't flicker connection states while walking.
+                // Cull to eye AABB (+margin) — full-map scans at store~1700 hitch the net thread.
                 var smoothTiles = _smoothTilesScratch;
                 smoothTiles.Clear();
                 var smoothByEnt = _smoothByEntScratch;
                 smoothByEnt.Clear();
+                const float smoothMargin = 4f;
+                var smoothR = viewTiles + smoothMargin;
+                var smoothR2 = smoothR * smoothR;
                 foreach (var (ent, xf0) in _xforms)
                 {
                     if (!xf0.ParentID.IsValid() || _grids.ContainsKey(ent))
@@ -490,6 +729,15 @@ public sealed class WorldStateCache
                     {
                         var entMap0 = ResolveMapUid(ent);
                         if (entMap0.IsValid() && entMap0 != eyeMap)
+                            continue;
+                    }
+
+                    var wp0 = ResolveWorldPos(ent);
+                    if (foundXform)
+                    {
+                        var dx0 = wp0.X - worldEye.X;
+                        var dy0 = wp0.Y - worldEye.Y;
+                        if (dx0 * dx0 + dy0 * dy0 > smoothR2)
                             continue;
                     }
 
@@ -529,8 +777,8 @@ public sealed class WorldStateCache
                             continue;
                     }
 
-                    // Container occlusion: hide contents of closed lockers/crates.
-                    if (!isCtrl && IsHiddenByContainer(ent, xf))
+                    // Container / inventory occlusion — never draw item piles on the mob.
+                    if (!isCtrl && (IsHiddenByContainer(ent, xf) || IsHiddenInInventoryOrEquippedSlot(ent, xf)))
                         continue;
 
                     var wp = ResolveWorldPos(ent);
@@ -735,11 +983,13 @@ public sealed class WorldStateCache
                             var wyL = wp.Y + ox * sin + oy * cos;
                             // Stable stack order within same DrawDepth.
                             var sortDepth = layerDepth * 16 + layersAdded;
+                            var forceDir0 = ForceSpriteDir0(path, protoId, spr.SnapCardinals, spr.NoRotation);
+                            var dirOv = forceDir0 ? 0 : -1;
                             drawList.Add(new WorldEntityDraw(
                                 ent, wxL, wyL, worldRot,
                                 path, lr, lg, lb, isCtrl, sortDepth, layerState,
-                                true, 0, 0, spr.NoRotation || isCtrl, null, -1, isGhost,
-                                layer.ScaleX, layer.ScaleY, layer.RotationOffset));
+                                true, 0, 0, spr.NoRotation || isCtrl || forceDir0, null, dirOv, isGhost,
+                                layer.ScaleX, layer.ScaleY, layer.RotationOffset, forceDir0));
                             layersAdded++;
                         }
                     }
@@ -779,13 +1029,14 @@ public sealed class WorldStateCache
                             : (spr is { FromNetwork: true, HasDrawDepth: true }
                                 ? spr.DrawDepth
                                 : ClassifyDepth(path, spr?.DrawDepth ?? GameStateDecoder.GuessDepth(path), protoId));
+                        var snap = ForceSpriteDir0(path, protoId, spr?.SnapCardinals == true, spr?.NoRotation == true);
                         drawList.Add(new WorldEntityDraw(
                             ent, wp.X, wp.Y, worldRot,
                             path, r, g, b, isCtrl, depth, stateName,
-                            true, 0, 0, spr?.NoRotation == true || isCtrl
+                            true, 0, 0, spr?.NoRotation == true || isCtrl || snap
                                 || (protoId?.Contains("Observer", StringComparison.OrdinalIgnoreCase) ?? false)
                                 || (protoId?.Contains("Ghost", StringComparison.OrdinalIgnoreCase) ?? false),
-                            null, -1, isGhost));
+                            null, snap ? 0 : -1, isGhost, 1f, 1f, 0f, snap));
                     }
 
                     sum += wp;
@@ -860,13 +1111,16 @@ public sealed class WorldStateCache
                     return a.Entity.Id.CompareTo(b.Entity.Id);
                 });
 
-                var tiles = BuildTileDrawList(focus, viewTiles, eyeMap);
+                IReadOnlyList<WorldTileDraw> tiles = BuildTileDrawList(focus, viewTiles, eyeMap);
                 if (tiles.Count > 0)
                     _lastTiles = tiles;
-                else if (_lastTiles.Count > 0)
-                    tiles = _lastTiles is List<WorldTileDraw> list
-                        ? list
-                        : _lastTiles.ToList();
+                else if (_lastTiles.Count > 0 && _lastTiles.Count <= MaxDrawTiles && eyeMap.IsValid())
+                    tiles = _lastTiles;
+                else
+                {
+                    _lastTiles = Array.Empty<WorldTileDraw>();
+                    tiles = _lastTiles;
+                }
                 var audio = BuildAudioCueList(focus, viewTiles, eyeMap);
 
                 var detail =
@@ -880,9 +1134,12 @@ public sealed class WorldStateCache
                 eye = new EyeSnapshot(
                     controlled, worldEye, rot, eyeOff, drawFov,
                     entities.Count, players.Count, state.ToSequence, detail);
+                var drawArr = drawList.ToArray();
+                _lastDrawSnapshot = drawArr;
+                _lastTileFocus = focus;
                 world = new WorldSnapshot(
                     eye,
-                    drawList.ToArray(),
+                    drawArr,
                     state.ToSequence,
                     detail,
                     tiles,
@@ -890,6 +1147,32 @@ public sealed class WorldStateCache
                 error = detail;
                 return drawList.Count > 0 || tiles.Count > 0 || audio.Count > 0
                        || foundXform || foundEye || entities.Count > 0;
+                }
+                catch (Exception drawEx)
+                {
+                    Port.Content.DiagLog.Error(
+                        $"draw rebuild FAIL {drawEx.GetType().Name}: {drawEx.Message}\n{drawEx.StackTrace}");
+                    // Store applied — emit tiles-only snapshot so warp/PVS does not freeze on last area.
+                    var focus = worldEye;
+                    IReadOnlyList<WorldTileDraw> tilesSafe = Array.Empty<WorldTileDraw>();
+                    try { tilesSafe = BuildTileDrawList(focus, 40f, eyeMap); }
+                    catch { /* ignore */ }
+                    if (tilesSafe.Count > 0)
+                        _lastTiles = tilesSafe;
+                    else
+                        tilesSafe = _lastTiles;
+                    var detailDraw =
+                        $"DRAW_FAIL {drawEx.GetType().Name}: {drawEx.Message} " +
+                        $"store={_xforms.Count}/{_sprites.Count} tiles={tilesSafe.Count}";
+                    eye = new EyeSnapshot(
+                        controlled, worldEye, rot, eyeOff, drawFov,
+                        entities.Count, players.Count, state.ToSequence, detailDraw);
+                    world = new WorldSnapshot(
+                        eye, Array.Empty<WorldEntityDraw>(), state.ToSequence, detailDraw, tilesSafe,
+                        Array.Empty<WorldAudioCue>());
+                    error = detailDraw;
+                    return true;
+                }
             }
         }
         catch (Exception ex)
@@ -904,10 +1187,79 @@ public sealed class WorldStateCache
                 detail += $" (payload={payload.Length:N0}B storeXf={_xforms.Count})";
             }
 
+            Port.Content.DiagLog.Error($"Apply FAIL {detail}");
             error = detail;
             return false;
         }
     }
+
+    void MarkComposed(NetEntity ent, string prototypeId)
+    {
+        _composedFromProto.Add(ent);
+        _composedProtoId[ent] = prototypeId;
+    }
+
+    bool NeedsPrototypeCompose(NetEntity ent, string prototypeId, GameStateDecoder.SpriteVisual spr)
+    {
+        if (!_composedFromProto.Contains(ent))
+            return true;
+        if (_composedProtoId.TryGetValue(ent, out var prev) &&
+            !string.Equals(prev, prototypeId, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var path = spr.Path ?? ResolveSpritePath(spr, prototypeId);
+        // Drawable IconSmooth (walls) is path-only. NoSprite (airlocks) keeps YAML layers.
+        if (TryResolveIconSmooth(prototypeId, path, out var smooth))
+        {
+            if (IsDrawableIconSmooth(smooth))
+            {
+                if (spr.Layers.Count > 0 || string.IsNullOrEmpty(path))
+                    return true;
+                return false;
+            }
+
+            // Recover airlocks wrongly composed as path-only before NoSprite gate.
+            var resolved = _protos?.TryGetResolvedSprite(prototypeId);
+            if (resolved is { Layers.Count: > 0 } && spr.Layers.Count == 0)
+                return true;
+        }
+
+        // Network wiped door/airlock YAML states → recompose from prototype.
+        if (LooksLikeDoorOrAirlock(prototypeId, path) && spr.Layers.Count > 0)
+        {
+            var anyState = false;
+            foreach (var layer in spr.Layers)
+            {
+                if (!string.IsNullOrWhiteSpace(layer.State))
+                {
+                    anyState = true;
+                    break;
+                }
+            }
+            if (!anyState)
+                return true;
+        }
+
+        // Non-smooth structure with no drawable art yet.
+        return spr.Layers.Count == 0 && string.IsNullOrEmpty(spr.Path) && string.IsNullOrEmpty(spr.State);
+    }
+
+    static bool LooksLikeDoorOrAirlock(string? proto, string? path)
+    {
+        var p = (proto ?? "") + " " + (path ?? "");
+        return p.Contains("Airlock", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Firelock", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("/Doors/", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Windoor", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Hatch", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Walls/windows draw via IconSmooth sheets. NoSprite (airlocks) only contributes neighbors
+    /// and must keep YAML Sprite layers.
+    /// </summary>
+    public static bool IsDrawableIconSmooth(IconSmoothData data) =>
+        data.Mode is not IconSmoothMode.NoSprite;
 
     void TryAttachPrototypeSprite(NetEntity ent, string prototypeId)
     {
@@ -919,14 +1271,42 @@ public sealed class WorldStateCache
         }
 
         ForcePrototypeSprite(ent, prototypeId, _sprites.TryGetValue(ent, out var prev) ? prev : null);
+        MarkComposed(ent, prototypeId);
     }
 
     /// <summary>
     /// Rebuild sprite from YAML for furniture/machines/doors. Keeps network color/visibility.
+    /// IconSmooth walls are path-only — never inject full/icon/single-state layers.
     /// </summary>
     void ForcePrototypeSprite(NetEntity ent, string prototypeId, GameStateDecoder.SpriteVisual? existing)
     {
         var resolved = _protos?.TryGetResolvedSprite(prototypeId);
+        var path = resolved?.Path ?? existing?.Path ?? _protos?.TryGetSprite(prototypeId);
+        // Walls/windows: path-only for drawable IconSmooth. Airlock NoSprite keeps layers.
+        if (TryResolveIconSmooth(prototypeId, path, out var smooth) && IsDrawableIconSmooth(smooth))
+        {
+            var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
+            visual.Path = path;
+            visual.State = null;
+            visual.Layers.Clear();
+            visual.NoRotation = true;
+            visual.SnapCardinals = resolved?.SnapCardinals == true;
+            if (resolved?.DrawDepth is { } dd)
+            {
+                visual.DrawDepth = dd;
+                visual.HasDrawDepth = true;
+            }
+            else
+            {
+                visual.DrawDepth = ClassifyDepth(path, GameStateDecoder.GuessDepth(path), prototypeId);
+                visual.HasDrawDepth = true;
+            }
+
+            _sprites[ent] = visual;
+            PrototypeHits++;
+            return;
+        }
+
         if (resolved is null)
         {
             if (existing is not null && existing.Layers.Count == 0)
@@ -934,44 +1314,39 @@ public sealed class WorldStateCache
             return;
         }
 
-        var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
+        var rebuilt = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
         // Authoritative path/state from prototype — stop sticky wrong network states.
-        visual.Path = resolved.Path ?? visual.Path;
-        visual.State = resolved.State ?? visual.State;
-        if (resolved.DrawDepth is { } dd)
+        rebuilt.Path = resolved.Path ?? rebuilt.Path;
+        rebuilt.State = resolved.State ?? rebuilt.State;
+        if (resolved.DrawDepth is { } depth)
         {
-            visual.DrawDepth = dd;
-            visual.HasDrawDepth = true;
+            rebuilt.DrawDepth = depth;
+            rebuilt.HasDrawDepth = true;
         }
-        else if (!visual.HasDrawDepth)
+        else if (!rebuilt.HasDrawDepth)
         {
-            visual.DrawDepth = ClassifyDepth(visual.Path, GameStateDecoder.GuessDepth(visual.Path), prototypeId);
+            rebuilt.DrawDepth = ClassifyDepth(rebuilt.Path, GameStateDecoder.GuessDepth(rebuilt.Path), prototypeId);
         }
 
-        visual.NoRotation = resolved.NoRotation || visual.NoRotation;
-        visual.Layers.Clear();
-        AppendResolvedLayers(visual, resolved);
-        ApplyStorageVisuals(visual, prototypeId, ent);
+        rebuilt.NoRotation = resolved.NoRotation || rebuilt.NoRotation;
+        rebuilt.SnapCardinals = resolved.SnapCardinals || rebuilt.SnapCardinals;
+        rebuilt.Layers.Clear();
+        AppendResolvedLayers(rebuilt, resolved);
+        ApplyStorageVisuals(rebuilt, prototypeId, ent);
+        AppearanceVisuals.ApplyToSprite(rebuilt, _appearance.GetValueOrDefault(ent), _doorStates.GetValueOrDefault(ent));
 
-        if (visual.Layers.Count == 0
+        if (rebuilt.Layers.Count == 0
             && !string.IsNullOrEmpty(resolved.Path)
             && !string.IsNullOrEmpty(resolved.State)
-            && !IsEditorOnlySpriteState(resolved.State))
+            && !IsEditorOnlySpriteState(resolved.State)
+            && !(TryResolveIconSmooth(prototypeId, resolved.Path, out var sm2) && IsDrawableIconSmooth(sm2)))
         {
-            visual.Layers.Add(new GameStateDecoder.LayerVis(
-                resolved.Path, resolved.State, visual.DrawDepth, true,
-                255, 255, 255, 0, 0, visual.HasDrawDepth));
+            rebuilt.Layers.Add(new GameStateDecoder.LayerVis(
+                resolved.Path, resolved.State, rebuilt.DrawDepth, true,
+                255, 255, 255, 0, 0, rebuilt.HasDrawDepth));
         }
 
-        // IconSmooth walls: path-only Sprite — leave layers empty so smooth path owns drawing.
-        if (visual.Layers.Count == 0
-            && TryResolveIconSmooth(prototypeId, resolved.Path, out _)
-            && !string.IsNullOrEmpty(resolved.Path))
-        {
-            visual.Path = resolved.Path;
-        }
-
-        _sprites[ent] = visual;
+        _sprites[ent] = rebuilt;
         PrototypeHits++;
     }
 
@@ -1005,16 +1380,19 @@ public sealed class WorldStateCache
             }
             else if (!string.IsNullOrEmpty(resolved.Path)
                      && !string.IsNullOrEmpty(resolved.State)
-                     && !IsEditorOnlySpriteState(resolved.State))
+                     && !IsEditorOnlySpriteState(resolved.State)
+                     && !(TryResolveIconSmooth(prototypeId, resolved.Path, out var sm)
+                          && IsDrawableIconSmooth(sm)))
             {
-                // Single-state Sprite (not Icon editor full/icon). IconSmooth walls often
-                // have path-only Sprite — leave layers empty so IconSmooth path owns drawing.
+                // Single-state Sprite. Never inject layers for drawable IconSmooth walls.
                 visual.Layers.Add(new GameStateDecoder.LayerVis(
                     resolved.Path, resolved.State, visual.DrawDepth, true,
                     255, 255, 255, 0, 0, visual.HasDrawDepth));
             }
         }
 
+        visual.SnapCardinals = visual.SnapCardinals || resolved.SnapCardinals;
+        AppearanceVisuals.ApplyToSprite(visual, _appearance.GetValueOrDefault(ent), _doorStates.GetValueOrDefault(ent));
         _sprites[ent] = visual;
         PrototypeHits++;
     }
@@ -1191,13 +1569,83 @@ public sealed class WorldStateCache
     bool TryResolveIconSmooth(string? proto, string? path, out IconSmoothData data)
     {
         data = default;
+        var cacheKey = (proto ?? "") + "|" + (path ?? "");
+        if (_iconSmoothRemapCache.TryGetValue(cacheKey, out data))
+            return true;
+
+        // Resolve once per proto|path then cache. Calling RsiHasNumberedBase / FromRsi for
+        // every wall on every MsgState ANR/crashes Android (disk thrash).
+        var inferred = IconSmoothInfer.FromRsi(_contentRoot, path, proto);
         var fromProto = _protos?.TryGetIconSmooth(proto);
         if (fromProto is { } sm)
         {
             data = sm;
+            // Goob/CD: YAML base "window" vs meta "rwindow0..7".
+            // Remap ONLY when YAML base has no numbered sheet (StateNameCache keeps this cheap).
+            // Blind remap broke WallReinforced: reinf_over → solid on solid.rsi.
+            if (inferred is { } inf
+                && !string.IsNullOrEmpty(inf.StateBase)
+                && !string.Equals(sm.StateBase, inf.StateBase, StringComparison.OrdinalIgnoreCase)
+                && !IconSmoothInfer.RsiHasNumberedBase(_contentRoot, path, sm.StateBase)
+                && IconSmoothInfer.RsiHasNumberedBase(_contentRoot, path, inf.StateBase))
+            {
+                data = new IconSmoothData(sm.Key, inf.StateBase, sm.Mode, sm.AdditionalKeys);
+                if (_iconSmoothRemapLogged.Add(cacheKey))
+                {
+                    Port.Content.DiagLog.Info(
+                        $"iconsmooth base remap {proto}: '{sm.StateBase}' → '{inf.StateBase}' ({path})");
+                }
+            }
+
+            _iconSmoothRemapCache[cacheKey] = data;
             return true;
         }
+
+        if (inferred is { } onlyInf)
+        {
+            data = onlyInf;
+            _iconSmoothRemapCache[cacheKey] = data;
+            return true;
+        }
+
         return false;
+    }
+
+    /// <summary>
+    /// Soft invalidate after ACZ — do NOT wipe the whole remap table (that re-resolved every
+    /// wall on the next MsgState and ANR'd the process). Only drop keys for one RSI path.
+    /// </summary>
+    public void ClearIconSmoothCache()
+    {
+        // Intentionally no-op for global clears. Use InvalidateIconSmoothPath from ACZ.
+    }
+
+    public void InvalidateIconSmoothPath(string? rsiPath)
+    {
+        if (string.IsNullOrWhiteSpace(rsiPath))
+            return;
+        lock (this)
+        {
+            List<string>? dead = null;
+            foreach (var key in _iconSmoothRemapCache.Keys)
+            {
+                if (key.EndsWith("|" + rsiPath, StringComparison.OrdinalIgnoreCase)
+                    || key.Equals(rsiPath, StringComparison.OrdinalIgnoreCase)
+                    || key.EndsWith("|" + rsiPath.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                {
+                    dead ??= new List<string>();
+                    dead.Add(key);
+                }
+            }
+
+            if (dead is null)
+                return;
+            foreach (var key in dead)
+            {
+                _iconSmoothRemapCache.Remove(key);
+                _iconSmoothRemapLogged.Remove(key);
+            }
+        }
     }
 
     string? ResolveSpritePath(GameStateDecoder.SpriteVisual? spr, string? proto)
@@ -1317,6 +1765,12 @@ public sealed class WorldStateCache
     List<WorldTileDraw> BuildTileDrawList(Vector2 focus, float viewTiles, NetEntity eyeMap)
     {
         var list = new List<WorldTileDraw>(Math.Min(MaxDrawTiles, 2048));
+        // Without a map filter, 27 stacked maps near a broken eye dump 10k+ tiles and crash.
+        if (!eyeMap.IsValid())
+            return list;
+        if (float.IsNaN(focus.X) || float.IsNaN(focus.Y) || focus.LengthSquared() < 0.01f)
+            return list;
+
         var minX = focus.X - viewTiles;
         var maxX = focus.X + viewTiles;
         var minY = focus.Y - viewTiles;
@@ -1324,12 +1778,12 @@ public sealed class WorldStateCache
         foreach (var (gridEnt, chunks) in _grids)
         {
             if (list.Count >= MaxDrawTiles) break;
-            if (eyeMap.IsValid())
-            {
-                var gridMap = ResolveMapUid(gridEnt);
-                if (gridMap.IsValid() && gridMap != eyeMap)
-                    continue;
-            }
+            var gridMap = ResolveMapUid(gridEnt);
+            if (gridMap.IsValid() && gridMap != eyeMap)
+                continue;
+            // Orphan grids with no map uid after LeavePvs — skip (were drawn on every map).
+            if (!gridMap.IsValid())
+                continue;
 
             var chunkSize = _gridChunkSize.TryGetValue(gridEnt, out var cs) ? cs : (ushort)ChunkDefault;
             if (chunkSize == 0) chunkSize = ChunkDefault;
@@ -1512,15 +1966,33 @@ public sealed class WorldStateCache
         return any;
     }
 
+    /// <summary>
+    /// Wallmount lights / snapCardinals / noRot: force RSI direction index 0
+    /// so 4-dir sheets don't spin with camera or entity yaw.
+    /// </summary>
+    static bool ForceSpriteDir0(string? path, string? proto, bool snapCardinals, bool noRotation)
+    {
+        if (snapCardinals || noRotation)
+            return true;
+        var p = (path ?? "") + " " + (proto ?? "");
+        return p.Contains("Lighting", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("Wallmount", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("PoweredLight", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("light_tube", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("light_small", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("light_soft", StringComparison.OrdinalIgnoreCase)
+               || p.Contains("/Lights/", StringComparison.OrdinalIgnoreCase);
+    }
+
     static void ColorForTile(int typeId, out byte r, out byte g, out byte b)
     {
-        // Stable pastel-ish floor colours from type id — never pure black (missing-tile holes).
+        // Muted slate fallback — old pastel hash looked pink for missing sand sprites.
         unchecked
         {
             var h = (uint)typeId * 2654435761u;
-            r = (byte)(90 + (h & 0x6F));
-            g = (byte)(95 + ((h >> 8) & 0x5F));
-            b = (byte)(105 + ((h >> 16) & 0x4F));
+            r = (byte)(48 + (h & 0x1F));
+            g = (byte)(52 + ((h >> 8) & 0x1F));
+            b = (byte)(58 + ((h >> 16) & 0x1F));
         }
     }
 
@@ -1671,6 +2143,49 @@ public sealed class WorldStateCache
     }
 
     /// <summary>
+    /// Hide inventory/hand/pocket entities that pile on the mob world position.
+    /// Equipped clothing is drawn as Sprite layers on the mob itself (PC), not as
+    /// separate world sprites of the item entities.
+    /// </summary>
+    bool IsHiddenInInventoryOrEquippedSlot(NetEntity ent, TransformComponentState xf)
+    {
+        _prototypes.TryGetValue(ent, out var selfProto);
+        _sprites.TryGetValue(ent, out var selfSpr);
+        // Never hide mobs / observers themselves.
+        if (IsPlayerLike(selfProto, selfSpr))
+            return false;
+
+        var cur = xf.ParentID;
+        for (var depth = 0; depth < 8 && cur.IsValid(); depth++)
+        {
+            if (_mapEntities.Contains(cur) || _grids.ContainsKey(cur))
+                return false;
+
+            _prototypes.TryGetValue(cur, out var parentProto);
+            _sprites.TryGetValue(cur, out var parentSpr);
+            if (IsPlayerLike(parentProto, parentSpr))
+                return true; // item/clothing entity parented under a mob → inventory/slot
+
+            // Hands / inventory container entities often named *Inventory* / *Hands*.
+            if (!string.IsNullOrEmpty(parentProto)
+                && (parentProto.Contains("Inventory", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Hands", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Pocket", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Belt", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Backpack", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Satchel", StringComparison.OrdinalIgnoreCase)
+                    || parentProto.Contains("Duffel", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            if (!_xforms.TryGetValue(cur, out var parentXf))
+                break;
+            cur = parentXf.ParentID;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Grid-local snap occupancy for IconSmooth walls/windows/grilles (like PC IconSmoothSystem).
     /// Key: (gridNetEntity, tileX, tileY) packed into a long via grid hash + coords.
     /// </summary>
@@ -1732,6 +2247,37 @@ public sealed class WorldStateCache
         return "full";
     }
 
+    WorldEntityDraw[] PatchDrawSnapshot(WorldEntityDraw[] prev, NetEntity controlled, Vector2 worldEye)
+    {
+        var arr = new WorldEntityDraw[prev.Length];
+        for (var i = 0; i < prev.Length; i++)
+        {
+            var e = prev[i];
+            if (e.IsControlled || (controlled.IsValid() && e.Entity == controlled))
+            {
+                arr[i] = e with { X = worldEye.X, Y = worldEye.Y };
+                continue;
+            }
+
+            if (_movedScratch.Contains(e.Entity) && _xforms.ContainsKey(e.Entity))
+            {
+                var wp = ResolveWorldPos(e.Entity);
+                arr[i] = e with { X = wp.X, Y = wp.Y };
+            }
+            else if (!_xforms.ContainsKey(e.Entity) && !e.IsControlled)
+            {
+                // Left store between snapshots — keep last pose until full rebuild.
+                arr[i] = e;
+            }
+            else
+            {
+                arr[i] = e;
+            }
+        }
+
+        return arr;
+    }
+
     Vector2 ResolveWorldPos(NetEntity ent)
     {
         if (_worldPosCache.TryGetValue(ent, out var cached))
@@ -1773,11 +2319,13 @@ public sealed class WorldStateCache
         visiting.Clear();
         var cur = ent;
         NetEntity found = default;
+        var sawMapComponent = false;
         for (var depth = 0; depth < 24; depth++)
         {
             if (_mapEntities.Contains(cur))
             {
                 found = cur;
+                sawMapComponent = true;
                 break;
             }
 
@@ -1785,15 +2333,19 @@ public sealed class WorldStateCache
             if (!visiting.Add(cur)) break;
             if (!t.ParentID.IsValid() || t.ParentID == cur)
             {
-                // Root with no MapComponent marked — treat as map-like root.
-                found = cur;
+                // Only treat as map root when MapComponent was seen — otherwise orphan
+                // ghosts after LeavePvs were "maps" and broke eye filtering.
+                if (sawMapComponent)
+                    found = cur;
                 break;
             }
 
             cur = t.ParentID;
         }
 
-        _mapUidCache[ent] = found;
+        // Do not cache misses — parent may arrive next packet.
+        if (found.IsValid())
+            _mapUidCache[ent] = found;
         return found;
     }
 

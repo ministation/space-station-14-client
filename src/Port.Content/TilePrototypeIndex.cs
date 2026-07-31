@@ -7,6 +7,7 @@ namespace Port.Content;
 /// Tile TypeId → sprite path, matching SS14 <c>EntryPoint.InitTileDefinitions</c>:
 /// Space = 0, then all non-abstract <c>type: tile</c> sorted by id Ordinal.
 /// Sprites are usually PNGs under Textures/Tiles/*.png (not RSI).
+/// Child tiles inherit <c>sprite:</c> from <c>parent:</c> (e.g. FloorAsteroidSand).
 /// </summary>
 public sealed class TilePrototypeIndex
 {
@@ -18,6 +19,9 @@ public sealed class TilePrototypeIndex
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
     static readonly Regex SpriteLine = new(
         @"^\s*sprite:\s*[""']?([^\s#""']+)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+    static readonly Regex ParentLine = new(
+        @"^\s*parent:\s*[""']?([A-Za-z0-9_.\-]+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
     static readonly Regex AbstractLine = new(
         @"^\s*abstract:\s*true\b",
@@ -35,6 +39,12 @@ public sealed class TilePrototypeIndex
         if (typeId == 0) return null;
         if (typeId >= _byTypeId.Count) return null;
         return _byTypeId[typeId];
+    }
+
+    public string? TryGetSpriteById(string? prototypeId)
+    {
+        if (string.IsNullOrWhiteSpace(prototypeId)) return null;
+        return _spriteByProto.TryGetValue(prototypeId, out var s) ? s : null;
     }
 
     public void Invalidate()
@@ -56,27 +66,35 @@ public sealed class TilePrototypeIndex
         Invalidate();
         Root = contentFilesRoot;
 
-        var protoRoot = Path.Combine(contentFilesRoot, "Prototypes");
-        if (!Directory.Exists(protoRoot))
-        {
-            var alt = Path.Combine(contentFilesRoot, "Resources", "Prototypes");
-            protoRoot = Directory.Exists(alt) ? alt : protoRoot;
-        }
+        // Scan BOTH trees — ACZ may land under Prototypes/ and Resources/Prototypes/.
+        var roots = new List<string>();
+        var primary = Path.Combine(contentFilesRoot, "Prototypes");
+        var alt = Path.Combine(contentFilesRoot, "Resources", "Prototypes");
+        if (Directory.Exists(primary)) roots.Add(primary);
+        if (Directory.Exists(alt)) roots.Add(alt);
 
-        if (!Directory.Exists(protoRoot))
+        if (roots.Count == 0)
         {
             log?.Invoke("tiles: prototypes missing");
             return;
         }
 
-        // Collect every concrete tile (with or without sprite) — TypeId slots must match server.
-        var found = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var found = new Dictionary<string, TileRaw>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var protoRoot in roots)
         foreach (var file in Directory.EnumerateFiles(protoRoot, "*.yml", SearchOption.AllDirectories)
                      .Concat(Directory.EnumerateFiles(protoRoot, "*.yaml", SearchOption.AllDirectories)))
         {
+            var rel = Path.GetRelativePath(protoRoot, file);
+            if (!seen.Add(protoRoot + "|" + rel))
+                continue;
             try { ScanFile(file, found); }
             catch { /* skip */ }
         }
+
+        // Resolve sprite inheritance (FloorAsteroidSand → parent Borderless PNG).
+        foreach (var id in found.Keys.ToList())
+            ResolveSprite(id, found, new HashSet<string>(StringComparer.Ordinal));
 
         // 0 = Space (no sprite). SS14 always registers Space first.
         _byTypeId[0] = null;
@@ -87,7 +105,10 @@ public sealed class TilePrototypeIndex
         {
             if (id.Equals("Space", StringComparison.Ordinal))
                 continue;
-            var sprite = found[id];
+            var raw = found[id];
+            if (raw.Abstract)
+                continue;
+            var sprite = raw.Sprite;
             var typeId = (ushort)_byTypeId.Count;
             _byTypeId.Add(sprite);
             _idToType[id] = typeId;
@@ -95,25 +116,43 @@ public sealed class TilePrototypeIndex
         }
 
         var withSprite = _byTypeId.Count(s => !string.IsNullOrEmpty(s));
-        log?.Invoke($"tiles: indexed {Count} typeIds ({withSprite} with sprites) — Ordinal like SS14");
+        log?.Invoke($"tiles: indexed {Count} typeIds ({withSprite} with sprites) — Ordinal+parent like SS14");
     }
 
-    static void ScanFile(string path, Dictionary<string, string?> found)
+    static string? ResolveSprite(string id, Dictionary<string, TileRaw> found, HashSet<string> visiting)
+    {
+        if (!found.TryGetValue(id, out var raw))
+            return null;
+        if (!string.IsNullOrEmpty(raw.Sprite))
+            return raw.Sprite;
+        if (string.IsNullOrEmpty(raw.Parent))
+            return null;
+        if (!visiting.Add(id))
+            return null;
+        var inherited = ResolveSprite(raw.Parent, found, visiting);
+        if (!string.IsNullOrEmpty(inherited))
+            found[id] = raw with { Sprite = inherited };
+        return inherited;
+    }
+
+    static void ScanFile(string path, Dictionary<string, TileRaw> found)
     {
         string? currentId = null;
         var inTile = false;
         var isAbstract = false;
         string? sprite = null;
+        string? parent = null;
 
         foreach (var raw in File.ReadLines(path))
         {
             var line = raw;
             if (TypeTile.IsMatch(line))
             {
-                Flush(found, ref currentId, ref sprite, ref inTile, ref isAbstract);
+                Flush(found, ref currentId, ref sprite, ref parent, ref inTile, ref isAbstract);
                 inTile = true;
                 currentId = null;
                 sprite = null;
+                parent = null;
                 isAbstract = false;
                 continue;
             }
@@ -123,13 +162,13 @@ public sealed class TilePrototypeIndex
             if (line.Length > 0 && line.TrimStart().StartsWith("- type:", StringComparison.OrdinalIgnoreCase)
                 && !TypeTile.IsMatch(line))
             {
-                Flush(found, ref currentId, ref sprite, ref inTile, ref isAbstract);
+                Flush(found, ref currentId, ref sprite, ref parent, ref inTile, ref isAbstract);
                 continue;
             }
 
             if (line.Length > 0 && line[0] != ' ' && line[0] != '\t' && line[0] != '-' && line[0] != '#')
             {
-                Flush(found, ref currentId, ref sprite, ref inTile, ref isAbstract);
+                Flush(found, ref currentId, ref sprite, ref parent, ref inTile, ref isAbstract);
                 continue;
             }
 
@@ -140,6 +179,10 @@ public sealed class TilePrototypeIndex
             if (id.Success && currentId is null)
                 currentId = id.Groups[1].Value;
 
+            var par = ParentLine.Match(line);
+            if (par.Success && parent is null)
+                parent = par.Groups[1].Value;
+
             var spr = SpriteLine.Match(line);
             if (spr.Success)
             {
@@ -149,20 +192,22 @@ public sealed class TilePrototypeIndex
             }
         }
 
-        Flush(found, ref currentId, ref sprite, ref inTile, ref isAbstract);
+        Flush(found, ref currentId, ref sprite, ref parent, ref inTile, ref isAbstract);
     }
 
     static void Flush(
-        Dictionary<string, string?> found,
+        Dictionary<string, TileRaw> found,
         ref string? id,
         ref string? sprite,
+        ref string? parent,
         ref bool inTile,
         ref bool isAbstract)
     {
-        if (inTile && id is not null && !isAbstract)
-            found[id] = sprite; // sprite may be null (Space / special)
+        if (inTile && id is not null)
+            found[id] = new TileRaw(id, parent, sprite, isAbstract);
         id = null;
         sprite = null;
+        parent = null;
         inTile = false;
         isAbstract = false;
     }
@@ -177,4 +222,6 @@ public sealed class TilePrototypeIndex
             s = s["Textures/".Length..];
         return s;
     }
+
+    readonly record struct TileRaw(string Id, string? Parent, string? Sprite, bool Abstract);
 }

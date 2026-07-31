@@ -31,7 +31,8 @@ public sealed class PrototypeSpriteIndex
         string? State,
         bool NoRotation,
         int? DrawDepth,
-        IReadOnlyList<SpriteLayer> Layers);
+        IReadOnlyList<SpriteLayer> Layers,
+        bool SnapCardinals = false);
 
     /// <summary>PC EntityStorageVisuals — locker/crate door art from YAML, not network.</summary>
     public readonly record struct StorageVisuals(
@@ -45,7 +46,8 @@ public sealed class PrototypeSpriteIndex
         public required string Id;
         public readonly List<string> Parents = new();
         public SpritePatch? Sprite;
-        public IconSmoothData? Smooth;
+        /// <summary>Partial IconSmooth override (Goob often sets only <c>base:</c>).</summary>
+        public IconSmoothPatch? Smooth;
         public StorageVisuals? Storage;
     }
 
@@ -56,9 +58,22 @@ public sealed class PrototypeSpriteIndex
         public string? State;
         public bool HasState;
         public bool? NoRotation;
+        public bool? SnapCardinals;
         public int? DrawDepth;
         public bool HasLayers;
         public readonly List<SpriteLayer> Layers = new();
+    }
+
+    /// <summary>Field-level IconSmooth patch — mirrors PC component inheritance.</summary>
+    sealed class IconSmoothPatch
+    {
+        public string? Key;
+        public bool HasKey;
+        public string? StateBase;
+        public bool HasBase;
+        public IconSmoothMode? Mode;
+        public string[]? AdditionalKeys;
+        public bool HasAdditionalKeys;
     }
 
     readonly ConcurrentDictionary<string, RawPrototype> _raw =
@@ -120,16 +135,18 @@ public sealed class PrototypeSpriteIndex
             return;
 
         Invalidate();
+        IconSmoothInfer.ClearCache();
+        RsiAtlas.ClearCache();
         Root = contentFilesRoot;
 
-        var protoRoot = Path.Combine(contentFilesRoot, "Prototypes");
-        if (!Directory.Exists(protoRoot))
-        {
-            var alt = Path.Combine(contentFilesRoot, "Resources", "Prototypes");
-            protoRoot = Directory.Exists(alt) ? alt : protoRoot;
-        }
+        // Scan BOTH trees — ACZ may land files under Prototypes/ and Resources/Prototypes/.
+        var roots = new List<string>();
+        var primary = Path.Combine(contentFilesRoot, "Prototypes");
+        var alt = Path.Combine(contentFilesRoot, "Resources", "Prototypes");
+        if (Directory.Exists(primary)) roots.Add(primary);
+        if (Directory.Exists(alt)) roots.Add(alt);
 
-        if (!Directory.Exists(protoRoot))
+        if (roots.Count == 0)
         {
             log?.Invoke("prototypes: directory missing");
             return;
@@ -137,10 +154,16 @@ public sealed class PrototypeSpriteIndex
 
         var scanned = 0;
         var failed = 0;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var protoRoot in roots)
         foreach (var file in Directory.EnumerateFiles(protoRoot, "*.yml", SearchOption.AllDirectories)
                      .Concat(Directory.EnumerateFiles(protoRoot, "*.yaml", SearchOption.AllDirectories))
                      .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
         {
+            // Prefer first tree's file when the same relative path appears twice.
+            var rel = Path.GetRelativePath(protoRoot, file);
+            if (!seen.Add(protoRoot + "|" + rel))
+                continue;
             scanned++;
             try
             {
@@ -161,9 +184,10 @@ public sealed class PrototypeSpriteIndex
             ResolveStorage(id, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
         }
 
+        var smoothCount = _smooth.Count(kv => kv.Value is not null);
         log?.Invoke(
-            $"prototypes: YAML parsed {_raw.Count} entities, {_resolved.Count(kv => kv.Value is not null)} sprites " +
-            $"from {scanned} files (failed={failed})");
+            $"prototypes: YAML parsed {_raw.Count} entities, {_resolved.Count(kv => kv.Value is not null)} sprites, " +
+            $"{smoothCount} IconSmooth from {scanned} files in {roots.Count} root(s) (failed={failed})");
     }
 
     void ParseFile(string path)
@@ -241,6 +265,9 @@ public sealed class PrototypeSpriteIndex
         if (TryBool(component, "noRot", out var noRot)
             || TryBool(component, "noRotation", out noRot))
             patch.NoRotation = noRot;
+        if (TryBool(component, "snapCardinals", out var snap)
+            || TryBool(component, "SnapCardinals", out snap))
+            patch.SnapCardinals = snap;
         if (TryParseDrawDepth(component, out var depth))
             patch.DrawDepth = depth;
 
@@ -293,33 +320,50 @@ public sealed class PrototypeSpriteIndex
         return new StorageVisuals(baseClosed, baseOpen, doorClosed, doorOpen);
     }
 
-    static IconSmoothData? ParseSmooth(YamlMappingNode component)
+    static IconSmoothPatch? ParseSmooth(YamlMappingNode component)
     {
-        var key = NullIfBlank(Scalar(component, "key"));
-        var stateBase = NullIfBlank(Scalar(component, "base"));
-        if (key is null || stateBase is null)
-            return null;
-        var mode = Scalar(component, "mode").ToLowerInvariant() switch
+        var patch = new IconSmoothPatch();
+        if (Has(component, "key"))
         {
-            "cardinalflags" => IconSmoothMode.CardinalFlags,
-            "diagonal" => IconSmoothMode.Diagonal,
-            "nosprite" => IconSmoothMode.NoSprite,
-            _ => IconSmoothMode.Corners,
-        };
-        string[]? additional = null;
+            patch.HasKey = true;
+            patch.Key = NullIfBlank(Scalar(component, "key"));
+        }
+
+        if (Has(component, "base"))
+        {
+            patch.HasBase = true;
+            patch.StateBase = NullIfBlank(Scalar(component, "base"));
+        }
+
+        if (Has(component, "mode"))
+        {
+            patch.Mode = Scalar(component, "mode").ToLowerInvariant() switch
+            {
+                "cardinalflags" => IconSmoothMode.CardinalFlags,
+                "diagonal" => IconSmoothMode.Diagonal,
+                "nosprite" => IconSmoothMode.NoSprite,
+                _ => IconSmoothMode.Corners,
+            };
+        }
+
         if (Get(component, "additionalKeys") is YamlSequenceNode seq)
         {
+            patch.HasAdditionalKeys = true;
             var list = new List<string>();
             foreach (var child in seq.Children)
             {
                 if (child is YamlScalarNode s && !string.IsNullOrWhiteSpace(s.Value))
                     list.Add(s.Value.Trim().Trim('"', '\''));
             }
+
             if (list.Count > 0)
-                additional = list.ToArray();
+                patch.AdditionalKeys = list.ToArray();
         }
 
-        return new IconSmoothData(key, stateBase, mode, additional);
+        // Accept partials (base-only child overrides). Empty mapping → ignore.
+        if (!patch.HasKey && !patch.HasBase && patch.Mode is null && !patch.HasAdditionalKeys)
+            return null;
+        return patch;
     }
 
     ResolvedSprite? ResolveSprite(string id, HashSet<string> visiting)
@@ -353,13 +397,36 @@ public sealed class PrototypeSpriteIndex
         if (!visiting.Add(id) || !_raw.TryGetValue(id, out var raw))
             return null;
         IconSmoothData? result = null;
+        // Later parents overlay earlier; child patch overlays all (PC component merge).
         foreach (var parent in raw.Parents)
-            result = ResolveSmooth(parent, visiting) ?? result;
-        result = raw.Smooth ?? result;
+            result = MergeSmooth(result, ResolveSmooth(parent, visiting));
+        result = ApplySmoothPatch(result, raw.Smooth);
         visiting.Remove(id);
         if (result is not null)
             _smooth[id] = result;
         return result;
+    }
+
+    static IconSmoothData? MergeSmooth(IconSmoothData? first, IconSmoothData? overlay) =>
+        overlay ?? first;
+
+    static IconSmoothData? ApplySmoothPatch(IconSmoothData? current, IconSmoothPatch? patch)
+    {
+        if (patch is null)
+            return current;
+
+        var key = patch.HasKey ? patch.Key : current?.Key;
+        var stateBase = patch.HasBase ? patch.StateBase : current?.StateBase;
+        var mode = patch.Mode ?? current?.Mode ?? IconSmoothMode.Corners;
+        var additional = patch.HasAdditionalKeys ? patch.AdditionalKeys : current?.AdditionalKeys;
+
+        // Drawable modes need key+base after merge. NoSprite may omit base.
+        if (string.IsNullOrWhiteSpace(key))
+            return current;
+        if (mode is not IconSmoothMode.NoSprite && string.IsNullOrWhiteSpace(stateBase))
+            return current;
+
+        return new IconSmoothData(key!, stateBase ?? "", mode, additional);
     }
 
     StorageVisuals? ResolveStorage(string id, HashSet<string> visiting)
@@ -395,7 +462,8 @@ public sealed class PrototypeSpriteIndex
             overlay.State ?? first?.State,
             overlay.NoRotation || first?.NoRotation == true,
             overlay.DrawDepth ?? first?.DrawDepth,
-            overlay.Layers.Count > 0 ? overlay.Layers : first?.Layers ?? Array.Empty<SpriteLayer>());
+            overlay.Layers.Count > 0 ? overlay.Layers : first?.Layers ?? Array.Empty<SpriteLayer>(),
+            overlay.SnapCardinals || first?.SnapCardinals == true);
 
     static ResolvedSprite Apply(ResolvedSprite? inherited, SpritePatch patch) =>
         new(
@@ -403,7 +471,8 @@ public sealed class PrototypeSpriteIndex
             patch.HasState ? patch.State : inherited?.State,
             patch.NoRotation ?? inherited?.NoRotation ?? false,
             patch.DrawDepth ?? inherited?.DrawDepth,
-            patch.HasLayers ? patch.Layers.ToArray() : inherited?.Layers ?? Array.Empty<SpriteLayer>());
+            patch.HasLayers ? patch.Layers.ToArray() : inherited?.Layers ?? Array.Empty<SpriteLayer>(),
+            patch.SnapCardinals ?? inherited?.SnapCardinals ?? false);
 
     static YamlNode? Get(YamlMappingNode map, string key)
     {
@@ -486,22 +555,42 @@ public sealed class PrototypeSpriteIndex
     /// </summary>
     public static bool IsDefaultHiddenOverlay(string? mapKey, string? state)
     {
-        var key = (mapKey ?? "") + " " + (state ?? "");
+        var map = mapKey ?? "";
+        var st = state ?? "";
+        var key = map + " " + st;
+
+        // Lathe/techfab powered glow is bare "unlit" — must stay visible (PC LatheSystem).
+        if (st.Equals("unlit", StringComparison.OrdinalIgnoreCase)
+            && !map.Contains("DoorVisual", StringComparison.OrdinalIgnoreCase)
+            && !map.Contains("BaseUnlit", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Inserting / panel overlays stay off until Appearance says otherwise.
+        if (map.Contains("Inserting", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("inserting", StringComparison.OrdinalIgnoreCase)
+            || map.Contains("MaterialStorageVisualLayers", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         if (key.Contains("Weldable", StringComparison.OrdinalIgnoreCase)
             || key.Contains("BaseBolted", StringComparison.OrdinalIgnoreCase)
             || key.Contains("BaseEmergency", StringComparison.OrdinalIgnoreCase)
             || key.Contains("MaintenancePanel", StringComparison.OrdinalIgnoreCase)
             || key.Contains("WiresVisual", StringComparison.OrdinalIgnoreCase)
             || key.Contains("Electrified", StringComparison.OrdinalIgnoreCase)
-            || key.Contains("BaseUnlit", StringComparison.OrdinalIgnoreCase))
+            || key.Contains("BaseUnlit", StringComparison.OrdinalIgnoreCase)
+            || key.Contains("BaseEmagging", StringComparison.OrdinalIgnoreCase))
             return true;
-        if (state is not null
-            && (state.Equals("welded", StringComparison.OrdinalIgnoreCase)
-                || state.Equals("bolted_unlit", StringComparison.OrdinalIgnoreCase)
-                || state.Equals("emergency_unlit", StringComparison.OrdinalIgnoreCase)
-                || state.Equals("panel_open", StringComparison.OrdinalIgnoreCase)
-                || state.EndsWith("_unlit", StringComparison.OrdinalIgnoreCase)
-                || state.Contains("electrified", StringComparison.OrdinalIgnoreCase)))
+
+        if (st.Equals("welded", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("bolted_unlit", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("emergency_unlit", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("closed_unlit", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("panel_open", StringComparison.OrdinalIgnoreCase)
+            || st.Equals("sparks", StringComparison.OrdinalIgnoreCase)
+            || st.Contains("electrified", StringComparison.OrdinalIgnoreCase)
+            // Door overlays only — not lathe "unlit"
+            || (st.EndsWith("_unlit", StringComparison.OrdinalIgnoreCase)
+                && !st.Equals("unlit", StringComparison.OrdinalIgnoreCase)))
             return true;
         return false;
     }

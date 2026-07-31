@@ -21,6 +21,9 @@ public sealed class AczOnDemandFetcher
     readonly AczContentClient _acz = new();
     public int IndexedRsicCount { get; private set; }
 
+    /// <summary>Fired with RSI relative path after an on-demand write (per-path invalidate only).</summary>
+    public Action<string>? OnFilesWritten { get; set; }
+
     public bool IsReady
     {
         get { lock (_gate) return _rsicByPath is { Count: > 0 } && _filesRoot is not null; }
@@ -149,6 +152,20 @@ public sealed class AczOnDemandFetcher
                         new[] { (indexCopy, pathCopy) },
                         rootCopy,
                         ct: CancellationToken.None);
+                    // Allow re-parse after ACZ write — never keep a pre-download null/stale atlas.
+                    var local = Path.Combine(rootCopy, pathCopy.Replace('/', Path.DirectorySeparatorChar));
+                    RsiAtlas.Invalidate(local);
+                    if (pathCopy.EndsWith("/meta.json", StringComparison.OrdinalIgnoreCase))
+                        RsiAtlas.Invalidate(Path.GetDirectoryName(local) ?? local);
+
+                    // Per-path invalidate only — never wipe global IconSmooth / remap caches.
+                    var rsiHint = GuessRsiRelative(pathCopy);
+                    if (rsiHint is not null)
+                    {
+                        IconSmoothInfer.Invalidate(rootCopy, rsiHint);
+                        try { OnFilesWritten?.Invoke(rsiHint); } catch { /* ignore */ }
+                    }
+
                     log?.Invoke($"ondemand OK {pathCopy}");
                 }
                 catch (Exception ex)
@@ -163,6 +180,22 @@ public sealed class AczOnDemandFetcher
                 }
             });
         }
+    }
+
+    static string? GuessRsiRelative(string texturePath)
+    {
+        var p = texturePath.Replace('\\', '/');
+        if (!p.StartsWith("Textures/", StringComparison.OrdinalIgnoreCase))
+            return null;
+        p = p["Textures/".Length..];
+        if (p.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
+            return p[..^5] + ".rsi";
+        var meta = p.LastIndexOf(".rsi/", StringComparison.OrdinalIgnoreCase);
+        if (meta >= 0)
+            return p[..(meta + 4)];
+        if (p.EndsWith(".rsi/meta.json", StringComparison.OrdinalIgnoreCase))
+            return p[..^"/meta.json".Length];
+        return null;
     }
 
     public static IEnumerable<string> CandidateTexturePaths(string rsiRelative, string? preferredState = null)
@@ -181,7 +214,10 @@ public sealed class AczOnDemandFetcher
         yield return $"Textures/{noExt}.rsic";
         yield return $"Textures/{noExt}.rsi/meta.json";
         if (!string.IsNullOrWhiteSpace(preferredState))
-            yield return $"Textures/{noExt}.rsi/{preferredState}.png";
+        {
+            foreach (var alt in RsiMeta.PreferredStateAlternates(preferredState))
+                yield return $"Textures/{noExt}.rsi/{alt}.png";
+        }
     }
 
     /// <summary>
