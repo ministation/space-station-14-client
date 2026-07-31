@@ -1,7 +1,7 @@
 param(
     [string]$Configuration = "Release",
     [string]$OutputDir = "artifacts",
-    [string]$ApkName = "RobustAndroidPort-0.1.0-hub-beta.apk"
+    [string]$ApkName = "RobustAndroidPort-0.3.8.apk"
 )
 
 $ErrorActionPreference = "Stop"

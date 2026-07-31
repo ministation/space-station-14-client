@@ -25,6 +25,12 @@ public sealed class ContentClientSystemHost : IClientSystem
     {
         if (Attempted || LoadSystem is null || !LoadSystem.Attempted)
             return;
+        if (!ClientFeatureFlags.RunContentSystemHost)
+        {
+            Attempted = true;
+            Status = "skip flag-off";
+            return;
+        }
         if (!LoadSystem.Host.FullTypeLoadOk)
         {
             Attempted = true;
@@ -34,7 +40,14 @@ public sealed class ContentClientSystemHost : IClientSystem
         }
 
         Attempted = true;
-        Status = Bootstrap();
+        try
+        {
+            Status = Bootstrap();
+        }
+        catch (Exception ex)
+        {
+            Status = "systems CRASH: " + ex.GetType().Name + ": " + ex.Message;
+        }
         Log?.Invoke($"content.systems: {Status}");
     }
 

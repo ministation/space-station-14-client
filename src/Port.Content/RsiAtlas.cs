@@ -252,13 +252,26 @@ public sealed class RsiAtlas
 
         // Packed .rsic: meta sometimes drops directions:4 while still packing 4 frames.
         // Clamping DirOverride to DirCount-1 (=0) yields four identical SE corners (white L).
-        if (dirOverride >= 0 && state.DirCount <= 1 && state.TotalFrames >= 4)
+        // Only expand when this state owns ≥4 sheet cells (explicit TotalFrames or gap to next).
+        if (dirOverride >= 0 && state.DirCount <= 1)
         {
-            var sheetIndex = state.SheetOffset + Math.Clamp(dirOverride, 0, state.TotalFrames - 1);
             var dimPackedFix = Math.Max(1, atlasW / Math.Max(1, atlas.FrameW));
-            var fcol = sheetIndex % dimPackedFix;
-            var frow = sheetIndex / dimPackedFix;
-            return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, fcol, frow);
+            var dimY = Math.Max(1, atlasH / Math.Max(1, atlas.FrameH));
+            var atlasCells = Math.Max(1, dimPackedFix * dimY);
+            var span = state.TotalFrames >= 4
+                ? state.TotalFrames
+                : InferPackedStateSpan(atlas, state, atlasCells);
+            if (span >= 4)
+            {
+                var frameInState = Math.Clamp(dirOverride, 0, Math.Min(3, span - 1));
+                var sheetIndex = state.SheetOffset + frameInState;
+                if (sheetIndex < atlasCells)
+                {
+                    var fcol = sheetIndex % dimPackedFix;
+                    var frow = sheetIndex / dimPackedFix;
+                    return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, fcol, frow);
+                }
+            }
         }
 
         var dir = dirOverride >= 0
@@ -291,6 +304,22 @@ public sealed class RsiAtlas
         var scol = sheetIndex2 % dimPacked;
         var srow = sheetIndex2 / dimPacked;
         return UvFromCell(atlas.FrameW, atlas.FrameH, atlasW, atlasH, scol, srow);
+    }
+
+    /// <summary>
+    /// Gap from this state's SheetOffset to the next state's offset (or atlas end).
+    /// Used when meta claims directions:1 / 1 frame but the atlas still packs 4 dir cells.
+    /// </summary>
+    static int InferPackedStateSpan(Loaded atlas, StateInfo state, int atlasCells)
+    {
+        var next = atlasCells;
+        foreach (var other in atlas.States.Values)
+        {
+            if (other.SheetOffset > state.SheetOffset)
+                next = Math.Min(next, other.SheetOffset);
+        }
+
+        return Math.Max(1, next - state.SheetOffset);
     }
 
     static UvRect UvFromCell(int frameW, int frameH, int atlasW, int atlasH, int col, int row)

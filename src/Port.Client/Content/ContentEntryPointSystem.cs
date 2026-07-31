@@ -24,6 +24,12 @@ public sealed class ContentEntryPointSystem : IClientSystem
     {
         if (Attempted || LoadSystem is null || !LoadSystem.Attempted)
             return;
+        if (!ClientFeatureFlags.RunContentEntryPointBootstrap)
+        {
+            Attempted = true;
+            Status = "skip flag-off";
+            return;
+        }
         if (!LoadSystem.Host.FullTypeLoadOk)
         {
             Attempted = true;
@@ -33,7 +39,14 @@ public sealed class ContentEntryPointSystem : IClientSystem
         }
 
         Attempted = true;
-        Status = TryBootstrap();
+        try
+        {
+            Status = TryBootstrap();
+        }
+        catch (Exception ex)
+        {
+            Status = "Init CRASH: " + ex.GetType().Name + ": " + ex.Message;
+        }
         Log?.Invoke($"content.entrypoint: {Status}");
     }
 

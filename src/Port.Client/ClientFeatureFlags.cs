@@ -24,6 +24,18 @@ public static class ClientFeatureFlags
     public static bool LoadContentClientAssemblies { get; set; } = true;
 
     /// <summary>
+    /// When true, invoke Content.Client EntryPoint.Init via IoC after type-load.
+    /// Default false — Init pulls Clyde/UI and can hard-crash the Android process.
+    /// </summary>
+    public static bool RunContentEntryPointBootstrap { get; set; }
+
+    /// <summary>
+    /// When true, construct parameterless Content.*.Client EntitySystem types after type-load.
+    /// Default false — ctors often touch desktop-only natives.
+    /// </summary>
+    public static bool RunContentSystemHost { get; set; }
+
+    /// <summary>
     /// When true, Content.*.Client packs enter the NetSerializer reflection set.
     /// Default false — historically polluted DESER fail lists.
     /// </summary>

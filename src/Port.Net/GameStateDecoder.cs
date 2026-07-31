@@ -396,42 +396,41 @@ public static class GameStateDecoder
             return;
         }
 
-        // Prototype-first (PC netsync:false): never wipe a good YAML layer stack with an
-        // empty/incomplete SpriteComponentState. Network only overlays present fields.
-        if (prev is { FromNetwork: false })
-        {
-            vis = CloneVisual(prev);
-            vis.FromNetwork = true; // mark that network touched it, but keep proto layers
-        }
+        // Prototype-first (PC netsync:false): YAML owns RSI path/layers after compose.
+        // Never flip FromNetwork→true — that let the next MsgState replace chair/locker/door
+        // stacks with sparse/wrong network layers (~90% wrong sprites).
+        var protoOwned = prev is { FromNetwork: false };
+        if (protoOwned)
+            vis = CloneVisual(prev!);
         else if (prev is { FromNetwork: true })
-        {
             vis = prev;
-        }
         else
-        {
             vis = new SpriteVisual { FromNetwork = true };
-        }
 
-        if (netPath is not null)
+        // Proto-owned: ignore network RSI path/state (Appearance/Door handle visuals).
+        if (!protoOwned && netPath is not null)
             vis.Path = netPath;
 
-        foreach (var name in new[] { "Layer", "State", "RsiState", "BaseRsiState", "ActualRsiState" })
+        if (!protoOwned)
         {
-            var p = t.GetProperty(name)?.GetValue(state)
-                    ?? t.GetField(name)?.GetValue(state);
-            if (p is string s && !string.IsNullOrWhiteSpace(s))
+            foreach (var name in new[] { "Layer", "State", "RsiState", "BaseRsiState", "ActualRsiState" })
             {
-                vis.State = s;
-                break;
-            }
-
-            var asStr = p?.ToString();
-            if (!string.IsNullOrWhiteSpace(asStr) && asStr is not "null")
-            {
-                if (asStr.Length < 64 && !asStr.Contains('.'))
+                var p = t.GetProperty(name)?.GetValue(state)
+                        ?? t.GetField(name)?.GetValue(state);
+                if (p is string s && !string.IsNullOrWhiteSpace(s))
                 {
-                    vis.State = asStr;
+                    vis.State = s;
                     break;
+                }
+
+                var asStr = p?.ToString();
+                if (!string.IsNullOrWhiteSpace(asStr) && asStr is not "null")
+                {
+                    if (asStr.Length < 64 && !asStr.Contains('.'))
+                    {
+                        vis.State = asStr;
+                        break;
+                    }
                 }
             }
         }
@@ -484,7 +483,9 @@ public static class GameStateDecoder
 
         var layers = t.GetProperty("Layers")?.GetValue(state)
                      ?? t.GetField("Layers")?.GetValue(state);
-        if (layers is System.Collections.IEnumerable en)
+        // Proto-owned stacks are sealed — network layers (even equal count) used to wipe
+        // YAML base+door / computer body+keys with wrong RSI states every MsgState.
+        if (!protoOwned && layers is System.Collections.IEnumerable en)
         {
             var parsed = new List<LayerVis>();
             foreach (var layer in en)

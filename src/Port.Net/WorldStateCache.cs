@@ -200,7 +200,13 @@ public sealed class WorldStateCache
 
     public void SetPrototypeIndex(PrototypeSpriteIndex? index)
     {
-        lock (this) _protos = index;
+        lock (this)
+        {
+            _protos = index;
+            // Entities composed before YAML load stuck with network path/state — force recompose.
+            _composedFromProto.Clear();
+            _composedProtoId.Clear();
+        }
     }
 
     public void SetTileIndex(TilePrototypeIndex? index)
@@ -215,6 +221,7 @@ public sealed class WorldStateCache
             _contentRoot = contentFilesRoot;
             _iconSmoothRemapCache.Clear();
             _iconSmoothRemapLogged.Clear();
+            IconSmoothInfer.ClearCache();
         }
     }
 
@@ -1247,6 +1254,21 @@ public sealed class WorldStateCache
                 return true;
         }
 
+        // YAML layer stack richer than what we have (compose raced before protos / network wiped).
+        if (!IsPlayerLike(prototypeId, spr))
+        {
+            var resolved = _protos?.TryGetResolvedSprite(prototypeId);
+            if (resolved is { Layers.Count: > 0 }
+                && spr.Layers.Count < resolved.Layers.Count)
+                return true;
+            if (resolved is not null
+                && spr.Layers.Count == 0
+                && (!string.IsNullOrEmpty(resolved.Path) || !string.IsNullOrEmpty(resolved.State)
+                    || resolved.Layers.Count > 0)
+                && spr.FromNetwork)
+                return true;
+        }
+
         // Non-smooth structure with no drawable art yet.
         return spr.Layers.Count == 0 && string.IsNullOrEmpty(spr.Path) && string.IsNullOrEmpty(spr.State);
     }
@@ -1293,6 +1315,7 @@ public sealed class WorldStateCache
         if (TryResolveIconSmooth(prototypeId, path, out var smooth) && IsDrawableIconSmooth(smooth))
         {
             var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
+            visual.FromNetwork = false; // seal — network must not reintroduce state:full layers
             visual.Path = path;
             visual.State = null;
             visual.Layers.Clear();
@@ -1323,9 +1346,10 @@ public sealed class WorldStateCache
         }
 
         var rebuilt = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
-        // Authoritative path/state from prototype — stop sticky wrong network states.
+        // Authoritative path/state from prototype — never keep sticky network states (chairs→brass).
+        rebuilt.FromNetwork = false;
         rebuilt.Path = resolved.Path ?? rebuilt.Path;
-        rebuilt.State = resolved.State ?? rebuilt.State;
+        rebuilt.State = resolved.State;
         if (resolved.DrawDepth is { } depth)
         {
             rebuilt.DrawDepth = depth;
@@ -1371,7 +1395,10 @@ public sealed class WorldStateCache
         var visual = existing ?? new GameStateDecoder.SpriteVisual { FromNetwork = false };
         if (string.IsNullOrEmpty(visual.Path))
             visual.Path = resolved.Path;
-        if (string.IsNullOrEmpty(visual.State))
+        // YAML state wins; for non-mobs clear sticky network states when YAML has one.
+        if (resolved.State is not null)
+            visual.State = resolved.State;
+        else if (string.IsNullOrEmpty(visual.State))
             visual.State = resolved.State;
         if (!visual.HasDrawDepth && resolved.DrawDepth is { } dd)
         {
@@ -1398,6 +1425,10 @@ public sealed class WorldStateCache
                     resolved.Path, resolved.State, visual.DrawDepth, true,
                     255, 255, 255, 0, 0, visual.HasDrawDepth));
             }
+
+            // Seal non-mob YAML fills so the next MsgState cannot wipe them.
+            if (visual.Layers.Count > 0 && !IsPlayerLike(prototypeId, visual))
+                visual.FromNetwork = false;
         }
 
         visual.SnapCardinals = visual.SnapCardinals || resolved.SnapCardinals;

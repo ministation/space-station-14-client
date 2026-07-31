@@ -2,7 +2,7 @@
 
 ## APK
 
-`artifacts/RobustAndroidPort-0.1.0-hub-beta.apk`
+`artifacts/RobustAndroidPort-0.3.8.apk`
 
 ## Product
 

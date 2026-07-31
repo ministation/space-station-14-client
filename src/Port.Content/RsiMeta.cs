@@ -85,16 +85,15 @@ public static class RsiMeta
         {
             if (!File.Exists(c))
                 continue;
-            // If packed atlas parses but lacks the requested state, fall through to folder
-            // PNGs (IconSmooth solidN / furniture states). Do not trap on a useless .rsic.
-            if (!string.IsNullOrWhiteSpace(preferredState))
-            {
-                var atlas = RsiAtlas.TryLoad(c);
-                if (atlas is not null && !AtlasHasAnyState(atlas, preferredState))
-                    continue;
-                // Do NOT reject 1-dir numbered states (grille_damaged_0, gsensor0, …).
-                // IconSmooth 4-dir DirOverride is handled in RsiAtlas.Sample / GLES ResolveUv.
-            }
+            // Prefer .rsic only when meta parses AND contains the requested state.
+            // Unreadable / incomplete atlases used to trap us → SingleCellUv → brass chairs.
+            var atlas = RsiAtlas.TryLoad(c);
+            if (atlas is null)
+                continue;
+            if (!string.IsNullOrWhiteSpace(preferredState) && !AtlasHasAnyState(atlas, preferredState))
+                continue;
+            // Do NOT reject 1-dir numbered states (grille_damaged_0, gsensor0, …).
+            // IconSmooth 4-dir DirOverride is handled in RsiAtlas.Sample / GLES ResolveUv.
 
             return new RsiSource(c, IsRsic: true);
         }
@@ -164,13 +163,11 @@ public static class RsiMeta
         if (File.Exists(rsiPathOrDirectory)
             && rsiPathOrDirectory.EndsWith(".rsic", StringComparison.OrdinalIgnoreCase))
         {
-            // If meta parsed and lacks the state → refuse (caller / FindRsiSource can use folder).
-            // If meta is not yet readable (null) → still bind the PNG so sprites appear;
-            // ResolveUv falls back to SingleCellUv until atlas meta succeeds.
             if (!string.IsNullOrWhiteSpace(preferredState))
             {
                 var atlas = RsiAtlas.TryLoad(rsiPathOrDirectory);
-                if (atlas is not null && !AtlasHasAnyState(atlas, preferredState))
+                // Unreadable meta → refuse so caller can fall through to folder PNGs.
+                if (atlas is null || !AtlasHasAnyState(atlas, preferredState))
                     return null;
             }
 

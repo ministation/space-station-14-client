@@ -174,12 +174,15 @@ public class MainActivity : Activity
             catch { /* ignore */ }
         };
         base.OnCreate(savedInstanceState);
-        // Full-client foundation: YAML+meta sprites; Content.Client host-load on.
+        // Full-client foundation: YAML+meta sprites. Content.Client type-load is heavy on Android
+        // and not required for observe sprites (WorldStateCache + PrototypeSpriteIndex).
         ClientFeatureFlags.AuthoritativeSprites = true;
         ClientFeatureFlags.StrictRsiStates = true;
-        // Host-load Content.Client for type discovery; keep out of NetSerializer for now.
-        ClientFeatureFlags.LoadContentClientAssemblies = true;
+        ClientFeatureFlags.LoadContentClientAssemblies = false;
         ClientFeatureFlags.ReflectContentClientInSerializer = false;
+        // Never auto-run Content.Client EntryPoint/System ctors — they hard-crash observe on device.
+        ClientFeatureFlags.RunContentEntryPointBootstrap = false;
+        ClientFeatureFlags.RunContentSystemHost = false;
         _renderSystem = new ClydeRenderSystem();
         var boot = ClientBootstrap.CreateDefaultLoop(render: _renderSystem);
         _clientLoop = boot.Loop;
@@ -241,37 +244,51 @@ public class MainActivity : Activity
         _uiTimer = new Timer(50);
         _uiTimer.Elapsed += (_, _) =>
         {
-            _host?.Clock.Pulse();
-            _clientLoop?.FrameUpdate(0.05f);
-            var observing = _uiObserving || _connect.Observing;
-            if (observing)
+            try
             {
-                _connect.Session.SetFlightInput(_flightX, _flightY);
-                _connect.Session.TickFlight(0.05f);
-            }
-
-            RunOnUiThread(() =>
-            {
+                _host?.Clock.Pulse();
+                _clientLoop?.FrameUpdate(0.05f);
+                var observing = _uiObserving || _connect.Observing;
                 if (observing)
                 {
-                    _uiTick++;
-                    // Camera every tick; full entity/tile/audio only when ToSequence changes.
-                    PushWorldToGl(forceEntities: false);
-                    // Overlay + FPS ≤4 Hz (every 5 × 50ms).
-                    if (_uiTick % 5 == 0)
-                        UpdateObserveOverlay();
-                    var now = Environment.TickCount64;
-                    if (now - _lastFullUiMs > 1500)
-                    {
-                        _lastFullUiMs = now;
-                        RenderStatus(skipWorldPush: true);
-                    }
+                    _connect.Session.SetFlightInput(_flightX, _flightY);
+                    _connect.Session.TickFlight(0.05f);
                 }
-                else
+
+                RunOnUiThread(() =>
                 {
-                    RenderStatus();
-                }
-            });
+                    try
+                    {
+                        if (observing)
+                        {
+                            _uiTick++;
+                            // Camera every tick; full entity/tile/audio only when ToSequence changes.
+                            PushWorldToGl(forceEntities: false);
+                            // Overlay + FPS ≤4 Hz (every 5 × 50ms).
+                            if (_uiTick % 5 == 0)
+                                UpdateObserveOverlay();
+                            var now = Environment.TickCount64;
+                            if (now - _lastFullUiMs > 1500)
+                            {
+                                _lastFullUiMs = now;
+                                RenderStatus(skipWorldPush: true);
+                            }
+                        }
+                        else
+                        {
+                            RenderStatus();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        DiagLog.Error($"ui tick FAIL {ex.GetType().Name}: {ex.Message}");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                DiagLog.Error($"timer FAIL {ex.GetType().Name}: {ex.Message}");
+            }
         };
         _uiTimer.AutoReset = true;
 
@@ -611,29 +628,37 @@ public class MainActivity : Activity
                     return;
                 }
 
-                // Enter observe UI first so orientation/recreate cannot drop us to hub mid-command.
-                _uiObserving = true;
-                s_uiObserving = true;
-                EnsureGl();
-                _glView?.Renderer.SetGhostMode(true);
-                // Landscape only once we are already on the server (lobby→observe).
-                ApplyOrientation(landscape: true);
-                RenderStatus();
-
-                if (!_connect.Observe())
+                try
                 {
-                    _uiObserving = false;
-                    s_uiObserving = false;
-                    Toast.MakeText(this, "Не удалось отправить observe", ToastLength.Short)?.Show();
+                    // Enter observe UI first so orientation/recreate cannot drop us to hub mid-command.
+                    _uiObserving = true;
+                    s_uiObserving = true;
+                    EnsureGl();
+                    _glView?.Renderer.SetGhostMode(true);
+                    // Landscape only once we are already on the server (lobby→observe).
+                    ApplyOrientation(landscape: true);
                     RenderStatus();
-                    return;
-                }
 
-                Toast.MakeText(this, "Наблюдение — джойстик / drag / ✈ варп", ToastLength.Short)?.Show();
-                EnsureJoystick();
-                ApplyObserveImmersive(true);
-                RefreshGhostActionButtons();
-                RenderStatus();
+                    if (!_connect.Observe())
+                    {
+                        _uiObserving = false;
+                        s_uiObserving = false;
+                        Toast.MakeText(this, "Не удалось отправить observe", ToastLength.Short)?.Show();
+                        RenderStatus();
+                        return;
+                    }
+
+                    Toast.MakeText(this, "Наблюдение — джойстик / drag / ✈ варп", ToastLength.Short)?.Show();
+                    EnsureJoystick();
+                    ApplyObserveImmersive(true);
+                    RefreshGhostActionButtons();
+                    RenderStatus();
+                }
+                catch (Exception ex)
+                {
+                    DiagLog.Error($"observe enter FAIL {ex.GetType().Name}: {ex.Message}");
+                    Toast.MakeText(this, $"Observe crash: {ex.GetType().Name}", ToastLength.Long)?.Show();
+                }
             };
 
         WireZoom(Resource.Id.btn_zoom_in, 1.15f);

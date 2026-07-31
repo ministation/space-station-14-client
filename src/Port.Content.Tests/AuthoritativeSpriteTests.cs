@@ -286,6 +286,7 @@ public sealed class AuthoritativeSpriteTests
     {
         public bool Visible { get; set; }
         public string? RSI { get; set; }
+        public string? State { get; set; }
         public List<object>? Layers { get; set; }
     }
 
@@ -772,6 +773,128 @@ public sealed class AuthoritativeSpriteTests
     }
 
     [Fact]
+    public void IconSmoothPackedDirCountOneTotalFramesOneStillUsesDirOverride()
+    {
+        // Meta lies (directions:1, one delay) but next state starts 4 cells later → expand dirs.
+        var solid0 = new RsiAtlas.StateInfo
+        {
+            Name = "solid0",
+            DirCount = 1,
+            Delays = [new[] { 1f }],
+            SheetOffset = 0,
+            TotalFrames = 1,
+        };
+        var solid1 = new RsiAtlas.StateInfo
+        {
+            Name = "solid1",
+            DirCount = 1,
+            Delays = [new[] { 1f }],
+            SheetOffset = 4,
+            TotalFrames = 1,
+        };
+        var atlas = new RsiAtlas.Loaded
+        {
+            SourcePath = "solid.rsic",
+            FrameW = 32,
+            FrameH = 32,
+            AtlasW = 256,
+            AtlasH = 32,
+            DimX = 8,
+            States = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["solid0"] = solid0,
+                ["solid1"] = solid1,
+            },
+            FrameCounts = [1, 1],
+            StateOrder = ["solid0", "solid1"],
+        };
+
+        var a = RsiAtlas.Sample(atlas, "solid0", 0, 0, dirOverride: 0);
+        var b = RsiAtlas.Sample(atlas, "solid0", 0, 0, dirOverride: 3);
+        Assert.True(a.FrameW >= 1f);
+        Assert.True(b.FrameW >= 1f);
+        Assert.NotEqual(a.U0, b.U0);
+    }
+
+    [Fact]
+    public void IconSmoothPackedSingleFrameStatesDoNotStealNeighborCells()
+    {
+        var solid0 = new RsiAtlas.StateInfo
+        {
+            Name = "solid0",
+            DirCount = 1,
+            Delays = [new[] { 1f }],
+            SheetOffset = 0,
+            TotalFrames = 1,
+        };
+        var solid1 = new RsiAtlas.StateInfo
+        {
+            Name = "solid1",
+            DirCount = 1,
+            Delays = [new[] { 1f }],
+            SheetOffset = 1,
+            TotalFrames = 1,
+        };
+        var atlas = new RsiAtlas.Loaded
+        {
+            SourcePath = "solid.rsic",
+            FrameW = 32,
+            FrameH = 32,
+            AtlasW = 64,
+            AtlasH = 32,
+            DimX = 2,
+            States = new(StringComparer.OrdinalIgnoreCase)
+            {
+                ["solid0"] = solid0,
+                ["solid1"] = solid1,
+            },
+            FrameCounts = [1, 1],
+            StateOrder = ["solid0", "solid1"],
+        };
+
+        var a = RsiAtlas.Sample(atlas, "solid0", 0, 0, dirOverride: 0);
+        var b = RsiAtlas.Sample(atlas, "solid0", 0, 0, dirOverride: 3);
+        // Span to next is 1 — must not walk into solid1.
+        Assert.Equal(a.U0, b.U0);
+    }
+
+    [Fact]
+    public void FindRsiSourceSkipsUnreadableRsicWhenStateRequested()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "port-rsic-skip-" + Guid.NewGuid().ToString("N"));
+        var tex = Path.Combine(root, "Textures", "Structures", "Furniture");
+        Directory.CreateDirectory(tex);
+        try
+        {
+            // Fake .rsic that is not a valid PNG+meta — must fall through to folder.
+            File.WriteAllBytes(Path.Combine(tex, "chairs.rsic"), [0x00, 0x01, 0x02]);
+            var dir = Path.Combine(tex, "chairs.rsi");
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "meta.json"), """
+                {"version":1,"size":{"x":32,"y":32},"states":[{"name":"chair"},{"name":"brass_chair"}]}
+                """);
+            File.WriteAllBytes(Path.Combine(dir, "chair.png"), MinimalPng(32, 32));
+            File.WriteAllBytes(Path.Combine(dir, "brass_chair.png"), MinimalPng(32, 32));
+
+            var src = RsiMeta.FindRsiSource(root, "Structures/Furniture/chairs.rsi", "chair");
+            Assert.NotNull(src);
+            Assert.False(src!.Value.IsRsic);
+            Assert.Contains("chairs.rsi", src.Value.Path.Replace('\\', '/'));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    static byte[] MinimalPng(int w, int h)
+    {
+        // 1x1 PNG is enough for File.Exists checks; size probe may fail — OK for FindRsiSource.
+        return Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+    }
+
+    [Fact]
     public void ChildIconSmoothBaseOnlyMergesParentKey()
     {
         var root = Path.Combine(Path.GetTempPath(), "port-swin-" + Guid.NewGuid().ToString("N"));
@@ -1065,6 +1188,43 @@ public sealed class AuthoritativeSpriteTests
         Assert.Equal(2, sprites[ent].Layers.Count);
         Assert.Equal("closed", sprites[ent].Layers[0].State);
         Assert.True(sprites[ent].SnapCardinals);
+    }
+
+    [Fact]
+    public void EqualCountWrongNetworkLayersDoNotWipeProtoOwnedStack()
+    {
+        var ent = new NetEntity(13);
+        var proto = new GameStateDecoder.SpriteVisual
+        {
+            FromNetwork = false,
+            Path = "Structures/Storage/closet.rsi",
+        };
+        proto.Layers.Add(new GameStateDecoder.LayerVis(
+            "Structures/Storage/closet.rsi", "base", 0, true, 255, 255, 255,
+            MapKey: "enum.StorageVisualLayers.Base"));
+        proto.Layers.Add(new GameStateDecoder.LayerVis(
+            "Structures/Storage/closet.rsi", "door_closed", 0, true, 255, 255, 255,
+            MapKey: "enum.StorageVisualLayers.Door"));
+        var sprites = new Dictionary<NetEntity, GameStateDecoder.SpriteVisual> { [ent] = proto };
+
+        // Same layer count, wrong RSI states — old code replaced YAML and chairs/lockers broke.
+        GameStateDecoder.TryExtractSpritePublic(new SpriteComponentState
+        {
+            Visible = true,
+            RSI = "Structures/Storage/closet.rsi",
+            State = "brass",
+            Layers =
+            [
+                new NetLayer { State = "brass", Visible = true },
+                new NetLayer { State = "open", Visible = true },
+            ],
+        }, ent, sprites);
+
+        Assert.False(sprites[ent].FromNetwork);
+        Assert.Equal(2, sprites[ent].Layers.Count);
+        Assert.Equal("base", sprites[ent].Layers[0].State);
+        Assert.Equal("door_closed", sprites[ent].Layers[1].State);
+        Assert.Equal("Structures/Storage/closet.rsi", sprites[ent].Path);
     }
 
     [Fact]

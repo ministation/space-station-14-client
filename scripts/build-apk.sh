@@ -89,11 +89,14 @@ if [ "$CLEAN" = false ]; then
     dotnet restore "${SOLUTION_PATH}"
 fi
 
+# Debug without EmbedAssembliesIntoApk produces a Fast Deployment shell (~8MB)
+# that crashes immediately when sideloaded (no managed DLLs in the APK).
 dotnet publish "${PROJECT_PATH}" \
     -c "${CONFIGURATION}" \
     ${RID} \
     -o "${ARTIFACTS_DIR}/${CONFIGURATION}" \
-    /p:AndroidPackageFormat=apk
+    /p:AndroidPackageFormat=apk \
+    /p:EmbedAssembliesIntoApk=true
 
 echo ""
 echo "✅ Build completed successfully!"

@@ -141,9 +141,9 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
     /// </summary>
     const int MaxTexCache = 12_000;
     const long MaxTexBytes = 512L * 1024 * 1024;
-    // PNG/atlas decode on the GL thread — keep budgets modest to avoid frame spikes.
-    const int LoadsPerFrame = 8;
-    const int LoadsPerFrameBurst = 16;
+    // PNG decode on GL thread stalls frames — keep modest; correctness fixes cut reload thrash.
+    const int LoadsPerFrame = 6;
+    const int LoadsPerFrameBurst = 14;
     long _burstLoadsUntilFrame;
     int _pendingBurstFrames; // set from any thread; consumed on GL thread
     readonly Dictionary<string, int> _texFailCount = new(StringComparer.OrdinalIgnoreCase);
@@ -1208,20 +1208,31 @@ public sealed class GlesClearRenderer : Java.Lang.Object, GLSurfaceView.IRendere
                     overrideAtlasW: ow, overrideAtlasH: oh);
                 if (sampled.FrameW >= 1f && sampled.FrameH >= 1f)
                 {
-                    // Packed .rsic with DirCount=1 still collapses IconSmooth dirs — fix via strip.
-                    if (dirOverride >= 0
-                        && atlas.States.TryGetValue(stateAlt, out var st)
-                        && st.DirCount <= 1
-                        && TryDirCellUv(tex, dirOverride, out var stripUv))
-                        return stripUv;
+                    // Packed .rsic with DirCount=1: Sample already expands IconSmooth dirs.
+                    // Do NOT re-run TryDirCellUv on the full atlas (wrong cell → garbage walls).
                     return sampled;
                 }
             }
+
+            // Explicit state missing from atlas — never guess first cell (chairs→brass).
+            if (!string.IsNullOrWhiteSpace(state))
+                return new Port.Content.RsiAtlas.UvRect(0, 0, 0, 0, 0, 0);
         }
 
-        // Meta missing: geometric dir strip, else first cell only.
-        if (dirOverride >= 0 && TryDirCellUv(tex, dirOverride, out var dirUv))
-            return dirUv;
+        // Folder per-state PNG: whole texture IS the requested state.
+        if (tex.FolderMode)
+        {
+            if (dirOverride >= 0 && TryDirCellUv(tex, dirOverride, out var dirUv))
+                return dirUv;
+            return SingleCellUv(tex);
+        }
+
+        // Packed atlas without usable meta/state — hide rather than draw cell 0 (brass/full).
+        if (!string.IsNullOrWhiteSpace(state))
+            return new Port.Content.RsiAtlas.UvRect(0, 0, 0, 0, 0, 0);
+
+        if (dirOverride >= 0 && TryDirCellUv(tex, dirOverride, out var stripUv))
+            return stripUv;
 
         return SingleCellUv(tex);
     }
