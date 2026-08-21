@@ -19,8 +19,8 @@ public sealed record EngineVersionInfo(
 /// </summary>
 public sealed class EngineBuildClient
 {
-    public const string ManifestUrl = "https://robust-builds.cdn.spacestation14.com/manifest.json";
-    public const string ManifestFallbackUrl = "https://robust-builds.fallback.cdn.spacestation14.com/manifest.json";
+    public const string ManifestUrl = "https://cdn.ministation.ru/engine/manifest.json";
+    public const string ManifestFallbackUrl = "https://robust-builds.cdn.spacestation14.com/manifest.json";
 
     readonly HttpClient _http;
     static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
