@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..390298c
+index 0000000..e40edd6
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1478 @@
+@@ -0,0 +1,1476 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2702,8 +2702,6 @@ index 0000000..390298c
 +public sealed partial class MobileControlsOverlay : Control
 +{
 +    [Dependency] private readonly IConfigurationManager _cfg = default!;
-+    [Dependency] private readonly IUserInterfaceManagerInternal _uiMgr = default!;
-+    [Dependency] private readonly IClyde _clyde = default!;
 +    [Dependency] private readonly IStateManager _stateManager = default!;
 +
 +
