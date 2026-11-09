@@ -2532,7 +2532,7 @@ index 72d61cb..d432c59 100644
          _blink.Reset();
          EnsureCursorVisible();
 diff --git a/Robust.Client/UserInterface/CustomControls/DefaultWindow.xaml.cs b/Robust.Client/UserInterface/CustomControls/DefaultWindow.xaml.cs
-index 5be710c..41de673 100644
+index 5be710c..b09d7bd 100644
 --- a/Robust.Client/UserInterface/CustomControls/DefaultWindow.xaml.cs
 +++ b/Robust.Client/UserInterface/CustomControls/DefaultWindow.xaml.cs
 @@ -58,7 +58,7 @@ namespace Robust.Client.UserInterface.CustomControls
@@ -2553,7 +2553,21 @@ index 5be710c..41de673 100644
          protected virtual Vector2 ContentsMinimumSize => new Vector2(50, 50);
  
          protected override Vector2 MeasureOverride(Vector2 availableSize)
-@@ -201,7 +201,7 @@ namespace Robust.Client.UserInterface.CustomControls
+@@ -129,6 +129,13 @@ namespace Robust.Client.UserInterface.CustomControls
+         {
+             base.EnteredTree();
+ 
++            // On a phone the stock 16px cross is nearly impossible to hit with a finger.
++            if (OperatingSystem.IsAndroid())
++            {
++                CloseButton.Scale = new Vector2(2f, 2f);
++                CloseButton.MinSize = new Vector2(40f, 40f);
++            }
++
+             CloseButton.OnPressed += CloseButtonPressed;
+         }
+ 
+@@ -201,7 +208,7 @@ namespace Robust.Client.UserInterface.CustomControls
                  }
              }
  
@@ -2576,10 +2590,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..a50e8d5
+index 0000000..82865f4
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1156 @@
+@@ -0,0 +1,1170 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2708,6 +2722,7 @@ index 0000000..a50e8d5
 +        HorizontalAlignment = HAlignment.Center,
 +        VerticalAlignment = VAlignment.Center
 +    };
++    private readonly Button _dialogCloseBtn = new() { Text = "X", MinSize = new Vector2(34, 30) };
 +    private readonly Button _saveBtn = new() { Text = "SAVE" };
 +    private readonly Button _deleteBtn = new() { Text = "DELETE BUTTON" };
 +    private readonly Button _cancelBtn = new() { Text = "CANCEL" };
@@ -2848,6 +2863,10 @@ index 0000000..a50e8d5
 +        _doneBtn.OnPressed += _ => ToggleEditMode();
 +        barLayout.AddChild(_doneBtn);
 +
++        var editorCloseBtn = new Button { Text = "X", MinSize = new Vector2(34, 28) };
++        editorCloseBtn.OnPressed += _ => ToggleEditMode();
++        barLayout.AddChild(editorCloseBtn);
++
 +        _topUtilityContainer = new Control
 +        {
 +            MouseFilter = MouseFilterMode.Ignore,
@@ -2882,7 +2901,16 @@ index 0000000..a50e8d5
 +            Margin = new Thickness(14, 12)
 +        };
 +        _dialogPanel.AddChild(dialogContent);
-+        dialogContent.AddChild(_dialogTitle);
++        var dialogHeader = new BoxContainer
++        {
++            Orientation = BoxContainer.LayoutOrientation.Horizontal,
++            SeparationOverride = 8
++        };
++        _dialogTitle.HorizontalExpand = true;
++        dialogHeader.AddChild(_dialogTitle);
++        _dialogCloseBtn.OnPressed += _ => CloseModalDialog();
++        dialogHeader.AddChild(_dialogCloseBtn);
++        dialogContent.AddChild(dialogHeader);
 +
 +        var nameRow = new BoxContainer
 +        {
@@ -3738,10 +3766,10 @@ index 0000000..a50e8d5
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..4f00e0a
+index 0000000..bc6b7cf
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,375 @@
 +using System;
 +using System.Numerics;
 +using Robust.Client.Graphics;
@@ -4080,29 +4108,34 @@ index 0000000..4f00e0a
 +        var radius = MathF.Min(Size.X, Size.Y) / 2f - 1.5f;
 +        var active = _isPressed || IsToggled;
 +
++        // Terraria-like buttons: translucent round disc, thin bright rim, no heavy accent fill.
 +        var bg = active
-+            ? new Color(AccentColor.R, AccentColor.G, AccentColor.B, 0.78f)
-+            : new Color(18, 22, 32, 0.72f);
++            ? new Color(255, 255, 255, 46)
++            : new Color(16, 18, 24, 140);
++        var rim = IsEditMode
++            ? new Color(255, 215, 0, 245)
++            : active
++                ? new Color(255, 255, 255, 255)
++                : new Color(255, 255, 255, 120);
 +
-+        var border = IsEditMode
-+            ? new Color(255, 215, 0, 240)
-+            : (active ? Color.White : new Color(AccentColor.R, AccentColor.G, AccentColor.B, 0.65f));
-+
-+        var drawRadius = active ? (radius - 1f) : radius;
-+
++        var drawRadius = active ? radius - 1f : radius;
 +        handle.DrawCircle(center, drawRadius, bg, true);
-+        handle.DrawCircle(center, drawRadius, border, false);
++        handle.DrawCircle(center, drawRadius, rim, false);
 +
 +        if (active)
 +        {
-+            handle.DrawCircle(center, drawRadius * 0.75f, new Color(255, 255, 255, 40), false);
++            handle.DrawCircle(center, drawRadius * 0.78f, new Color(255, 255, 255, 34), false);
++        }
++        else
++        {
++            handle.DrawCircle(center, drawRadius * 0.86f, new Color(255, 255, 255, 16), false);
 +        }
 +
 +        if (IsToggle && IsToggled)
 +        {
-+            var badgePos = center + new Vector2(radius * 0.6f, -radius * 0.6f);
-+            handle.DrawCircle(badgePos, 4f, Color.White, true);
-+            handle.DrawCircle(badgePos, 2.5f, new Color(46, 204, 113), true);
++            var badgePos = center + new Vector2(radius * 0.62f, -radius * 0.62f);
++            handle.DrawCircle(badgePos, 5f, new Color(0, 0, 0, 120), true);
++            handle.DrawCircle(badgePos, 4f, new Color(120, 230, 150, 255), true);
 +        }
 +
 +        if (IsEditMode)
@@ -4114,10 +4147,10 @@ index 0000000..4f00e0a
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..6191ce5
+index 0000000..4e31f1e
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,323 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4377,60 +4410,67 @@ index 0000000..6191ce5
 +        base.Draw(handle);
 +
 +        var center = Size / 2f;
++        var pressed = _isPressed;
++        var accent = new Color(255, 222, 120, 255);
++        var idleLine = new Color(255, 255, 255, 130);
 +
-+        handle.DrawCircle(center, Radius, new Color(15, 15, 15, 150), true);
-+        var baseBorder = IsEditMode ? new Color(255, 215, 0, 240) : new Color(240, 240, 240, 200);
-+        handle.DrawCircle(center, Radius, baseBorder, false);
++        // Terraria-like base: a soft translucent disc with a visible outer ring.
++        handle.DrawCircle(center, Radius, new Color(255, 255, 255, pressed ? 26 : 16), true);
++        handle.DrawCircle(center, Radius, new Color(255, 255, 255, pressed ? 150 : 95), false);
++        handle.DrawCircle(center, Radius - 6f, new Color(0, 0, 0, 40), false);
 +
-+        handle.DrawCircle(center, Radius * 0.55f, new Color(255, 255, 255, 25), false);
++        // Four direction chevrons on the rim instead of tiny dots.
++        var arrowRadius = Radius * 0.78f;
++        var arrow = Radius * 0.16f;
++        DrawChevron(handle, center + new Vector2(0, -arrowRadius), 'U', arrow, _activeKeys.Contains(Keyboard.Key.W));
++        DrawChevron(handle, center + new Vector2(0, arrowRadius), 'D', arrow, _activeKeys.Contains(Keyboard.Key.S));
++        DrawChevron(handle, center + new Vector2(-arrowRadius, 0), 'L', arrow, _activeKeys.Contains(Keyboard.Key.A));
++        DrawChevron(handle, center + new Vector2(arrowRadius, 0), 'R', arrow, _activeKeys.Contains(Keyboard.Key.D));
 +
-+        var wActive = _activeKeys.Contains(Keyboard.Key.W);
-+        var sActive = _activeKeys.Contains(Keyboard.Key.S);
-+        var aActive = _activeKeys.Contains(Keyboard.Key.A);
-+        var dActive = _activeKeys.Contains(Keyboard.Key.D);
-+
-+        var activeColor = new Color(255, 225, 60, 255);
-+        var inactiveColor = new Color(255, 255, 255, 140);
-+
-+        var dotRadius = Radius - 10f;
-+        handle.DrawCircle(center + new Vector2(0, -dotRadius), wActive ? 6.5f : 4f, wActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(0, dotRadius), sActive ? 6.5f : 4f, sActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(-dotRadius, 0), aActive ? 6.5f : 4f, aActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(dotRadius, 0), dActive ? 6.5f : 4f, dActive ? activeColor : inactiveColor, true);
-+
-+        var diagOffset = dotRadius * 0.7071f;
-+        var wdActive = wActive && dActive;
-+        var waActive = wActive && aActive;
-+        var sdActive = sActive && dActive;
-+        var saActive = sActive && aActive;
-+
-+        handle.DrawCircle(center + new Vector2(diagOffset, -diagOffset), wdActive ? 6.5f : 3f, wdActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(-diagOffset, -diagOffset), waActive ? 6.5f : 3f, waActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(diagOffset, diagOffset), sdActive ? 6.5f : 3f, sdActive ? activeColor : inactiveColor, true);
-+        handle.DrawCircle(center + new Vector2(-diagOffset, diagOffset), saActive ? 6.5f : 3f, saActive ? activeColor : inactiveColor, true);
-+
-+        handle.DrawCircle(center, 5f, new Color(255, 255, 255, 90), true);
-+
-+        if (_isPressed && _knobOffset.LengthSquared() > 9f)
-+        {
-+            handle.DrawLine(center, center + _knobOffset, new Color(255, 255, 255, 140));
-+        }
-+
++        // Thumb knob, the only bright element, sized for a thumb not a mouse pointer.
 +        var knobCenter = center + _knobOffset;
-+        var knobBg = _isPressed
-+            ? new Color(255, 255, 255, 235)
-+            : new Color(210, 210, 210, 185);
-+
-+        var knobBorder = Color.White;
-+
-+        handle.DrawCircle(knobCenter, KnobRadius, knobBg, true);
-+        handle.DrawCircle(knobCenter, KnobRadius, knobBorder, false);
-+        handle.DrawCircle(knobCenter, 6f, new Color(30, 30, 30, 220), true);
++        handle.DrawCircle(knobCenter, KnobRadius, new Color(255, 255, 255, pressed ? 110 : 70), true);
++        handle.DrawCircle(knobCenter, KnobRadius, new Color(255, 255, 255, pressed ? 235 : 185), false);
++        handle.DrawCircle(knobCenter, KnobRadius * 0.45f, new Color(255, 255, 255, pressed ? 60 : 35), false);
++        handle.DrawCircle(knobCenter, 3f, new Color(255, 255, 255, 210), true);
 +
 +        if (IsEditMode)
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
 +            handle.DrawRect(box, new Color(255, 215, 0, 150), false);
++        }
++
++        void DrawChevron(DrawingHandleScreen h, Vector2 at, char dir, float size, bool active)
++        {
++            var color = active ? accent : idleLine;
++            var half = size * 0.55f;
++            Vector2 a, b, c;
++            switch (dir)
++            {
++                case 'U':
++                    a = at + new Vector2(-half, half * 0.55f);
++                    b = at + new Vector2(0, -half);
++                    c = at + new Vector2(half, half * 0.55f);
++                    break;
++                case 'D':
++                    a = at + new Vector2(-half, -half * 0.55f);
++                    b = at + new Vector2(0, half);
++                    c = at + new Vector2(half, -half * 0.55f);
++                    break;
++                case 'L':
++                    a = at + new Vector2(half * 0.55f, -half);
++                    b = at + new Vector2(-half, 0);
++                    c = at + new Vector2(half * 0.55f, half);
++                    break;
++                default:
++                    a = at + new Vector2(-half * 0.55f, -half);
++                    b = at + new Vector2(half, 0);
++                    c = at + new Vector2(-half * 0.55f, half);
++                    break;
++            }
++
++            h.DrawLine(a, b, color);
++            h.DrawLine(b, c, color);
 +        }
 +    }
 +}
