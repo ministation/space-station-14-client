@@ -3947,10 +3947,10 @@ index 0000000..396ba25
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..7394e92
+index 0000000..c15a109
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,633 @@
 +using System;
 +using System.Numerics;
 +using System.Collections.Generic;
@@ -4385,14 +4385,14 @@ index 0000000..7394e92
 +    {
 +        "..HHHHH..",
 +        "..H...H..",
-+        ".BBBBBBB.",
-+        "B.......B",
-+        "B.SSSSS.B",
-+        "B.S...S.B",
-+        "B.S...S.B",
-+        "B.SSSSS.B",
-+        "B.......B",
-+        ".BBBBBBB.",
++        ".DDDDDDD.",
++        "DBBBBBBBD",
++        "DBSSSSSBD",
++        "DBSSSSSBD",
++        "DBSSSSSBD",
++        "DBBBBBBBD",
++        "DBBBBBBBD",
++        ".DDDDDDD.",
 +    };
 +
 +    private static void DrawBackpack(DrawingHandleScreen handle, Vector2 center, float radius, Color face, Color accent, bool active)
@@ -4404,10 +4404,10 @@ index 0000000..7394e92
 +        if (active)
 +            start += new Vector2(0f, cell * 0.5f);
 +
-+        var body = Color.InterpolateBetween(face, new Color(255, 244, 220), 0.55f);
-+        var strap = Color.InterpolateBetween(face, new Color(0, 0, 0), 0.55f);
-+        var pocket = Color.InterpolateBetween(accent, new Color(255, 255, 255), 0.35f);
-+        var outline = new Color(10, 12, 16, 220);
++        var body = Color.InterpolateBetween(face, new Color(255, 236, 190), 0.55f);
++        var strap = Color.InterpolateBetween(face, new Color(0, 0, 0), 0.5f);
++        var pocket = Color.InterpolateBetween(accent, new Color(255, 255, 255), 0.3f);
++        var outline = Color.InterpolateBetween(face, new Color(0, 0, 0), 0.65f);
 +
 +        // Chunky one-pixel shadow behind the pack keeps it readable on any face colour.
 +        handle.DrawRect(UIBox2.FromDimensions(start + new Vector2(cell, cell), new Vector2(artW, artH)), new Color(0, 0, 0, 90));
@@ -4425,13 +4425,12 @@ index 0000000..7394e92
 +                {
 +                    'H' => strap,
 +                    'S' => pocket,
++                    'D' => outline,
 +                    _ => body
 +                };
 +
 +                var at = start + new Vector2(col * cell, row * cell);
-+                var box = UIBox2.FromDimensions(at, new Vector2(cell, cell));
-+                handle.DrawRect(box, color);
-+                handle.DrawRect(box, outline, false);
++                handle.DrawRect(UIBox2.FromDimensions(at, new Vector2(cell, cell)), color);
 +            }
 +        }
 +    }
