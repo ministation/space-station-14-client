@@ -2576,10 +2576,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..8bc0ad6
+index 0000000..a50e8d5
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1144 @@
+@@ -0,0 +1,1156 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3622,59 +3622,71 @@ index 0000000..8bc0ad6
 +        var scale = Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f);
 +        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
 +
-+        var stickRadius = 75f * scale * stickScale;
-+        var stickDiameter = stickRadius * 2f;
-+        var stickMarginX = 35f * scale;
++        var margin = 18f * scale;
++        var gap = 8f * scale;
 +
++        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
++        var stickRadius = 82f * scale * stickScale;
 +        _thumbstick.Radius = stickRadius;
-+        _thumbstick.KnobRadius = 32f * scale * stickScale;
-+        _thumbstick.Deadzone = 10f * scale * stickScale;
++        _thumbstick.KnobRadius = 30f * scale * stickScale;
++        _thumbstick.Deadzone = 9f * scale * stickScale;
 +
-+        var stickCenterY = finalSize.Y * 0.66f;
-+        var defaultStickY = stickCenterY - stickRadius;
-+        var defaultStickPos = new Vector2(stickMarginX, defaultStickY);
-+        var stickSize = new Vector2(stickDiameter + 20f, stickDiameter + 20f);
-+        ArrangeChild(_thumbstick, defaultStickPos, stickSize, finalSize);
++        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
++        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
++        ArrangeChild(_thumbstick, stickPos, stickSize, finalSize);
 +
-+        var useSize = 54f * scale;
-+        var useDefPos = new Vector2(finalSize.X - useSize - 24f * scale, finalSize.Y * 0.54f);
-+        ArrangeChild(_useButton, useDefPos, new Vector2(useSize, useSize), finalSize);
++        // Action cluster: two compact rows in the bottom right corner. The centre of the
++        // screen stays free so a drag there rotates the camera instead of hitting a button.
++        var useSize = 58f * scale;
++        var interSize = 52f * scale;
++        var utilSize = 46f * scale;
++        var bottomRight = finalSize.X - margin;
++        var bottomY = finalSize.Y - margin;
 +
-+        var interSize = 48f * scale;
-+        var interDefPos = new Vector2(useDefPos.X - interSize - 16f * scale, useDefPos.Y + 14f * scale);
-+        ArrangeChild(_interactButton, interDefPos, new Vector2(interSize, interSize), finalSize);
++        ArrangeChild(_useButton,
++            new Vector2(bottomRight - useSize, bottomY - useSize),
++            new Vector2(useSize, useSize), finalSize);
 +
-+        var secSize = 46f * scale;
-+        var secDefPos = new Vector2(interDefPos.X - secSize - 14f * scale, interDefPos.Y + 12f * scale);
-+        ArrangeChild(_secButton, secDefPos, new Vector2(secSize, secSize), finalSize);
++        var interX = bottomRight - useSize - gap - interSize;
++        ArrangeChild(_interactButton,
++            new Vector2(interX, bottomY - interSize),
++            new Vector2(interSize, interSize), finalSize);
 +
-+        var handSize = 44f * scale;
-+        var handDefPos = new Vector2(useDefPos.X + 4f * scale, useDefPos.Y - handSize - 16f * scale);
-+        ArrangeChild(_handButton, handDefPos, new Vector2(handSize, handSize), finalSize);
++        var handX = interX - gap - utilSize;
++        ArrangeChild(_handButton,
++            new Vector2(handX, bottomY - utilSize),
++            new Vector2(utilSize, utilSize), finalSize);
 +
-+        var dropSize = 42f * scale;
-+        var dropDefPos = new Vector2(interDefPos.X - 2f * scale, interDefPos.Y - dropSize - 18f * scale);
-+        ArrangeChild(_dropButton, dropDefPos, new Vector2(dropSize, dropSize), finalSize);
++        var dropX = handX - gap - utilSize;
++        ArrangeChild(_dropButton,
++            new Vector2(dropX, bottomY - utilSize),
++            new Vector2(utilSize, utilSize), finalSize);
 +
-+        var altSize = 42f * scale;
-+        var altDefPos = new Vector2(secDefPos.X, secDefPos.Y - altSize - 16f * scale);
-+        ArrangeChild(_altButton, altDefPos, new Vector2(altSize, altSize), finalSize);
-+
-+        var examSize = 42f * scale;
-+        var examDefPos = new Vector2(dropDefPos.X, dropDefPos.Y - examSize - 14f * scale);
-+        ArrangeChild(_examButton, examDefPos, new Vector2(examSize, examSize), finalSize);
-+
-+        var pullSize = 42f * scale;
-+        var pullDefPos = new Vector2(altDefPos.X, altDefPos.Y - pullSize - 14f * scale);
-+        ArrangeChild(_pullButton, pullDefPos, new Vector2(pullSize, pullSize), finalSize);
-+
-+        var bagSize = 44f * scale;
-+        var bagDefPos = new Vector2(handDefPos.X, handDefPos.Y - bagSize - 16f * scale);
-+        ArrangeChild(_bagButton, bagDefPos, new Vector2(bagSize, bagSize), finalSize);
-+
-+        var throwSize = 42f * scale;
-+        var throwDefPos = new Vector2(examDefPos.X, examDefPos.Y - throwSize - 14f * scale);
-+        ArrangeChild(_throwButton, throwDefPos, new Vector2(throwSize, throwSize), finalSize);
++        var topRowY = bottomY - useSize - gap - utilSize;
++        var col = 0;
++        ArrangeChild(_secButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
++        col++;
++        ArrangeChild(_altButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
++        col++;
++        ArrangeChild(_bagButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
++        col++;
++        ArrangeChild(_throwButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
++        col++;
++        ArrangeChild(_examButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
++        col++;
++        ArrangeChild(_pullButton,
++            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
++            new Vector2(utilSize, utilSize), finalSize);
 +
 +        foreach (var btn in _allButtons)
 +        {
@@ -4102,10 +4114,10 @@ index 0000000..4f00e0a
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..cf0d6ed
+index 0000000..6191ce5
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,316 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4193,7 +4205,8 @@ index 0000000..cf0d6ed
 +    {
 +        var center = Size / 2f;
 +        var distSq = (point - center).LengthSquared();
-+        var touchRadius = Radius + 25f;
++        // Generous hit area: touching slightly beside the stick still starts steering.
++        var touchRadius = Radius + 45f;
 +        return distSq <= touchRadius * touchRadius;
 +    }
 +
@@ -4753,7 +4766,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..9516e1e 100644
+index 5267fc7..e674637 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,44 @@ namespace Robust.Shared
@@ -4836,7 +4849,7 @@ index 5267fc7..9516e1e 100644
 +        /// Scale multiplier for on-screen touch controls.
 +        /// </summary>
 +        public static readonly CVarDef<float> MobileControlsScale =
-+            CVarDef.Create("mobile.controls_scale", 2.0f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("mobile.controls_scale", 1.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Persistent custom layout positions for on-screen touch controls.
@@ -4848,7 +4861,7 @@ index 5267fc7..9516e1e 100644
 +        /// Additional scale multiplier specifically for the on-screen virtual thumbstick.
 +        /// </summary>
 +        public static readonly CVarDef<float> MobileThumbstickScale =
-+            CVarDef.Create("mobile.thumbstick_scale", 1.0f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("mobile.thumbstick_scale", 1.1f, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
          /// <summary>
          /// The window icon set to use. Overriden by <c>GameControllerOptions</c> on startup.
@@ -6371,7 +6384,7 @@ index a75bfa0..2c8479a 100644
  #endif
  
 diff --git a/Robust.Shared/Prototypes/PrototypeManager.cs b/Robust.Shared/Prototypes/PrototypeManager.cs
-index 64d2669..85738a9 100644
+index 64d2669..1e8c141 100644
 --- a/Robust.Shared/Prototypes/PrototypeManager.cs
 +++ b/Robust.Shared/Prototypes/PrototypeManager.cs
 @@ -251,14 +251,24 @@ namespace Robust.Shared.Prototypes
@@ -6403,7 +6416,7 @@ index 64d2669..85738a9 100644
          }
  
          /// <inheritdoc />
-@@ -281,13 +291,93 @@ namespace Robust.Shared.Prototypes
+@@ -281,13 +291,100 @@ namespace Robust.Shared.Prototypes
                  throw new InvalidOperationException("No prototypes have been loaded yet.");
              }
  
@@ -6427,6 +6440,19 @@ index 64d2669..85738a9 100644
 +            throw new UnknownPrototypeException(id, kind);
 +        }
 +
++        private static void TrySetFallbackMember(object instance, Type kind, string propertyName, string fieldName, string value, BindingFlags flags)
++        {
++            var property = kind.GetProperty(propertyName, flags);
++            var setter = property?.GetSetMethod(nonPublic: true);
++            if (setter != null)
++            {
++                setter.Invoke(instance, new object?[] { value });
++                return;
++            }
++
++            kind.GetField(fieldName, flags)?.SetValue(instance, value);
++        }
++
 +        private IPrototype? CreateFallbackPrototype(Type kind, string id)
 +        {
 +            if (kind.Name == "ColorPalettePrototype")
@@ -6439,15 +6465,9 @@ index 64d2669..85738a9 100644
 +                if (instance == null) return null;
 +
 +                const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-+                var idProp = kind.GetProperty("ID", flags);
-+                idProp?.SetValue(instance, id);
-+                var idField = kind.GetField("ID", flags) ?? kind.GetField("_id", flags);
-+                idField?.SetValue(instance, id);
-+
-+                var nameProp = kind.GetProperty("Name", flags);
-+                nameProp?.SetValue(instance, id);
-+                var nameField = kind.GetField("Name", flags) ?? kind.GetField("_name", flags);
-+                nameField?.SetValue(instance, id);
++                // Most prototype IDs have a private setter, so PropertyInfo.SetValue (public setters only) cannot touch them.
++                TrySetFallbackMember(instance, kind, "ID", "_id", id, flags);
++                TrySetFallbackMember(instance, kind, "Name", "_name", id, flags);
 +
 +                if (kind.Name == "ContentTileDefinition" && id == "Space")
 +                {
@@ -6459,7 +6479,7 @@ index 64d2669..85738a9 100644
 +
 +                EnsureNonNullCollections(instance, kind, flags);
 +
-+                Sawmill.Warning($"Created emergency fallback prototype {kind.Name} for '{id}'.");
++                Sawmill.Debug($"Created emergency fallback prototype {kind.Name} for '{id}'.");
 +                return (IPrototype)instance;
              }
 -            catch (KeyNotFoundException)
@@ -6500,7 +6520,15 @@ index 64d2669..85738a9 100644
              }
          }
  
-@@ -679,6 +769,14 @@ namespace Robust.Shared.Prototypes
+@@ -580,6 +677,7 @@ namespace Robust.Shared.Prototypes
+             }
+ 
+             UpdateCategories();
++
+         }
+ 
+         private void InstantiateKinds(KindData[] kinds, Dictionary<Type, Task> inheritanceTasks)
+@@ -679,6 +777,14 @@ namespace Robust.Shared.Prototypes
              }
              catch (Exception e)
              {
@@ -6515,7 +6543,7 @@ index 64d2669..85738a9 100644
                  if (throwOnReadFailure)
                      throw new PrototypeLoadException($"Failed reading {kind}({id})", e);
  
-@@ -687,6 +785,181 @@ namespace Robust.Shared.Prototypes
+@@ -687,6 +793,181 @@ namespace Robust.Shared.Prototypes
              }
          }
  
@@ -6697,7 +6725,7 @@ index 64d2669..85738a9 100644
          private async Task PushKindInheritance(Type kind, KindData data)
          {
              if (data.Inheritance is not { } tree)
-@@ -702,34 +975,58 @@ namespace Robust.Shared.Prototypes
+@@ -702,34 +983,58 @@ namespace Robust.Shared.Prototypes
  
              foreach (var root in tree.RootNodes)
              {
@@ -6769,7 +6797,7 @@ index 64d2669..85738a9 100644
                          }
                      }
  
-@@ -737,21 +1034,35 @@ namespace Robust.Shared.Prototypes
+@@ -737,21 +1042,35 @@ namespace Robust.Shared.Prototypes
                      {
                          foreach (var child in children)
                          {
@@ -6811,7 +6839,7 @@ index 64d2669..85738a9 100644
                      throw;
                  }
              }
-@@ -798,10 +1109,10 @@ namespace Robust.Shared.Prototypes
+@@ -798,10 +1117,10 @@ namespace Robust.Shared.Prototypes
          {
              if (!_kinds.TryGetValue(typeof(T), out var index))
              {
@@ -6824,21 +6852,20 @@ index 64d2669..85738a9 100644
          }
  
          /// <inheritdoc />
-@@ -845,12 +1156,25 @@ namespace Robust.Shared.Prototypes
+@@ -845,12 +1164,25 @@ namespace Robust.Shared.Prototypes
          /// <inheritdoc />
          public bool TryIndex(Type kind, string id, [NotNullWhen(true)] out IPrototype? prototype)
          {
 -            if (!_kinds.TryGetValue(kind, out var index))
 +            if (_kinds.TryGetValue(kind, out var index) && index.Instances.TryGetValue(id, out prototype))
-             {
--                throw new UnknownPrototypeException(id, kind);
++            {
 +                return true;
-             }
- 
--            return index.Instances.TryGetValue(id, out prototype);
++            }
++
 +            prototype = CreateFallbackPrototype(kind, id);
 +            if (prototype != null)
-+            {
+             {
+-                throw new UnknownPrototypeException(id, kind);
 +                if (index != null)
 +                {
 +                    index.UnfrozenInstances ??= index.Instances.ToDictionary();
@@ -6846,8 +6873,9 @@ index 64d2669..85738a9 100644
 +                    index.Instances = index.UnfrozenInstances.ToFrozenDictionary();
 +                }
 +                return true;
-+            }
-+
+             }
+ 
+-            return index.Instances.TryGetValue(id, out prototype);
 +            prototype = null;
 +            return false;
          }

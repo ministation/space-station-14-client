@@ -16,9 +16,6 @@ public sealed class LauncherData
     [JsonPropertyName("activeUserId")]
     public string? ActiveUserId { get; set; }
 
-    [JsonPropertyName("guestUsername")]
-    public string GuestUsername { get; set; } = "AndroidPlayer";
-
     [JsonPropertyName("favorites")]
     public HashSet<string> Favorites { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -225,18 +222,6 @@ public sealed class LauncherStorage
         {
             Data.LastServer = address;
             Save();
-        }
-    }
-
-    public void SetGuestUsername(string username)
-    {
-        lock (_lock)
-        {
-            if (!string.IsNullOrWhiteSpace(username))
-            {
-                Data.GuestUsername = username.Trim();
-                Save();
-            }
         }
     }
 

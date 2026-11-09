@@ -219,8 +219,8 @@ public sealed class LauncherActivity : Activity
             Orientation = Orientation.Horizontal
         };
         header.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        header.SetPadding((int)(12 * density), (int)(6 * density), (int)(12 * density), (int)(6 * density));
-        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(52 * density));
+        header.SetPadding((int)(16 * density), (int)(8 * density), (int)(16 * density), (int)(8 * density));
+        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(76 * density));
 
         var logoImage = new ImageView(this);
         logoImage.SetScaleType(ImageView.ScaleType.FitCenter);
@@ -238,7 +238,7 @@ public sealed class LauncherActivity : Activity
         var websiteBtn = CreateHeaderLinkButton("Website", () => OpenUrl("https://spacestation14.com"));
         header.AddView(websiteBtn);
 
-        var githubBtn = CreateHeaderLinkButton("GitHub", () => OpenUrl("https://github.com/SolomonNumb1/space-station-14-mobile"));
+        var githubBtn = CreateHeaderLinkButton("GitHub", () => OpenUrl("https://github.com/ministation/space-station-14-client"));
         header.AddView(githubBtn);
 
         _accountBtn = new Button(this)
@@ -246,7 +246,7 @@ public sealed class LauncherActivity : Activity
             TextSize = 12,
             Typeface = Typeface.DefaultBold
         };
-        _accountBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
+        _accountBtn.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.Separator);
         _accountBtn.SetTextColor(LauncherTheme.Foreground);
         _accountBtn.SetPadding((int)(12 * density), 0, (int)(12 * density), 0);
         _accountBtn.Click += (_, _) => ShowAccountDialog();
@@ -267,22 +267,6 @@ public sealed class LauncherActivity : Activity
         controlsRow.SetBackgroundColor(LauncherTheme.HeaderBackground);
         controlsRow.SetPadding((int)(10 * density), (int)(4 * density), (int)(10 * density), (int)(4 * density));
         controlsRow.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(42 * density));
-
-        _tabServersBtn = CreateTabButton("Servers", true);
-        _tabFavsBtn = CreateTabButton("Favorites", false);
-        _tabDirectBtn = CreateTabButton("Direct Connect", false);
-
-        _tabServersBtn.Click += (_, _) => SwitchTab(Tab.Servers);
-        _tabFavsBtn.Click += (_, _) => SwitchTab(Tab.Favorites);
-        _tabDirectBtn.Click += (_, _) => SwitchTab(Tab.DirectConnect);
-
-        controlsRow.AddView(_tabServersBtn);
-        controlsRow.AddView(_tabFavsBtn);
-        controlsRow.AddView(_tabDirectBtn);
-
-        var tabSpacer = new View(this);
-        tabSpacer.LayoutParameters = new LinearLayout.LayoutParams((int)(12 * density), ViewGroup.LayoutParams.MatchParent);
-        controlsRow.AddView(tabSpacer);
 
         _searchInput = new EditText(this)
         {
@@ -345,6 +329,20 @@ public sealed class LauncherActivity : Activity
         refreshBtn.Click += async (_, _) => await RefreshHubServersAsync();
         controlsRow.AddView(refreshBtn);
 
+        var directBtn = new Button(this)
+        {
+            Text = "+",
+            TextSize = 16,
+            Typeface = Typeface.DefaultBold
+        };
+        directBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
+        directBtn.SetTextColor(LauncherTheme.NanoGold);
+        var directLp = new LinearLayout.LayoutParams((int)(34 * density), (int)(32 * density));
+        directLp.SetMargins((int)(6 * density), 0, 0, 0);
+        directBtn.LayoutParameters = directLp;
+        directBtn.Click += (_, _) => SwitchTab(Tab.DirectConnect);
+        controlsRow.AddView(directBtn);
+
         mainLayout.AddView(controlsRow);
 
         _filtersPanel = BuildFiltersPanel(density);
@@ -355,6 +353,24 @@ public sealed class LauncherActivity : Activity
         sep.SetBackgroundColor(LauncherTheme.Separator);
         sep.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(1 * density));
         mainLayout.AddView(sep);
+
+        var statusRow = new LinearLayout(this)
+        {
+            Orientation = Orientation.Horizontal
+        };
+        statusRow.SetBackgroundColor(LauncherTheme.HeaderBackground);
+        statusRow.SetPadding((int)(12 * density), (int)(2 * density), (int)(12 * density), (int)(2 * density));
+        statusRow.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(22 * density));
+
+        _statusCountText = new TextView(this)
+        {
+            Text = "Loading servers...",
+            TextSize = 10
+        };
+        _statusCountText.SetTextColor(LauncherTheme.SubText);
+        _statusCountText.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f);
+        statusRow.AddView(_statusCountText);
+        mainLayout.AddView(statusRow);
 
         var tableHeader = new LinearLayout(this)
         {
@@ -385,91 +401,47 @@ public sealed class LauncherActivity : Activity
         _scroll.AddView(_listLayout);
         mainLayout.AddView(_scroll);
 
-        var bottomBar = new LinearLayout(this)
+        var tabTopLine = new View(this);
+        tabTopLine.SetBackgroundColor(Color.ParseColor("#525252"));
+        tabTopLine.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(2 * density));
+        mainLayout.AddView(tabTopLine);
+
+        var tabBar = new LinearLayout(this)
         {
             Orientation = Orientation.Horizontal
         };
-        bottomBar.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        bottomBar.SetPadding((int)(12 * density), (int)(4 * density), (int)(12 * density), (int)(4 * density));
-        bottomBar.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(36 * density));
+        tabBar.SetBackgroundColor(Color.ParseColor("#1E1E22"));
+        tabBar.SetPadding((int)(8 * density), (int)(3 * density), (int)(8 * density), (int)(3 * density));
+        tabBar.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(44 * density));
 
-        _statusCountText = new TextView(this)
-        {
-            Text = "Loading servers...",
-            TextSize = 11
-        };
-        _statusCountText.SetTextColor(LauncherTheme.SubText);
-        _statusCountText.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f);
-        bottomBar.AddView(_statusCountText);
+        _tabDirectBtn = CreateTabButton("Home", false);
+        _tabServersBtn = CreateTabButton("Servers", true);
+        _tabFavsBtn = CreateTabButton("Options", false);
 
-        var settingsBtn = new Button(this)
-        {
-            Text = "Settings",
-            TextSize = 11
-        };
-        settingsBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        settingsBtn.SetTextColor(LauncherTheme.Foreground);
-        settingsBtn.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
-        var settingsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
-        settingsLp.SetMargins(0, 0, (int)(8 * density), 0);
-        settingsBtn.LayoutParameters = settingsLp;
-        settingsBtn.Click += (_, _) => ShowSettingsDialog();
-        bottomBar.AddView(settingsBtn);
+        _tabDirectBtn.Click += (_, _) => SwitchTab(Tab.DirectConnect);
+        _tabServersBtn.Click += (_, _) => SwitchTab(Tab.Servers);
+        _tabFavsBtn.Click += (_, _) => ShowSettingsDialog();
 
-        var sandboxBtn = new Button(this)
-        {
-            Text = "Offline Sandbox",
-            TextSize = 11
-        };
-        sandboxBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        sandboxBtn.SetTextColor(LauncherTheme.Foreground);
-        sandboxBtn.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
-        var sandboxLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
-        sandboxLp.SetMargins(0, 0, (int)(8 * density), 0);
-        sandboxBtn.LayoutParameters = sandboxLp;
-        sandboxBtn.Click += (_, _) => LaunchOfflineSandbox();
-        bottomBar.AddView(sandboxBtn);
+        tabBar.AddView(_tabDirectBtn);
+        tabBar.AddView(_tabServersBtn);
+        tabBar.AddView(_tabFavsBtn);
 
-        var logsBtn = new Button(this)
-        {
-            Text = "Logs",
-            TextSize = 11
-        };
-        logsBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        logsBtn.SetTextColor(LauncherTheme.Foreground);
-        logsBtn.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
-        var logsLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
-        logsLp.SetMargins(0, 0, (int)(8 * density), 0);
-        logsBtn.LayoutParameters = logsLp;
-        logsBtn.Click += (_, _) => ShowCrashReporterDialog();
-        // Long-press writes a test entry so you can verify the reporter
-        // without waiting for a real crash.
-        logsBtn.LongClick += (s, e) =>
-        {
-            try
-            {
-                CrashReporter.WriteCrash("ManualTest",
-                    new Exception("Test crash entry (long-pressed Logs button). If you can read this, the reporter works."));
-            }
-            catch { }
-            e.Handled = true;
-            ShowCrashReporterDialog();
-        };
-        bottomBar.AddView(logsBtn);
+        var tabSpacer2 = new View(this);
+        tabSpacer2.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f);
+        tabBar.AddView(tabSpacer2);
 
-        var versionBtn = new Button(this)
+        var versionText = new TextView(this)
         {
             Text = GetCurrentAppVersion(),
             TextSize = 10
         };
-        versionBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        versionBtn.SetTextColor(LauncherTheme.SubText);
-        versionBtn.SetPadding((int)(8 * density), 0, (int)(8 * density), 0);
-        versionBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
-        versionBtn.Click += async (_, _) => await CheckForUpdatesAsync(userInitiated: true);
-        bottomBar.AddView(versionBtn);
+        versionText.SetTextColor(LauncherTheme.SubText);
+        versionText.Gravity = GravityFlags.CenterVertical;
+        versionText.Clickable = true;
+        versionText.Click += async (_, _) => await CheckForUpdatesAsync(userInitiated: true);
+        tabBar.AddView(versionText);
 
-        mainLayout.AddView(bottomBar);
+        mainLayout.AddView(tabBar);
         root.AddView(mainLayout);
 
         _overlayBox = new LinearLayout(this)
@@ -578,30 +550,20 @@ public sealed class LauncherActivity : Activity
         var btn = new Button(this)
         {
             Text = text,
-            TextSize = 11,
-            Typeface = Typeface.DefaultBold
+            TextSize = 13
         };
-        btn.SetPadding((int)(14 * density), 0, (int)(14 * density), 0);
-        btn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, (int)(32 * density))
-        {
-            RightMargin = (int)(4 * density)
-        };
+        btn.SetPadding((int)(16 * density), 0, (int)(16 * density), 0);
+        btn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, (int)(38 * density));
         ApplyTabStyle(btn, active);
         return btn;
     }
 
+    // Official launcher tabs are flat: selected tab is gold, the rest are grey.
     private void ApplyTabStyle(Button btn, bool active)
     {
-        if (active)
-        {
-            btn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3);
-            btn.SetTextColor(Color.White);
-        }
-        else
-        {
-            btn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            btn.SetTextColor(LauncherTheme.SubText);
-        }
+        btn.Background = LauncherTheme.CreateBox(Color.Transparent, 0, active ? LauncherTheme.NanoGold : Color.Transparent, active ? 2 : 0);
+        btn.SetTextColor(active ? LauncherTheme.NanoGold : LauncherTheme.SubText);
+        btn.Typeface = Typeface.Create(Typeface.Default, active ? TypefaceStyle.Bold : TypefaceStyle.Normal);
     }
 
     private TextView CreateTableHeaderText(string title, float weight)
@@ -632,17 +594,12 @@ public sealed class LauncherActivity : Activity
         var acc = _storage.GetActiveAccount();
         if (acc != null && !string.IsNullOrEmpty(acc.Token))
         {
-            _accountBtn.Text = $"{acc.Username}";
+            _accountBtn.Text = $"{acc.Username} ▼";
             _accountBtn.SetTextColor(Color.ParseColor("#86efac"));
-        }
-        else if (!string.IsNullOrEmpty(_storage.Data.GuestUsername))
-        {
-            _accountBtn.Text = $"{_storage.Data.GuestUsername} (Guest)";
-            _accountBtn.SetTextColor(LauncherTheme.Foreground);
         }
         else
         {
-            _accountBtn.Text = "Log in";
+            _accountBtn.Text = "Log in ▼";
             _accountBtn.SetTextColor(LauncherTheme.SubText);
         }
     }
@@ -799,9 +756,9 @@ public sealed class LauncherActivity : Activity
         {
             Orientation = Orientation.Horizontal
         };
-        row.SetBackgroundColor(alternate ? LauncherTheme.RowAlternate : LauncherTheme.Background);
-        row.SetPadding((int)(12 * density), (int)(6 * density), (int)(12 * density), (int)(6 * density));
-        row.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
+        row.SetBackgroundColor(alternate ? LauncherTheme.RowAlternate : LauncherTheme.RowBase);
+        row.SetPadding((int)(12 * density), (int)(3 * density), (int)(12 * density), (int)(3 * density));
+        row.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(52 * density));
 
         var nameCol = new LinearLayout(this)
         {
@@ -897,7 +854,7 @@ public sealed class LauncherActivity : Activity
             TextSize = 11,
             Typeface = Typeface.DefaultBold
         };
-        connectBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3);
+        connectBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
         connectBtn.SetTextColor(Color.White);
         connectBtn.SetPadding((int)(8 * density), 0, (int)(8 * density), 0);
         connectBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(30 * density), 0.3f);
@@ -1350,25 +1307,6 @@ public sealed class LauncherActivity : Activity
             userText.SetTextColor(Color.ParseColor("#86efac"));
             view.AddView(userText);
 
-            var switchGuestBtn = new Button(this)
-            {
-                Text = "Play as Guest"
-            };
-            switchGuestBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            switchGuestBtn.SetTextColor(LauncherTheme.Foreground);
-            switchGuestBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(36 * density))
-            {
-                TopMargin = (int)(8 * density)
-            };
-            switchGuestBtn.Click += (_, _) =>
-            {
-                _storage.Data.ActiveUserId = null;
-                _storage.Save();
-                UpdateAccountButton();
-                Toast.MakeText(this, "Switched to Guest mode", ToastLength.Short)?.Show();
-            };
-            view.AddView(switchGuestBtn);
-
             var logoutBtn = new Button(this)
             {
                 Text = "Log Out"
@@ -1490,56 +1428,7 @@ public sealed class LauncherActivity : Activity
             regBtn.Click += (_, _) => OpenUrl("https://account.spacestation14.com/Identity/Account/Register");
             view.AddView(regBtn);
 
-            var guestLabel = new TextView(this)
-            {
-                Text = "─── Or Play as Guest ───",
-                TextSize = 11
-            };
-            guestLabel.SetTextColor(LauncherTheme.SubText);
-            guestLabel.SetPadding(0, (int)(10 * density), 0, (int)(4 * density));
-            view.AddView(guestLabel);
 
-            var guestInput = new EditText(this)
-            {
-                Text = _storage.Data.GuestUsername,
-                Hint = "Guest Player Name",
-                TextSize = 13,
-                InputType = global::Android.Text.InputTypes.ClassText,
-                ImeOptions = (global::Android.Views.InputMethods.ImeAction)global::Android.Views.InputMethods.ImeFlags.NoExtractUi | global::Android.Views.InputMethods.ImeAction.Done
-            };
-            guestInput.SetTextColor(LauncherTheme.Foreground);
-            guestInput.Background = LauncherTheme.CreateBox(LauncherTheme.Background, 3, LauncherTheme.ControlMid);
-            guestInput.SetPadding((int)(10 * density), (int)(6 * density), (int)(10 * density), (int)(6 * density));
-            guestInput.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
-            view.AddView(guestInput);
-
-            var guestSaveBtn = new Button(this)
-            {
-                Text = "Save Guest Name"
-            };
-            guestSaveBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            guestSaveBtn.SetTextColor(LauncherTheme.Foreground);
-            guestSaveBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(34 * density))
-            {
-                TopMargin = (int)(6 * density)
-            };
-            guestSaveBtn.Click += (_, _) =>
-            {
-                HideKeyboard(guestInput);
-                _storage.SetGuestUsername(guestInput.Text ?? "AndroidPlayer");
-                UpdateAccountButton();
-                Toast.MakeText(this, "Guest name saved", ToastLength.Short)?.Show();
-            };
-            guestInput.EditorAction += (_, e) =>
-            {
-                if (e.ActionId == global::Android.Views.InputMethods.ImeAction.Done ||
-                    e.ActionId == global::Android.Views.InputMethods.ImeAction.Go ||
-                    (e.Event?.KeyCode == global::Android.Views.Keycode.Enter && e.Event.Action == global::Android.Views.KeyEventActions.Down))
-                {
-                    guestSaveBtn.PerformClick();
-                }
-            };
-            view.AddView(guestSaveBtn);
         }
 
         var scroll = new ScrollView(this);
@@ -1714,6 +1603,27 @@ public sealed class LauncherActivity : Activity
         view.SetPadding((int)(16 * density), (int)(12 * density), (int)(16 * density), (int)(12 * density));
         scrollView.AddView(view);
 
+        var toolsRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        var sandboxBtn = new Button(this) { Text = "Offline Sandbox", TextSize = 11 };
+        sandboxBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
+        sandboxBtn.SetTextColor(LauncherTheme.Foreground);
+        var sandboxLp = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f);
+        sandboxLp.SetMargins(0, 0, (int)(6 * density), (int)(8 * density));
+        sandboxBtn.LayoutParameters = sandboxLp;
+        sandboxBtn.Click += (_, _) => LaunchOfflineSandbox();
+        toolsRow.AddView(sandboxBtn);
+
+        var logsBtn = new Button(this) { Text = "Logs", TextSize = 11 };
+        logsBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
+        logsBtn.SetTextColor(LauncherTheme.Foreground);
+        logsBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f)
+        {
+            BottomMargin = (int)(8 * density)
+        };
+        logsBtn.Click += (_, _) => ShowCrashReporterDialog();
+        toolsRow.AddView(logsBtn);
+        view.AddView(toolsRow);
+
         var scaleLabel = new TextView(this)
         {
             Text = "Controls Scale:",
@@ -1723,14 +1633,14 @@ public sealed class LauncherActivity : Activity
         scaleLabel.SetTextColor(LauncherTheme.Foreground);
         view.AddView(scaleLabel);
 
-        var currentScale = prefs?.GetFloat("mobile_scale", 1.0f) ?? 1.0f;
+        var currentScale = prefs?.GetFloat("mobile_scale", 1.5f) ?? 1.0f;
         var scaleBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var scales = new (string text, float val)[]
         {
-            ("80%", 0.8f),
             ("100%", 1.0f),
-            ("120%", 1.2f),
-            ("140%", 1.4f)
+            ("130%", 1.3f),
+            ("150%", 1.5f),
+            ("170%", 1.7f)
         };
 
         var scaleBtnList = new List<Button>();
@@ -1818,14 +1728,14 @@ public sealed class LauncherActivity : Activity
         stickLabel.LayoutParameters = stickLp;
         view.AddView(stickLabel);
 
-        var currentStickScale = prefs?.GetFloat("mobile_stick_scale", 1.0f) ?? 1.0f;
+        var currentStickScale = prefs?.GetFloat("mobile_stick_scale", 1.1f) ?? 1.0f;
         var stickBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var stickScales = new (string text, float val)[]
         {
-            ("70%", 0.7f),
-            ("85%", 0.85f),
+            ("90%", 0.9f),
             ("100%", 1.0f),
-            ("120%", 1.2f)
+            ("110%", 1.1f),
+            ("130%", 1.3f)
         };
 
         var stickBtnList = new List<Button>();
@@ -2338,6 +2248,14 @@ public sealed class LauncherActivity : Activity
 
     private async Task StartConnectingAsync(string address)
     {
+        var activeAccount = _storage.GetActiveAccount();
+        if (activeAccount == null || string.IsNullOrEmpty(activeAccount.Token))
+        {
+            Toast.MakeText(this, "Войдите в аккаунт Space Station 14, чтобы играть", ToastLength.Long)?.Show();
+            ShowAccountDialog();
+            return;
+        }
+
         _storage.SetLastServer(address);
         _overlayBox.Visibility = ViewStates.Visible;
         _overlayProgress.Indeterminate = true;
@@ -2501,11 +2419,11 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 1.0f);
+            var s = prefs.GetFloat("mobile_scale", 1.5f);
             intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.0f);
+            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
             intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var guiScale = prefs.GetFloat("gui_scale", 1.0f);
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
@@ -2574,10 +2492,6 @@ public sealed class LauncherActivity : Activity
             }
             catch {}
 
-            if (fallbackUser == null)
-            {
-                intent.PutExtra("username", _storage.Data.GuestUsername);
-            }
         }
 
         StartActivity(intent);
@@ -2659,7 +2573,7 @@ public sealed class LauncherActivity : Activity
         issuesBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
         issuesBtn.SetTextColor(LauncherTheme.Foreground);
         issuesBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f);
-        issuesBtn.Click += (_, _) => OpenUrl("https://github.com/SolomonNumb1/space-station-14-mobile/issues");
+        issuesBtn.Click += (_, _) => OpenUrl("https://github.com/ministation/space-station-14-client/issues");
         btnRow.AddView(issuesBtn);
         view.AddView(btnRow);
 
@@ -2727,11 +2641,11 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 1.0f);
+            var s = prefs.GetFloat("mobile_scale", 1.5f);
             intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.0f);
+            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
             intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var guiScale = prefs.GetFloat("gui_scale", 1.0f);
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
@@ -2751,7 +2665,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v1.3.0";
+    public const string CurrentAppVersion = "v0.3.0";
 
 
     public string GetCurrentAppVersion()
@@ -2823,7 +2737,7 @@ public sealed class LauncherActivity : Activity
             RightMargin = (int)(6 * density)
         };
         issuesBtn.LayoutParameters = issuesLp;
-        issuesBtn.Click += (_, _) => OpenUrl("https://github.com/SolomonNumb1/space-station-14-mobile/issues");
+        issuesBtn.Click += (_, _) => OpenUrl("https://github.com/ministation/space-station-14-client/issues");
         btnRow.AddView(issuesBtn);
 
         AlertDialog? dialog = null;
@@ -2864,8 +2778,18 @@ public sealed class LauncherActivity : Activity
             http.Timeout = TimeSpan.FromSeconds(10);
             http.DefaultRequestHeaders.UserAgent.ParseAdd("SS14-Android-Launcher");
 
-            var json = await http.GetStringAsync("https://api.github.com/repos/SolomonNumb1/space-station-14-mobile/releases/latest");
-            var release = JsonSerializer.Deserialize<GitHubReleaseInfo>(json);
+            var json = await http.GetStringAsync("https://api.github.com/repos/ministation/space-station-14-client/releases?per_page=20");
+            var releases = JsonSerializer.Deserialize<List<GitHubReleaseInfo>>(json) ?? new List<GitHubReleaseInfo>();
+            GitHubReleaseInfo? release = null;
+            foreach (var candidate in releases)
+            {
+                if (string.IsNullOrWhiteSpace(candidate.TagName) ||
+                    !candidate.TagName.StartsWith("android-v", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (release == null || IsNewerVersion(candidate.TagName, release.TagName))
+                    release = candidate;
+            }
+
             if (release == null || string.IsNullOrWhiteSpace(release.TagName))
             {
                 if (userInitiated)
@@ -3010,7 +2934,7 @@ public sealed class LauncherActivity : Activity
         downloadBtn.LayoutParameters = downloadLp;
 
         var apkAsset = release.Assets?.FirstOrDefault(a => a.Name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase));
-        var downloadUrl = apkAsset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/SolomonNumb1/space-station-14-mobile/releases/latest";
+        var downloadUrl = apkAsset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/ministation/space-station-14-client/releases/latest";
 
         downloadBtn.Click += (_, _) =>
         {

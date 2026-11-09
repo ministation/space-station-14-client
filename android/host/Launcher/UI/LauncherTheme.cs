@@ -15,7 +15,8 @@ public static class LauncherTheme
     public static readonly Color ControlMid = Color.ParseColor("#464966");
     public static readonly Color ControlHigh = Color.ParseColor("#3E6C45");
     public static readonly Color ButtonHover = Color.ParseColor("#575B7F");
-    public static readonly Color RowAlternate = Color.ParseColor("#2B2B31");
+    public static readonly Color RowBase = Color.ParseColor("#1E1E22");
+    public static readonly Color RowAlternate = Color.ParseColor("#262626");
     public static readonly Color Separator = Color.ParseColor("#2E2E35");
 
     public static GradientDrawable CreateBox(Color color, float radiusDp = 4, Color? strokeColor = null, float strokeWidthDp = 1)
@@ -23,7 +24,8 @@ public static class LauncherTheme
         var density = global::Android.App.Application.Context.Resources?.DisplayMetrics?.Density ?? 1f;
         var gd = new GradientDrawable();
         gd.SetColor(color);
-        gd.SetCornerRadius(radiusDp * density);
+        // Official launcher look is square: diagonal cuts read as flat on a phone.
+        gd.SetCornerRadius(0);
         if (strokeColor.HasValue)
         {
             gd.SetStroke((int)(strokeWidthDp * density), strokeColor.Value);
