@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..f26759f
+index 0000000..396ba25
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1263 @@
+@@ -0,0 +1,1267 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2765,6 +2765,7 @@ index 0000000..f26759f
 +    private readonly PojavActionButton _dropButton;
 +    private readonly PojavActionButton _altButton;
 +    private readonly PojavActionButton _bagButton;
++    private readonly PojavActionButton _inventoryButton;
 +    private readonly PojavActionButton _throwButton;
 +
 +    private readonly Dictionary<long, Control> _claimedTouches = new();
@@ -2896,6 +2897,8 @@ index 0000000..f26759f
 +        _dropButton = CreateButton("DROP", Keyboard.Key.Q, id: "drop", accent: new Color(231, 76, 60));
 +        _altButton = CreateButton("ALT", Keyboard.Key.Alt, id: "alt", accent: new Color(241, 196, 15), isToggle: true);
 +        _bagButton = CreateButton("BAG", Keyboard.Key.V, id: "bag", accent: new Color(26, 188, 156));
++        _inventoryButton = CreateButton("INV", Keyboard.Key.V, id: "inv", accent: new Color(26, 188, 156));
++        _inventoryButton.Icon = PojavButtonIcon.Backpack;
 +        _throwButton = CreateButton("THROW", null, PojavSpecialAction.Throw, id: "throw", accent: new Color(230, 81, 0));
 +
 +        _defaultButtons.AddRange(_allButtons);
@@ -3860,10 +3863,10 @@ index 0000000..f26759f
 +        var fit = Math.Clamp(MathF.Min(finalSize.X, finalSize.Y) / 720f, 0.5f, 1.3f);
 +
 +        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
-+        var stickRadius = 82f * scale * stickScale * fit;
++        var stickRadius = 98f * scale * stickScale * fit;
 +        _thumbstick.Radius = stickRadius;
-+        _thumbstick.KnobRadius = 30f * scale * stickScale * fit;
-+        _thumbstick.Deadzone = 9f * scale * stickScale * fit;
++        _thumbstick.KnobRadius = 36f * scale * stickScale * fit;
++        _thumbstick.Deadzone = 11f * scale * stickScale * fit;
 +
 +        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
 +        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
@@ -3872,14 +3875,14 @@ index 0000000..f26759f
 +        // Right stick aims, Terraria style. It sits in the bottom right corner and the
 +        // action buttons sit in arcs around it.
 +        _aimStick.Radius = stickRadius;
-+        _aimStick.KnobRadius = 30f * scale * stickScale * fit;
-+        _aimStick.Deadzone = 9f * scale * stickScale * fit;
++        _aimStick.KnobRadius = 36f * scale * stickScale * fit;
++        _aimStick.Deadzone = 11f * scale * stickScale * fit;
 +        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - margin - stickRadius * 2f - 10f);
 +        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
 +
-+        var useSize = 58f * scale * fit;
-+        var interSize = 52f * scale * fit;
-+        var utilSize = 46f * scale * fit;
++        var useSize = 66f * scale * fit;
++        var interSize = 60f * scale * fit;
++        var utilSize = 53f * scale * fit;
 +
 +        // Right stick: aim, so the right thumb gets the combat ring around it.
 +        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - margin - stickRadius);
@@ -3896,10 +3899,11 @@ index 0000000..f26759f
 +        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - margin - stickRadius);
 +        var ringLeft = stickRadius + 74f * scale * fit;
 +
-+        ArrangeOnArc(_handButton, moveCenter, 26f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_dropButton, moveCenter, 60f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_bagButton, moveCenter, 94f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_pullButton, moveCenter, 128f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_handButton, moveCenter, 24f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_dropButton, moveCenter, 52f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_bagButton, moveCenter, 80f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_inventoryButton, moveCenter, 108f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_pullButton, moveCenter, 136f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
 +
 +        var topBtnW = 46f * scale;
 +        var topBtnH = 34f * scale;
@@ -3918,7 +3922,7 @@ index 0000000..f26759f
 +
 +        var hideW = 48f * scale;
 +        var hideH = 28f * scale;
-+        ArrangeChild(_hideButton, new Vector2(keybX + (topBtnW - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
++        ArrangeChild(_hideButton, new Vector2((finalSize.X - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
 +
 +        if (_editorBarContainer.Visible)
 +        {
@@ -3943,10 +3947,10 @@ index 0000000..f26759f
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..4031a68
+index 0000000..7394e92
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,634 @@
 +using System;
 +using System.Numerics;
 +using System.Collections.Generic;
@@ -3961,6 +3965,12 @@ index 0000000..4031a68
 +using Robust.Shared.Maths;
 +
 +namespace Robust.Client.UserInterface.Mobile;
++
++public enum PojavButtonIcon
++{
++    None,
++    Backpack
++}
 +
 +public enum PojavSpecialAction
 +{
@@ -3998,6 +4008,7 @@ index 0000000..4031a68
 +    }
 +
 +    public Color AccentColor { get; set; } = new Color(210, 210, 210);
++    public PojavButtonIcon Icon { get; set; } = PojavButtonIcon.None;
 +    public bool IsToggle { get; set; }
 +    public bool IsToggled { get; set; }
 +
@@ -4329,7 +4340,11 @@ index 0000000..4031a68
 +
 +        PixelKit.DrawDisc(handle, center, radius, face, light, dark, border, unit, _isPressed);
 +
-+        if (PixelKit.CanRender(_text))
++        if (Icon == PojavButtonIcon.Backpack)
++        {
++            DrawBackpack(handle, center, radius, face, accent, active);
++        }
++        else if (PixelKit.CanRender(_text))
 +        {
 +            var labelUnit = MathF.Max(2f, MathF.Floor(unit * 0.75f));
 +            var textSize = PixelKit.TextSize(_text, labelUnit);
@@ -4363,6 +4378,61 @@ index 0000000..4031a68
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
 +            handle.DrawRect(box, new Color(255, 215, 0, 160), false);
++        }
++    }
++
++    private static readonly string[] BackpackArt =
++    {
++        "..HHHHH..",
++        "..H...H..",
++        ".BBBBBBB.",
++        "B.......B",
++        "B.SSSSS.B",
++        "B.S...S.B",
++        "B.S...S.B",
++        "B.SSSSS.B",
++        "B.......B",
++        ".BBBBBBB.",
++    };
++
++    private static void DrawBackpack(DrawingHandleScreen handle, Vector2 center, float radius, Color face, Color accent, bool active)
++    {
++        var cell = MathF.Max(2f, MathF.Floor(radius * 1.5f / BackpackArt.Length));
++        var artW = BackpackArt[0].Length * cell;
++        var artH = BackpackArt.Length * cell;
++        var start = center - new Vector2(artW, artH) / 2f;
++        if (active)
++            start += new Vector2(0f, cell * 0.5f);
++
++        var body = Color.InterpolateBetween(face, new Color(255, 244, 220), 0.55f);
++        var strap = Color.InterpolateBetween(face, new Color(0, 0, 0), 0.55f);
++        var pocket = Color.InterpolateBetween(accent, new Color(255, 255, 255), 0.35f);
++        var outline = new Color(10, 12, 16, 220);
++
++        // Chunky one-pixel shadow behind the pack keeps it readable on any face colour.
++        handle.DrawRect(UIBox2.FromDimensions(start + new Vector2(cell, cell), new Vector2(artW, artH)), new Color(0, 0, 0, 90));
++
++        for (var row = 0; row < BackpackArt.Length; row++)
++        {
++            var line = BackpackArt[row];
++            for (var col = 0; col < line.Length; col++)
++            {
++                var ch = line[col];
++                if (ch == '.')
++                    continue;
++
++                var color = ch switch
++                {
++                    'H' => strap,
++                    'S' => pocket,
++                    _ => body
++                };
++
++                var at = start + new Vector2(col * cell, row * cell);
++                var box = UIBox2.FromDimensions(at, new Vector2(cell, cell));
++                handle.DrawRect(box, color);
++                handle.DrawRect(box, outline, false);
++            }
 +        }
 +    }
 +}
@@ -4517,7 +4587,7 @@ index 0000000..4031a68
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..0186634
+index 0000000..33390d0
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 @@ -0,0 +1,407 @@
@@ -4827,22 +4897,22 @@ index 0000000..0186634
 +        var center = Size / 2f;
 +        var pressed = _isPressed;
 +        var activeColor = new Color(255, 222, 120, 255);
-+        var idleColor = new Color(225, 235, 250, 210);
++        var idleColor = new Color(225, 235, 250, 147);
 +        var unit = MathF.Max(2f, MathF.Round(Radius / 7f));
 +
 +        // Terraria style: chunky pixel ring with a dark translucent face.
 +        PixelKit.DrawDisc(handle, center, Radius,
-+            new Color(5, 7, 11, 110),
-+            new Color(255, 255, 255, 26),
-+            new Color(0, 0, 0, 80),
-+            new Color(210, 220, 240, pressed ? 170 : 110),
++            new Color(5, 7, 11, 77),
++            new Color(255, 255, 255, 18),
++            new Color(0, 0, 0, 56),
++            new Color(210, 220, 240, pressed ? 119 : 77),
 +            unit, pressed);
 +
 +        PixelKit.DrawDisc(handle, center, Radius * 0.6f,
-+            new Color(0, 0, 0, 40),
-+            new Color(255, 255, 255, 8),
-+            new Color(0, 0, 0, 30),
-+            new Color(0, 0, 0, 50),
++            new Color(0, 0, 0, 28),
++            new Color(255, 255, 255, 6),
++            new Color(0, 0, 0, 21),
++            new Color(0, 0, 0, 35),
 +            MathF.Max(2f, unit * 0.8f), pressed);
 +
 +        var block = MathF.Max(2f, MathF.Round(Radius * 0.11f));
@@ -4850,7 +4920,7 @@ index 0000000..0186634
 +        if (IsAimStick)
 +        {
 +            var arm = Radius * 0.42f;
-+            var crossColor = new Color(225, 235, 250, pressed ? 240 : 170);
++            var crossColor = new Color(225, 235, 250, pressed ? 168 : 119);
 +            void PixelBlock(Vector2 at, Color color)
 +            {
 +                handle.DrawRect(UIBox2.FromDimensions(center + at - new Vector2(block / 2f, block / 2f), new Vector2(block, block)), color);
