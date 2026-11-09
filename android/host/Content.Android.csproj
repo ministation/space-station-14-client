@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>ru.ministation.client</ApplicationId>
-    <ApplicationVersion>9</ApplicationVersion>
-    <ApplicationDisplayVersion>0.5.3</ApplicationDisplayVersion>
+    <ApplicationVersion>10</ApplicationVersion>
+    <ApplicationDisplayVersion>0.5.4</ApplicationDisplayVersion>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>NU1701;CA1416</NoWarn>
@@ -61,9 +61,9 @@
   </PropertyGroup>
 
   <!-- Permanent test key so Release APKs install over each other. Replace for production. -->
-  <PropertyGroup Condition="'$(Configuration)' == 'Release' and Exists('$(MSBuildProjectDirectory)/keystore/test.keystore')">
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' and Exists('$(MSBuildProjectDirectory)/keystore/release.keystore')">
     <AndroidKeyStore>True</AndroidKeyStore>
-    <AndroidSigningKeyStore>$(MSBuildProjectDirectory)/keystore/test.keystore</AndroidSigningKeyStore>
+    <AndroidSigningKeyStore>$(MSBuildProjectDirectory)/keystore/release.keystore</AndroidSigningKeyStore>
     <AndroidSigningKeyAlias>ministation</AndroidSigningKeyAlias>
     <AndroidSigningKeyPass>ministation</AndroidSigningKeyPass>
     <AndroidSigningStorePass>ministation</AndroidSigningStorePass>

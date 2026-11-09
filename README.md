@@ -22,7 +22,7 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.5.3](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.5.3).
+APK: [Release android-v0.5.4](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.5.4).
 arm64-v8a и x86_64, Android 8.0 и новее. Первый запуск скачивает контент сервера (около 1.27 ГБ),
 дальше обновления сервера докачивают только изменённые файлы.
 
@@ -60,3 +60,13 @@ android/scripts/build-apk.sh Release
 ```
 
 APK: `android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk`.
+
+## Подпись APK
+
+APK подписывается стабильным сертификатом Mini Station из android/host/keystore/release.keystore
+(alias ministation, пароль ministation), скрипт android/scripts/sign-apk.sh ставит схемы v2 и v3.
+Сертификат SHA-256: c5c81ad38d37a3dd772e416cb2132f75b52444bb087e038c631ad5767df58d42, действует до 2054 года.
+
+Если Android пишет, что сертификат не подходит или приложение не устанавливается,
+значит на телефоне стоит сборка, подписанная другим ключом (например 0.4.x).
+Один раз удалите старую версию и поставьте новую, дальше обновления ставятся поверх без удаления.
