@@ -578,8 +578,12 @@ namespace Content.Android
                 // Mobile first defaults: low graphics, particles and parallax off, capped fps.
                 // Extras from the launcher below can override any of these.
                 LaunchBuildCVars["display.vsync"] = "false";
-                LaunchBuildCVars["display.max_fps"] = "60";
-                LaunchBuildCVars["light.resolution_scale"] = "0.25";
+                LaunchBuildCVars["display.max_fps"] = "0";
+                LaunchBuildCVars["light.resolution_scale"] = "0.2";
+                LaunchBuildCVars["light.max_light_count"] = "96";
+                LaunchBuildCVars["light.max_occluder_count"] = "256";
+                LaunchBuildCVars["light.max_shadowcasting_lights"] = "4";
+                LaunchBuildCVars["render.tile_edges"] = "false";
                 LaunchBuildCVars["light.ambient_occlusion"] = "false";
                 LaunchBuildCVars["light.ambient_occlusion_resolution_scale"] = "0.25";
                 LaunchBuildCVars["particles.quality"] = "0";
@@ -1049,16 +1053,19 @@ namespace Content.Android
 
                 var args = new List<string>
                 {
-                    "--cvar", "thread.parallel_count=2",
+                    "--cvar", "thread.parallel_count=4",
                     "--cvar", "light.blur=false",
                     "--cvar", "light.soft_shadows=false",
                     "--cvar", "light.ambient_occlusion=false",
-                    "--cvar", "light.resolution_scale=0.25",
-                    "--cvar", "light.max_shadowcasting_lights=8",
+                    "--cvar", "light.resolution_scale=0.2",
+                    "--cvar", "light.max_shadowcasting_lights=4",
+                    "--cvar", "light.max_light_count=96",
+                    "--cvar", "light.max_occluder_count=256",
+                    "--cvar", "render.tile_edges=false",
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
                     "--cvar", "display.vsync=false",
-                    "--cvar", "display.max_fps=60",
+                    "--cvar", "display.max_fps=0",
                     "--cvar", "audio.max_ambient_sources=16",
                     "--cvar", "audio.max_channels=24",
                     "--cvar", "net.logging=false",

@@ -1184,7 +1184,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..1d49e1b 100644
+index 73cadae..6ac0a1a 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -40,7 +40,7 @@ namespace Robust.Client.Graphics.Clyde
@@ -1192,7 +1192,7 @@ index 73cadae..1d49e1b 100644
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
          // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
 -        private const int FovMapSize = 2048;
-+        private static int FovMapSize => OperatingSystem.IsAndroid() ? 512 : 2048;
++        private static int FovMapSize => OperatingSystem.IsAndroid() ? 256 : 2048;
  
          private ClydeShaderInstance _fovDebugShaderInstance = default!;
  
@@ -4964,7 +4964,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..e674637 100644
+index 5267fc7..ae98424 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,44 @@ namespace Robust.Shared
@@ -4972,14 +4972,14 @@ index 5267fc7..e674637 100644
          /// </summary>
          public static readonly CVarDef<int> MaxLightCount =
 -            CVarDef.Create("light.max_light_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 96 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum number of occluders that the client will draw. Values below 1024 have no effect.
          /// </summary>
          public static readonly CVarDef<int> MaxOccluderCount =
 -            CVarDef.Create("light.max_occluder_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 512 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Scale used to modify the horizontal and vertical resolution of lighting framebuffers,
@@ -4987,14 +4987,14 @@ index 5267fc7..e674637 100644
          /// </summary>
          public static readonly CVarDef<float> LightResolutionScale =
 -            CVarDef.Create("light.resolution_scale", 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.35f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.2f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum amount of shadow-casting lights that can be rendered in a single viewport at once.
          /// </summary>
          public static readonly CVarDef<int> MaxShadowcastingLights =
 -            CVarDef.Create("light.max_shadowcasting_lights", 128, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 16 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 4 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).

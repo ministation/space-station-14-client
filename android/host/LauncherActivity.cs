@@ -2940,7 +2940,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.6.0";
+    public const string CurrentAppVersion = "v0.6.1";
 
 
     public string GetCurrentAppVersion()
