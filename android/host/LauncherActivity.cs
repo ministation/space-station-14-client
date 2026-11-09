@@ -435,43 +435,52 @@ public sealed class LauncherActivity : Activity
             Orientation = Orientation.Vertical,
             Visibility = ViewStates.Gone
         };
-        _overlayBox.SetBackgroundColor(Color.Argb(204, 0x18, 0x18, 0x1A));
+        _overlayBox.SetBackgroundColor(LauncherTheme.Background);
         _overlayBox.SetGravity(GravityFlags.Center);
         _overlayBox.Clickable = true;
 
-        var modal = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        modal.SetBackgroundColor(LauncherTheme.PopupBackground);
-        modal.SetPadding(Dp(18), Dp(14), Dp(18), Dp(14));
-        _overlayBox.AddView(modal, new LinearLayout.LayoutParams(Dp(320), ViewGroup.LayoutParams.WrapContent));
+        var title = new TextView(this) { Text = "Downloading content", TextSize = 20f };
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(LauncherTheme.Foreground);
+        title.Gravity = GravityFlags.Center;
+        _overlayBox.AddView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
-        _overlayText = new TextView(this) { Text = "Connecting...", TextSize = 13f };
-        _overlayText.SetTextColor(LauncherTheme.Foreground);
+        var goldLine = new View(this);
+        goldLine.SetBackgroundColor(LauncherTheme.NanoGold);
+        _overlayBox.AddView(goldLine, new LinearLayout.LayoutParams(Dp(260), Dp(2))
+        {
+            Gravity = GravityFlags.CenterHorizontal,
+            TopMargin = Dp(8)
+        });
+
+        _overlayText = new TextView(this) { Text = "Connecting...", TextSize = 12f };
+        _overlayText.SetTextColor(LauncherTheme.SubText);
         _overlayText.Gravity = GravityFlags.Center;
-        modal.AddView(_overlayText);
+        _overlayText.SetPadding(Dp(24), Dp(16), Dp(24), 0);
+        _overlayBox.AddView(_overlayText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
 
         _overlayProgress = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
         {
             Indeterminate = true,
             Max = 100
         };
-        modal.AddView(_overlayProgress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(12))
+        _overlayProgress.IndeterminateTintList = global::Android.Content.Res.ColorStateList.ValueOf(LauncherTheme.NanoGold);
+        _overlayBox.AddView(_overlayProgress, new LinearLayout.LayoutParams(Dp(300), Dp(8))
         {
-            TopMargin = Dp(10)
+            Gravity = GravityFlags.CenterHorizontal,
+            TopMargin = Dp(14)
         });
 
-        var cancel = new Button(this) { Text = "Cancel", TextSize = 11f };
-        cancel.SetTextColor(LauncherTheme.Foreground);
-        cancel.SetPadding(Dp(10), 0, Dp(10), 0);
-        cancel.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        var cancel = CreateAngleButton("Cancel", 30, 120);
         cancel.Click += (_, _) =>
         {
             Window?.ClearFlags(WindowManagerFlags.KeepScreenOn);
             _overlayBox.Visibility = ViewStates.Gone;
         };
-        modal.AddView(cancel, new LinearLayout.LayoutParams(Dp(100), Dp(30))
+        _overlayBox.AddView(cancel, new LinearLayout.LayoutParams(Dp(120), Dp(30))
         {
             Gravity = GravityFlags.CenterHorizontal,
-            TopMargin = Dp(10)
+            TopMargin = Dp(18)
         });
 
         AddContentView(_overlayBox, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
@@ -523,24 +532,43 @@ public sealed class LauncherActivity : Activity
             return;
         }
 
-        var dialog = new AlertDialog.Builder(this);
-        dialog.SetTitle(account.Username);
-        dialog.SetItems(new[] { "Log out", "Switch account", "Account settings (web)" }, (_, args) =>
+        var list = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        list.SetBackgroundColor(LauncherTheme.PopupBackground);
+        list.SetPadding(Dp(2), Dp(4), Dp(2), Dp(4));
+
+        var popup = new PopupWindow(list, Dp(220), ViewGroup.LayoutParams.WrapContent, true);
+        popup.SetBackgroundDrawable(new ColorDrawable(Color.Transparent));
+        popup.OutsideTouchable = true;
+        popup.Elevation = Dp(8);
+
+        var user = new TextView(this) { Text = account.Username, TextSize = 10f };
+        user.SetTextColor(LauncherTheme.SubText);
+        user.SetPadding(Dp(12), Dp(6), Dp(12), Dp(6));
+        list.AddView(user, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+
+        var line = new View(this);
+        line.SetBackgroundColor(Color.Argb(170, 0x57, 0x5B, 0x7F));
+        list.AddView(line, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(2)));
+
+        void AddItem(string text, Action action)
         {
-            switch (args.Which)
+            var item = new TextView(this) { Text = text, TextSize = 12f };
+            item.SetTextColor(LauncherTheme.Foreground);
+            item.SetPadding(Dp(12), Dp(9), Dp(12), Dp(9));
+            item.Clickable = true;
+            item.Click += (_, _) =>
             {
-                case 0:
-                    PerformLogout();
-                    break;
-                case 1:
-                    PerformLogout();
-                    break;
-                case 2:
-                    OpenUrl("https://account.spacestation14.com/Identity/Account/Manage");
-                    break;
-            }
-        });
-        dialog.Show();
+                popup.Dismiss();
+                action();
+            };
+            list.AddView(item, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        }
+
+        AddItem("Log out", PerformLogout);
+        AddItem("Switch account", PerformLogout);
+        AddItem("Account settings (web)", () => OpenUrl("https://account.spacestation14.com/Identity/Account/Manage"));
+
+        popup.ShowAsDropDown(_accountBtn, Dp(0), Dp(4));
     }
 
     private void PerformLogout()
@@ -881,6 +909,9 @@ public sealed class LauncherActivity : Activity
         header.AddView(CreateTableHeaderSeparator());
         header.AddView(CreateTableCell("", 0f, GravityFlags.Center, 9f, false, Dp(84)));
         page.AddView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(20)));
+        var headerLine = new View(this);
+        headerLine.SetBackgroundColor(Color.Argb(170, 0x57, 0x5B, 0x7F));
+        page.AddView(headerLine, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(2)));
 
         var sep = new View(this);
         sep.SetBackgroundColor(LauncherTheme.Separator);
@@ -1107,6 +1138,12 @@ public sealed class LauncherActivity : Activity
     }
 
 
+    private static IEnumerable<string> HubUrlsWithFallback()
+    {
+        yield return "https://hub.spacestation14.com/";
+        yield return "https://hub.fallback.spacestation14.com/";
+    }
+
     private void RenderServerList()
     {
         if (_listLayout == null)
@@ -1238,7 +1275,7 @@ public sealed class LauncherActivity : Activity
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         header.SetGravity(GravityFlags.CenterVertical);
         header.SetPadding(0, 0, Dp(4), 0);
-        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(34));
+        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(32));
 
         var chevron = new TextView(this) { Text = isExpanded ? "▾" : "▸", TextSize = 9f };
         chevron.SetTextColor(isExpanded ? LauncherTheme.Foreground : LauncherTheme.ForegroundMuted);
@@ -1272,8 +1309,9 @@ public sealed class LauncherActivity : Activity
         var playersText = new TextView(this) { Text = players + "/" + maxPlayers, TextSize = 9f };
         playersText.SetTextColor(LauncherTheme.Foreground);
         playersText.Typeface = Typeface.Monospace;
-        playersText.Gravity = GravityFlags.Center;
+        playersText.Gravity = GravityFlags.Right | GravityFlags.CenterVertical;
         playersText.SetSingleLine(true);
+        playersText.SetPadding(0, 0, Dp(8), 0);
         header.AddView(playersText, new LinearLayout.LayoutParams(Dp(64), ViewGroup.LayoutParams.MatchParent));
 
         header.AddView(CreateListSeparator());
@@ -2881,7 +2919,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.5.1";
+    public const string CurrentAppVersion = "v0.5.3";
 
 
     public string GetCurrentAppVersion()

@@ -116,6 +116,12 @@ public static class ContentStore
 
         var dir = System.IO.Path.Combine(cacheRoot, ServerKey(serverAddress));
         Directory.CreateDirectory(dir);
+        try
+        {
+            foreach (var part in Directory.EnumerateFiles(dir, "*.part", SearchOption.AllDirectories))
+                File.Delete(part);
+        }
+        catch { }
 
         List<(string Hash, string Path)> entries;
         try
@@ -136,7 +142,22 @@ public static class ContentStore
         var local = ReadLocalManifest(manifestPath);
 
         if (local == null && entries.Count > 0)
+        {
             local = await MigrateLegacyZipAsync(build, cacheRoot, dir, entries, progress, cancel);
+            if (local == null)
+            {
+                // Обрыв загрузки не должен терять уже скачанные файлы: пересчитываем манифест по диску,
+                // чтобы на следующей попытке качались только недостающие файлы.
+                progress?.Invoke(0, entries.Count, "Checking downloaded files...");
+                local = await HashLocalFilesAsync(dir, entries, progress, cancel);
+                if (local != null && local.Count > 0)
+                {
+                    var recovered = local.Select(kv => (kv.Value, kv.Key)).ToList();
+                    await File.WriteAllTextAsync(manifestPath, BuildManifestText(recovered), cancel);
+                    global::Android.Util.Log.Info("SS14Store", $"Recovered manifest from disk: {local.Count} files");
+                }
+            }
+        }
 
         var serverPaths = new HashSet<string>(entries.Select(e => e.Path), StringComparer.Ordinal);
         var changed = new List<int>();
@@ -187,6 +208,45 @@ public static class ContentStore
         return new ContentLocation(dir, false);
     }
 
+    private static IEnumerable<string> GetManifestUrls(ServerBuildInfo build, string serverAddress)
+    {
+        var (primary, _) = AczClient.GetUrls(build, serverAddress);
+        var urls = new List<string>();
+        if (!string.IsNullOrWhiteSpace(primary))
+            urls.Add(primary);
+
+        if (UriHelper.TryParseSs14Uri(serverAddress, out var uri))
+            urls.Add(new Uri(UriHelper.GetServerApiAddress(uri), "manifest.txt").ToString());
+
+        return urls.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<string> GetDownloadUrls(ServerBuildInfo build, string serverAddress)
+    {
+        var (_, primary) = AczClient.GetUrls(build, serverAddress);
+        var urls = new List<string>();
+        if (!string.IsNullOrWhiteSpace(primary))
+            urls.Add(primary);
+
+        if (UriHelper.TryParseSs14Uri(serverAddress, out var uri))
+            urls.Add(new Uri(UriHelper.GetServerApiAddress(uri), "download").ToString());
+
+        if (Uri.TryCreate(primary, UriKind.Absolute, out var parsed))
+        {
+            foreach (var mirror in new[]
+                     {
+                         "https://cdn.fallback.spacestation14.com/",
+                         "https://cdn.spacestation14.com/"
+                     })
+            {
+                var mirrorRoot = new Uri(mirror);
+                urls.Add(mirrorRoot.GetLeftPart(UriPartial.Authority) + parsed.PathAndQuery);
+            }
+        }
+
+        return urls.Distinct(StringComparer.OrdinalIgnoreCase);
+    }
+
     private static string ServerKey(string serverAddress)
     {
         var safe = new string(serverAddress.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
@@ -229,38 +289,52 @@ public static class ContentStore
         Action<int, int, string>? progress,
         CancellationToken cancel)
     {
-        var (manifestUrl, _) = AczClient.GetUrls(build, serverAddress);
-        if (string.IsNullOrWhiteSpace(manifestUrl))
+        var manifestUrls = GetManifestUrls(build, serverAddress).ToList();
+        if (manifestUrls.Count == 0)
             throw new InvalidOperationException("Server does not provide a content manifest.");
 
         progress?.Invoke(0, 0, "Fetching server manifest...");
-        using var req = new HttpRequestMessage(HttpMethod.Get, manifestUrl);
-        req.Headers.UserAgent.ParseAdd("SS14.Launcher/61");
-        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancel);
-        resp.EnsureSuccessStatusCode();
-
-        using var stream = await resp.Content.ReadAsStreamAsync(cancel);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-
-        var header = await reader.ReadLineAsync(cancel);
-        if (header != "Robust Content Manifest 1")
-            throw new InvalidOperationException($"Invalid manifest header: {header}");
-
-        var entries = new List<(string, string)>();
-        string? line;
-        while ((line = await reader.ReadLineAsync(cancel)) != null)
+        Exception? lastError = null;
+        foreach (var manifestUrl in manifestUrls)
         {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            var sep = line.IndexOf(' ');
-            if (sep <= 0) continue;
-            var path = line[(sep + 1)..].Trim().Replace('\\', '/').TrimStart('/');
-            entries.Add((line[..sep].Trim(), path));
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, manifestUrl);
+                req.Headers.UserAgent.ParseAdd("SS14.Launcher/61");
+                using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancel);
+                resp.EnsureSuccessStatusCode();
+
+                using var stream = await resp.Content.ReadAsStreamAsync(cancel);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+
+                var header = await reader.ReadLineAsync(cancel);
+                if (header != "Robust Content Manifest 1")
+                    throw new InvalidOperationException($"Invalid manifest header: {header}");
+
+                var entries = new List<(string, string)>();
+                string? line;
+                while ((line = await reader.ReadLineAsync(cancel)) != null)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    var sep = line.IndexOf(' ');
+                    if (sep <= 0) continue;
+                    var path = line[(sep + 1)..].Trim().Replace('\\', '/').TrimStart('/');
+                    entries.Add((line[..sep].Trim(), path));
+                }
+
+                if (entries.Count == 0)
+                    throw new InvalidOperationException("Manifest contains 0 entries.");
+
+                return entries;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                lastError = ex;
+                global::Android.Util.Log.Warn("SS14Store", $"Manifest fetch failed from {manifestUrl}: {ex.Message}");
+            }
         }
 
-        if (entries.Count == 0)
-            throw new InvalidOperationException("Manifest contains 0 entries.");
-
-        return entries;
+        throw new IOException("Failed to fetch manifest from any CDN: " + lastError?.Message, lastError);
     }
 
     private static async Task<Dictionary<string, string>?> MigrateLegacyZipAsync(
@@ -337,8 +411,8 @@ public static class ContentStore
         Action<int, int, string>? progress,
         CancellationToken cancel)
     {
-        var (_, downloadUrl) = AczClient.GetUrls(build, serverAddress);
-        if (string.IsNullOrWhiteSpace(downloadUrl))
+        var downloadUrls = GetDownloadUrls(build, serverAddress).ToList();
+        if (downloadUrls.Count == 0)
             throw new InvalidOperationException("Server does not provide a content download URL.");
 
         var total = changed.Count;
@@ -352,17 +426,36 @@ public static class ContentStore
             for (var i = 0; i < chunk.Count; i++)
                 BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(i * 4, 4), chunk[i]);
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, downloadUrl);
-            req.Headers.Add("X-Robust-Download-Protocol", "1");
-            req.Headers.UserAgent.ParseAdd("SS14.Launcher/61");
-            req.Headers.TryAddWithoutValidation("Accept-Encoding", "zstd");
-            req.Content = new ByteArrayContent(body);
-            req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            HttpResponseMessage? resp = null;
+            Stream? rawStream = null;
+            Exception? lastError = null;
+            foreach (var url in downloadUrls)
+            {
+                try
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Post, url);
+                    req.Headers.Add("X-Robust-Download-Protocol", "1");
+                    req.Headers.UserAgent.ParseAdd("SS14.Launcher/61");
+                    req.Headers.TryAddWithoutValidation("Accept-Encoding", "zstd");
+                    req.Content = new ByteArrayContent(body);
+                    req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
 
-            using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancel);
-            resp.EnsureSuccessStatusCode();
+                    var candidate = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancel);
+                    candidate.EnsureSuccessStatusCode();
+                    rawStream = await candidate.Content.ReadAsStreamAsync(cancel);
+                    resp = candidate;
+                    break;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    lastError = ex;
+                    global::Android.Util.Log.Warn("SS14Store", $"Content download failed from {url}: {ex.Message}");
+                }
+            }
 
-            var rawStream = await resp.Content.ReadAsStreamAsync(cancel);
+            if (resp == null || rawStream == null)
+                throw new IOException("All content CDNs failed: " + lastError?.Message, lastError);
+
             Stream stream = resp.Content.Headers.ContentEncoding.Any(e => e.Equals("zstd", StringComparison.OrdinalIgnoreCase))
                 ? new ZStdDecompressStream(rawStream)
                 : rawStream;
@@ -444,6 +537,8 @@ public static class ContentStore
                     }
                 }
             }
+
+            resp.Dispose();
         }
     }
 
