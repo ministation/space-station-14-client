@@ -22,7 +22,7 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.5.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.5.0).
+APK: [Release android-v0.5.1](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.5.1).
 arm64-v8a и x86_64, Android 8.0 и новее. Первый запуск скачивает контент сервера (около 1.27 ГБ),
 дальше обновления сервера докачивают только изменённые файлы.
 
