@@ -1,82 +1,59 @@
-# Space Station 14 на Android (Mini Station)
+# Space Station 14 на Android
 
-Android-клиент Mini Station на настоящем движке SS14. Это не самописный UI и не заглушка: приложение
-запускает [RobustToolbox](https://github.com/space-wizards/RobustToolbox) 295.0.2 (та же версия, что на
-сервере Mini Station), подгружает готовый контент сервера с CDN и показывает штатный игровой интерфейс
-Space Station 14, как на ПК. Сверху движок добавляет тач-управление и экранные кнопки, сам UI остаётся
-родным.
+Android-клиент Space Station 14 на настоящем движке RobustToolbox 295.0.2. Интерфейс лаунчера и
+игры штатный, из SS14: список серверов, вход в аккаунт SS14, настройки, логи, песочница и обычный
+экран меню/лобби. Сверху движок добавляет тач-управление и экранные кнопки.
 
-| Что | Статус |
+За основу взят полный mobile-порт [SolomonNumb1/space-station-14-mobile](https://github.com/SolomonNumb1/space-station-14-mobile):
+его лаунчер, настройки, логи и патч движка. От порта остались только эти слои, Mini Station-оболочки
+и хаба больше нет.
+
+## Что исправлено относительно порта-основы
+
+| Проблема | Решение |
 |---|---|
-| Движок RobustToolbox 295.0.2 на Android | работает (android/patches/robust-android-v295.patch) |
-| Сборка APK под arm64-v8a и x86_64 | работает |
-| Загрузка контента Mini Station (SS14.Client.zip, около 1.27 ГБ) | работает |
-| Загрузка Content.Client и всех контентных сборок движком | работает |
-| Прототипы, локали, рендер (EGL/GLES) | работает |
-| Главное меню и вход на сервер | проверяется на эмуляторе |
-| Hub-лаунчер (выбор сервера и аккаунта) | есть в probes/Probe.AndroidHost, объединяется с игрой |
-
-Код и сборка: [android/README.md](android/README.md). Устройство порта движка:
-[android/ENGINE-PORT.md](android/ENGINE-PORT.md).
+| На части телефонов разъезжались поля в диалогах | диалоги в ScrollView, поля растянуты по ширине, клавиатура не перекрывает ввод |
+| Аккаунт SS14 не входил | вход через auth.spacestation14.com работает, токен уходит в игру (env + auth.json), у аккаунта есть гостевой режим |
+| При обновлении сервера качался весь контент (1.27 ГБ) | дельта-обновление по манифесту сервера: качаются только файлы с изменившимся BLAKE2B-хешем |
+| Контент дублировался в приватной папке | контент лежит в отдельном каталоге и монтируется в движок (--mount-dir), а не распаковывается в FilesDir |
 
 ## Скачать
 
-Готовый APK: [Release android-v0.1.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.1.0).
-Сборка под arm64-v8a и x86_64, Android 8.0 и новее. Первый запуск скачивает контент сервера (около 1.27 ГБ).
+APK: [Release android-v0.2.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.2.0).
+arm64-v8a и x86_64, Android 8.0 и новее. Первый запуск скачивает контент сервера (около 1.27 ГБ),
+дальше обновления сервера докачивают только изменённые файлы.
 
-## История R&D
+## Как это работает
 
-До появления рабочего клиента репозиторий был R&D-портом: probes/, src/, docs/ описывают фазы 0-7,
-блокеры AOT/reflection и сетевые эксперименты. Это осталось как история исследований, рабочий клиент
-живёт в android/.
+1. APK содержит движок (Robust.Shared, Robust.Client) и нативные библиотеки SDL3, FreeType, OpenAL,
+   zstd и libsodium.
+2. Лаунчер получает у сервера `/info`: билд, манифест контента и адреса загрузки.
+3. Контент лежит в `no_backup/content_cache/content_<сервер>/` рядом с манифестом. При смене билда
+   сравниваются хеши файлов, недостающие качаются потоком `POST /download` с заголовком
+   `X-Robust-Download-Protocol: 1` (zstd), старые zip-кеши распаковываются один раз и переиспользуются.
+4. Игра запускается с `--mount-dir` на эту папку и подключается к серверу. Авторизация SS14
+   необязательна: сервер сам решает, пускать ли гостя.
+
+Код и сборка: [android/README.md](android/README.md). Проверка на эмуляторе: [docs/android-status.md](docs/android-status.md).
 
 ## Структура
 
 ```
-docs/                 план, блокеры, фазы
-probes/
-  Probe.AndroidHost/  минимальный Android APK (.NET 10)
-  Probe.MathsCompile/
-  Probe.SharedCompile/
-  Probe.SharedOnAndroid/
-src/
-  Port.Platform.Android/  Phase 3 platform stubs
-scripts/              клон Robust, проверки
-vendor/               (gitignore) локальный shallow-клон RobustToolbox
-docs/                 план, блокеры, фазы
+android/host/            Android-приложение (net10.0-android): лаунчер + boot движка
+android/patches/         Android-патч RobustToolbox 295.0.2
+android/scripts/         fetch-engine, build-native-libs, build-apk
+docs/                    статус проверки и R&D-история порта
+probes/, src/            ранние прототипы порта (история, в сборку не входят)
+vendor/                  локальный клон RobustToolbox (gitignore)
 ```
 
-## Быстрый старт
+## Быстрый старт сборки
 
-Требования: .NET 10 SDK, workload `android`, Android SDK / эмулятор или устройство.
-
-```powershell
-cd c:\ss14\bots\robust-android-port
-dotnet build probes\Probe.AndroidHost\Probe.AndroidHost.csproj -c Debug
-
-# поставить на устройство/эмулятор (если adb видит устройство):
-dotnet build probes\Probe.AndroidHost\Probe.AndroidHost.csproj -t:Install -c Debug
+```bash
+android/scripts/fetch-engine.sh            # один раз: клон движка + патч
+android/scripts/build-native-libs.sh arm64-v8a
+android/scripts/build-native-libs.sh x86_64
+android/scripts/build-apk.sh Release
 ```
 
-Клон движка для анализа (не коммитится):
-
-```powershell
-.\scripts\clone-robust.ps1
-```
-
-## Фазы (кратко)
-
-0. **Host** — Android APK, логи, статус порта  
-1. **Inventory** — карта зависимостей Robust.Client (Clyde, GLFW/SDL, OpenGL, IoC)  
-2. **AOT/reflection** — что нельзя trim/AOT, план замены  
-3. **Window/input** — поверхность Android + тач вместо клавы/мыши  
-4. **Render** — OpenGL ES / Vulkan вместо десктопного Clyde backend  
-5. **Net** — подключение к игровому серверу  
-6. **Content** — загрузка пакетов контента сервера  
-7. **Observe** — ghost/spectator как первая игровая цель  
-
-Подробности: [docs/roadmap.md](docs/roadmap.md), [docs/blockers.md](docs/blockers.md).
-
-## Связь с сайтом
-
-Сайт Mini Station (`token_site`) — отдельно. Этот репо — только движок/клиент. Companion-приложение сайта можно добавить позже, но это не замена порту.
+APK: `android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk`.

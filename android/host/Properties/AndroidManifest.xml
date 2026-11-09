@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
 
   <application
@@ -10,5 +13,9 @@
       android:roundIcon="@mipmap/ic_launcher_round"
       android:memtagMode="off"
       android:usesCleartextTraffic="true">
+    <service
+      android:name="io.spacestation14.android.ContentDownloadService"
+      android:foregroundServiceType="dataSync"
+      android:exported="false" />
   </application>
 </manifest>

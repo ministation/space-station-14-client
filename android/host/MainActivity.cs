@@ -14,7 +14,7 @@ using SDLActivity = ppysdl::Org.Libsdl.App.SDLActivity;
 namespace Content.Android
 {
     [Activity(
-        Label = "Mini Station",
+        Label = "Space Station 14",
         MainLauncher = false,
         Exported = true,
         Icon = "@mipmap/ic_launcher",
@@ -492,6 +492,7 @@ namespace Content.Android
         }
 
         public static string? LaunchMountZip;
+        public static string? LaunchMountDir;
         public static string? LaunchConnectAddress;
         public static string? LaunchSs14Address;
         public static string? LaunchUsername;
@@ -564,6 +565,7 @@ namespace Content.Android
             try
             {
                 LaunchMountZip = Intent?.GetStringExtra("mount_zip") ?? LaunchMountZip;
+                LaunchMountDir = Intent?.GetStringExtra("mount_dir") ?? LaunchMountDir;
                 LaunchConnectAddress = Intent?.GetStringExtra("connect_addr") ?? LaunchConnectAddress;
                 LaunchSs14Address = Intent?.GetStringExtra("ss14_addr") ?? LaunchSs14Address;
                 LaunchUsername = Intent?.GetStringExtra("username") ?? LaunchUsername;
@@ -921,11 +923,33 @@ namespace Content.Android
         }
 
 
+        private static void CleanLegacyContentFiles(string filesDir)
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(filesDir, "*", SearchOption.TopDirectoryOnly))
+                {
+                    var ext = Path.GetExtension(file);
+                    if (ext.Equals(".dll", StringComparison.OrdinalIgnoreCase) ||
+                        ext.Equals(".pdb", StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Delete(file);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                global::Android.Util.Log.Warn("SS14_LOG", $"Legacy content cleanup failed: {ex.Message}");
+            }
+        }
+
         protected override void Main()
         {
             try
             {
                 var filesDir = AppStorage.FilesDir;
+                // Старая схема клала Content.*.dll прямо в files: движок видел их как второй модуль.
+                CleanLegacyContentFiles(filesDir);
                 try
                 {
                     var logWriter = new AndroidLogcatWriter("SS14_LOG", Path.Combine(filesDir, "game.log"));
@@ -964,6 +988,7 @@ namespace Content.Android
                 AuthBridge.ApplyEnvironment();
 
                 var mountZip = LaunchMountZip;
+                var mountDir = LaunchMountDir;
                 var connectAddr = LaunchConnectAddress;
                 var ss14Addr = LaunchSs14Address;
                 var username = LaunchUsername;
@@ -1034,7 +1059,12 @@ namespace Content.Android
 #endif
                 };
 
-                if (hasZip)
+                if (!string.IsNullOrEmpty(mountDir) && Directory.Exists(mountDir))
+                {
+                    args.Add("--mount-dir");
+                    args.Add(mountDir);
+                }
+                else if (hasZip)
                 {
                     args.Add("--mount-zip");
                     args.Add(mountZip!);

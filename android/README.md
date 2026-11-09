@@ -1,9 +1,8 @@
-# Android-клиент Mini Station
+# Android-клиент Space Station 14
 
 Здесь лежит Android-приложение, которое запускает **настоящий клиент Space Station 14**:
-движок [RobustToolbox](https://github.com/space-wizards/RobustToolbox) 295.0.2 (та же версия, что
-на сервере Mini Station) и контент Mini Station, скачанный с CDN сервера. UI в игре штатный, из
-Content.Client, поэтому выглядит как на ПК.
+движок [RobustToolbox](https://github.com/space-wizards/RobustToolbox) 295.0.2 и контент сервера,
+скачанный с его CDN. Лаунчер и игровой UI штатные, из SS14, поэтому выглядят как на ПК.
 
 ```
 android/
@@ -19,13 +18,13 @@ android/
 
 1. APK содержит движок (Robust.Shared, Robust.Client) и нативные библиотеки для arm64-v8a и x86_64,
    плюс маленький boot-пак ресурсов движка (engine-resources.zip).
-2. При первом запуске приложение скачивает с CDN Mini Station готовый SS14.Client.zip
-   (сборка контента под текущий билд сервера, примерно 1.27 ГБ), распаковывает из него
-   Assemblies/*.dll в приватную папку приложения.
-3. Движок монтирует скачанный архив как ресурсы (--mount-zip), грузит Content.Client.dll
-   из распакованных ассемблей и запускает обычный клиент SS14. Дальше это штатный UI и штатный
-   сетевой стек: вход через auth.spacestation14.com, сервер ss14.ministation.ru:1214.
-4. Контент кэшируется по хешу сборки: при обновлении сервера скачивается только новая сборка.
+2. Лаунчер берёт у сервера `/info` и манифест контента (18144 файла с BLAKE2B-256-хешами).
+3. Контент лежит в `no_backup/content_cache/content_<сервер>/`. При первом запуске он качается
+   потоком `POST /download` с заголовком `X-Robust-Download-Protocol: 1` (zstd), при обновлении
+   сервера качаются только файлы с другим хешем, старые zip-кеши распаковываются один раз.
+4. Игра запускается с `--mount-dir` на папку контента: движок грузит Content.Client и штатный UI,
+   подключается к серверу. Вход через auth.spacestation14.com опционален, гость тоже проходит,
+   если сервер это разрешает.
 
 ## Сборка
 
@@ -48,19 +47,19 @@ APK: android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk.
 
 ```bash
 adb install -r android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk
-adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivity
+adb shell am start -n ru.ministation.client/crc640001e7ab1265b90d.LauncherActivity
 ```
 
-Подключение к серверу сразу при старте, в том числе с аккаунтом SS14 (сервер требует авторизацию):
+Подключение к серверу сразу при старте, в том числе с аккаунтом SS14 (если сервер требует авторизацию):
 
 ```bash
-adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivity \\
+adb shell am start -n ru.ministation.client/crc640001e7ab1265b90d.LauncherActivity \\
   --es connect_addr "ss14.ministation.ru:1214" \\
   --es username "<ник>" --es userid "<uuid>" --es token "<токен SS14>"
 ```
 
-Без token клиент проходит DNS и шифрованный канал, но сервер отбивает хендшейк сообщением
-"Connecting to this server requires authentication".
+Без токена подключение работает, если у сервера `auth.mode` равен `Optional` (так на
+ss14.ministation.ru); если сервер требует вход, он отбивает хендшейк до появления лобби.
 
 ## Что уже проверено
 
@@ -68,12 +67,12 @@ adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivi
 |---|---|
 | Сборка движка под Android (net10.0-android) | работает |
 | Сборка APK (arm64-v8a + x86_64) | работает |
-| Загрузка и распаковка контента Mini Station | работает |
+| Загрузка контента по манифесту и дельта-обновления | работает, при смене билда качаются только изменения |
 | Загрузка Content.Client и всех контентных сборок движком | работает |
 | Инициализация сериализации и прототипов | работает |
 | Рендер EGL/GLES, шейдеры Clyde | работает |
-| Штатное главное меню Content.Client | работает, см. [docs/android-status.md](../docs/android-status.md) |
-| Вход на живой сервер | сеть и хендшейк работают, сервер требует токен SS14; заход в игру упирается в отдельный блокер состояния |
+| Лаунчер SS14: серверы, фильтры, аккаунт, настройки, логи | работает |
+| Вход на живой сервер | работает гостем при auth.mode Optional, доходит до лобби |
 | Звук (OpenAL Soft) | инициализируется, на эмуляторе не слушали |
 
 ## Ограничения
@@ -81,5 +80,5 @@ adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivi
 - Приложению нужно примерно 3 ГБ ОЗУ: движок плюс смонтированный контент. На телефоне с 6-8 ГБ
   это нормально, на слабом эмуляторе андроидный lowmemorykiller убивает процесс.
 - Первый запуск требует интернета: контент не входит в APK (он большой и привязан к билду сервера).
-- Пока это отдельное приложение с простым экраном запуска. Hub-лаунчер из probes/Probe.AndroidHost
-  будет подключён к нему как экран выбора серверов и аккаунта.
+- Hub-лаунчер из probes/Probe.AndroidHost больше не нужен: выбор серверов и аккаунт есть
+  в штатном лаунчере приложения.
