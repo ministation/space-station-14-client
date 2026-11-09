@@ -19,6 +19,11 @@ Space Station 14, как на ПК. Сверху движок добавляет
 Код и сборка: [android/README.md](android/README.md). Устройство порта движка:
 [android/ENGINE-PORT.md](android/ENGINE-PORT.md).
 
+## Скачать
+
+Готовый APK: [Release android-v0.1.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.1.0).
+Сборка под arm64-v8a и x86_64, Android 8.0 и новее. Первый запуск скачивает контент сервера (около 1.27 ГБ).
+
 ## История R&D
 
 До появления рабочего клиента репозиторий был R&D-портом: probes/, src/, docs/ описывают фазы 0-7,
