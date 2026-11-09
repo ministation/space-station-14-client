@@ -1184,26 +1184,30 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..9e83593 100644
+index 73cadae..d6680b7 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-@@ -40,7 +40,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -40,7 +40,12 @@ namespace Robust.Client.Graphics.Clyde
          private const float SharedOccluderNeighbourQueryPadding = 1f + SharedOccluderEdgeTolerance;
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
          // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
 -        private const int FovMapSize = 2048;
 +        private static int FovMapSize => OperatingSystem.IsAndroid() ? 256 : 2048;
++
++        // Missing shader fallbacks must never print every frame: on Android a
++        // per-frame Console.WriteLine ends up in logcat and eats whole frames.
++        private bool _warnedLightShader;
++        private bool _warnedFovShader;
  
          private ClydeShaderInstance _fovDebugShaderInstance = default!;
  
-@@ -218,9 +218,19 @@ namespace Robust.Client.Graphics.Clyde
+@@ -218,9 +223,19 @@ namespace Robust.Client.Graphics.Clyde
  
              ClydeHandle LoadShaderHandle(string path)
              {
 -                if (_resourceCache.TryGetResource(path, out ShaderSourceResource? resource))
 +                try
-                 {
--                    return resource.ClydeHandle;
++                {
 +                    if (_resourceCache.TryGetResource(path, out ShaderSourceResource? resource))
 +                    {
 +                        var handle = resource.ClydeHandle;
@@ -1213,12 +1217,13 @@ index 73cadae..9e83593 100644
 +                    System.Console.WriteLine($"[ClydeLighting] TryGetResource returned false for '{path}'");
 +                }
 +                catch (Exception ex)
-+                {
+                 {
+-                    return resource.ClydeHandle;
 +                    System.Console.WriteLine($"[ClydeLighting] Exception in LoadShaderHandle for '{path}': {ex}");
                  }
  
                  _clydeSawmill.Warning($"Can't load shader {path}\n");
-@@ -318,15 +328,30 @@ namespace Robust.Client.Graphics.Clyde
+@@ -318,15 +333,30 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              if (_hasGLFloatFramebuffers)
              {
@@ -1252,7 +1257,7 @@ index 73cadae..9e83593 100644
              CheckGlError();
  
              BindVertexArray(_occlusionVao.Handle);
-@@ -453,8 +478,22 @@ namespace Robust.Client.Graphics.Clyde
+@@ -453,8 +483,27 @@ namespace Robust.Client.Graphics.Clyde
  
              ApplyLightingFovToBuffer(viewport, eye);
  
@@ -1264,7 +1269,12 @@ index 73cadae..9e83593 100644
 +                targetHandle = _enableSoftShadows ? _lightHardShaderHandle : _lightSoftShaderHandle;
 +                if (targetHandle == default || !_loadedShaders.TryGetValue(targetHandle, out loadedLight))
 +                {
-+                    System.Console.WriteLine($"[ClydeLighting] FAILED to find light shader! _enableSoftShadows={_enableSoftShadows}, softHandle={_lightSoftShaderHandle}, hardHandle={_lightHardShaderHandle}, loadedShadersCount={_loadedShaders.Count}");
++                    if (!_warnedLightShader)
++                    {
++                        _warnedLightShader = true;
++                        System.Console.WriteLine($"[ClydeLighting] FAILED to find light shader! _enableSoftShadows={_enableSoftShadows}, softHandle={_lightSoftShaderHandle}, hardHandle={_lightHardShaderHandle}, loadedShadersCount={_loadedShaders.Count}");
++                    }
++
 +                    ResetBlendFunc();
 +                    IsStencilling = false;
 +                    BindRenderTargetFull(viewport.RenderTarget);
@@ -1277,7 +1287,7 @@ index 73cadae..9e83593 100644
              lightShader.Use();
  
              SetupGlobalUniformsImmediate(lightShader, ShadowTexture);
-@@ -570,14 +609,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -570,14 +619,17 @@ namespace Robust.Client.Graphics.Clyde
              if (_cfg.GetCVar(CVars.LightBlur))
                  BlurRenderTarget(viewport, viewport.LightRenderTarget, viewport.LightBlurTarget, eye, 14f);
  
@@ -1301,7 +1311,7 @@ index 73cadae..9e83593 100644
              }
  
              BindRenderTargetFull(viewport.RenderTarget);
-@@ -897,7 +939,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -897,7 +949,10 @@ namespace Robust.Client.Graphics.Clyde
              CalcScreenMatrices(viewport.Size, out var proj, out var view);
              SetProjViewBuffer(proj, view);
  
@@ -1313,7 +1323,7 @@ index 73cadae..9e83593 100644
              shader.Use();
  
              SetupGlobalUniformsImmediate(shader, viewport.LightRenderTarget.Texture);
-@@ -958,7 +1003,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -958,7 +1013,10 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              IsBlending = false;
  
@@ -1325,14 +1335,19 @@ index 73cadae..9e83593 100644
              shader.Use();
  
              var tex = viewport.WallBleedIntermediateRenderTarget2.Texture;
-@@ -990,7 +1038,13 @@ namespace Robust.Client.Graphics.Clyde
+@@ -990,7 +1048,18 @@ namespace Robust.Client.Graphics.Clyde
  
              // Applies FOV to the final framebuffer.
  
 -            var fovShader = _loadedShaders[_fovShaderHandle].Program;
 +            if (_fovShaderHandle == default || !_loadedShaders.TryGetValue(_fovShaderHandle, out var loadedFov))
 +            {
-+                System.Console.WriteLine($"[ClydeLighting] ApplyFovToBuffer: fovHandle={_fovShaderHandle}, inLoaded={_loadedShaders.ContainsKey(_fovShaderHandle)} -> RETURNING!");
++                if (!_warnedFovShader)
++                {
++                    _warnedFovShader = true;
++                    System.Console.WriteLine($"[ClydeLighting] ApplyFovToBuffer: fovHandle={_fovShaderHandle}, inLoaded={_loadedShaders.ContainsKey(_fovShaderHandle)} -> RETURNING!");
++                }
++
 +                return;
 +            }
 +
@@ -1340,7 +1355,7 @@ index 73cadae..9e83593 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1013,7 +1067,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1013,7 +1082,10 @@ namespace Robust.Client.Graphics.Clyde
          {
              // Applies FOV to the lighting framebuffer.
  
@@ -1352,7 +1367,7 @@ index 73cadae..9e83593 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1945,6 +2002,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1945,6 +2017,10 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxShadowcastingLightsChanged(int newValue)
          {
@@ -1363,7 +1378,7 @@ index 73cadae..9e83593 100644
              _maxShadowcastingLights = newValue;
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
  
-@@ -1972,11 +2033,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1972,11 +2048,17 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxOccludersChanged(int value)
          {

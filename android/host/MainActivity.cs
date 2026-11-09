@@ -578,7 +578,7 @@ namespace Content.Android
                 // Mobile first defaults: low graphics, particles and parallax off, capped fps.
                 // Extras from the launcher below can override any of these.
                 LaunchBuildCVars["display.vsync"] = "false";
-                LaunchBuildCVars["display.max_fps"] = "0";
+                LaunchBuildCVars["display.max_fps"] = "60";
                 LaunchBuildCVars["particles.quality"] = "0";
                 LaunchBuildCVars["particles.global_budget"] = "512";
                 LaunchBuildCVars["parallax.enabled"] = "false";
@@ -1063,7 +1063,7 @@ namespace Content.Android
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
                     "--cvar", "display.vsync=false",
-                    "--cvar", "display.max_fps=0",
+                    "--cvar", "display.max_fps=60",
                     "--cvar", "audio.max_ambient_sources=16",
                     "--cvar", "audio.max_channels=24",
                     "--cvar", "net.logging=false",
