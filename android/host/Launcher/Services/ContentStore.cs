@@ -38,7 +38,7 @@ public readonly struct ContentLocation
 public static class ContentStore
 {
     private const string ManifestFileName = ".manifest";
-    private const int ChunkSize = 2048;
+    private const int ChunkSize = 512;
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
@@ -196,12 +196,19 @@ public static class ContentStore
             var donePaths = new HashSet<string>(
                 local?.Keys ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
             var savedSinceManifest = 0;
+            var manifestWatch = System.Diagnostics.Stopwatch.StartNew();
             Action<int> fileSaved = index =>
             {
                 donePaths.Add(entries[index].Path);
-                if (++savedSinceManifest % 256 != 0)
+                savedSinceManifest++;
+
+                // Большие билды это десятки тысяч файлов, поэтому манифест пишем по времени,
+                // а не после каждых N файлов, иначе весь канал уходит на перезапись файла манифеста.
+                if (savedSinceManifest < 512 || manifestWatch.ElapsedMilliseconds < 5000)
                     return;
 
+                savedSinceManifest = 0;
+                manifestWatch.Restart();
                 try
                 {
                     var present = entries.Where(e => donePaths.Contains(e.Path))
@@ -496,6 +503,9 @@ public static class ContentStore
                 byte[] compressed = new byte[65536];
                 byte[] payload = new byte[65536];
 
+                var lastParentDir = string.Empty;
+                var speedWatch = System.Diagnostics.Stopwatch.StartNew();
+                long bytesDone = 0;
                 foreach (var index in chunk)
                 {
                     var entry = entries[index];
@@ -544,22 +554,33 @@ public static class ContentStore
                     }
 
                     var actualHash = Hash(data.Span);
+                    var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
                     if (!string.Equals(actualHash, entry.Hash, StringComparison.OrdinalIgnoreCase))
                         throw new InvalidDataException($"Hash mismatch for {entry.Path}");
 
                     var full = System.IO.Path.Combine(dir, entry.Path);
-                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(full)!);
-                    var tmp = full + ".part";
-                    await File.WriteAllBytesAsync(tmp, data.ToArray(), cancel);
-                    File.Move(tmp, full, true);
+                    var parentDir = System.IO.Path.GetDirectoryName(full)!;
+                    if (!string.Equals(parentDir, lastParentDir, StringComparison.Ordinal))
+                    {
+                        Directory.CreateDirectory(parentDir);
+                        lastParentDir = parentDir;
+                    }
+
+                    // Пишем сразу в конечный файл: частичный файл не попадёт в манифест и будет
+                    // перекачан, а лишний rename на каждые из десятков тысяч файлов стоит дорого.
+                    using (var fileStream = new FileStream(full, FileMode.Create, FileAccess.Write, FileShare.None, 65536))
+                        fileStream.Write(data.Span);
+                    var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+
+                    bytesDone += data.Length;
+
                     fileSaved?.Invoke(index);
 
                     written++;
-                    if (written % 32 == 0 || written == total)
-                    {
-                        var pct = written * 100L / total;
-                        progress?.Invoke(written, total, $"Downloading content: {pct}%\n({written}/{total} files)");
-                    }
+                    var elapsedSec = speedWatch.Elapsed.TotalSeconds;
+                    var speed = elapsedSec > 0.2 ? bytesDone / 1048576.0 / elapsedSec : 0;
+                    var pct = written * 100L / total;
+                    progress?.Invoke(written, total, $"Downloading content: {pct}%\n({written}/{total} files, {speed:F1} MB/s)");
                 }
             }
 
