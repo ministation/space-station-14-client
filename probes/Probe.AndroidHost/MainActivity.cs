@@ -17,6 +17,7 @@ using Port.Platform.Android.Graphics;
 using Port.Platform.Android.Input;
 using Port.Platform.Android.Ui;
 using System.Timers;
+using System.Xml.Linq;
 using Timer = System.Timers.Timer;
 using View = Android.Views.View;
 using RobustSessionStatus = Robust.Shared.Enums.SessionStatus;
@@ -63,7 +64,6 @@ public class MainActivity : Activity
     TextView? _observeDiag;
     View? _observeDiagScroll;
     TextView? _joinDebug;
-    TextView? _debugToggle;
     Button? _copyLogBtn;
     Button? _observeCopyBtn;
     bool _observeDiagOpen;
@@ -75,26 +75,26 @@ public class MainActivity : Activity
     TextView? _loadingServer;
     TextView? _loadingStatus;
     TextView? _loadingPct;
+    TextView? _loadingSpeed;
+    TextView? _loadingMessage;
     ProgressBar? _loadingProgress;
     Button? _loadingCancelBtn;
-    FrameLayout? _loadingParallaxHost;
     FrameLayout? _lobbyParallaxHost;
     TextView? _lobbyWelcome;
-    bool _debugOpen;
     EditText? _authUsername;
     EditText? _authPassword;
     EditText? _authTfa;
     EditText? _charName;
     EditText? _customServer;
-    LinearLayout? _serverList;
-    LinearLayout? _authLoginFields;
-    LinearLayout? _hubBody;
-    View? _hubHeader;
-    TextView? _hubStatus;
-    TextView? _hubHeaderTitle;
-    TextView? _hubHeaderChevron;
     EditText? _hubSearch;
-    Button? _connectBtn;
+    LinearLayout? _serverList;
+    LinearLayout? _favoriteList;
+    View? _homeEmpty;
+    LinearLayout? _newsList;
+    TextView? _newsStatus;
+    TextView? _hubStatus;
+    ProgressBar? _hubSpinner;
+    TextView? _versionText;
     Button? _loginBtn;
     Button? _logoutBtn;
     Button? _disconnectBtn;
@@ -129,11 +129,10 @@ public class MainActivity : Activity
     CancellationTokenSource? _loginCts;
     CancellationTokenSource? _hubCts;
     Timer? _uiTimer;
-    string _authUiStatus = "Войдите через аккаунт SS14";
+    string _authUiStatus = "Не выполнен вход";
     string _hubSearchQuery = "";
     bool _loginBusy;
     bool _hubBusy;
-    bool _hubPanelExpanded;
     float _lastTouchX, _lastTouchY;
     bool _dragging;
     bool _landscapeLocked;
@@ -150,6 +149,26 @@ public class MainActivity : Activity
     int _lastPushedWorldEpoch;
     static readonly string[] ChatChannelLabels = ["Рядом", "LOOC", "OOC", "Шёпот", "Emote"];
     static readonly string[] ChatChannelCmds = ["say", "looc", "ooc", "whisper", "me"];
+
+    // ---- Launcher chrome (SS14.Launcher style) ----
+    const int TabHome = 0;
+    const int TabServers = 1;
+    const int TabNews = 2;
+    const int TabOptions = 3;
+    const int TabLogin = 4; // MainWindowLogin replaces the tab content when logged out.
+    int _tabIndex = TabHome;
+    int _lastLauncherTab = TabHome;
+    bool _skipLogin;
+    Button? _connectBtn; // legacy hidden; per-row Connect is the real entry point.
+    TextView? _loginError;
+    CheckBox? _authShowPass;
+    long _speedLastBytes;
+    long _speedLastMs;
+    double _speedEma;
+    bool _newsLoaded;
+    bool _newsBusy;
+    bool _verboseLog;
+    Android.Content.ISharedPreferences _prefs = null!;
 
     protected override void OnCreate(Bundle? savedInstanceState)
     {
@@ -199,7 +218,7 @@ public class MainActivity : Activity
         _inputBridge = new AndroidInputBridge(_uiHost.Input);
         ContentAssemblyHost.EnsureAssemblyResolveHook();
         _clientLoop.Start();
-        // Landscape locked from loading onward. Portrait only on hub home.
+        // Landscape locked from loading onward. Portrait only on launcher pages.
         if (s_forceLandscape || s_connect?.Busy == true || s_connect?.InLobby == true
             || s_connect?.Observing == true || s_uiObserving)
             RequestedOrientation = ScreenOrientation.Landscape;
@@ -207,6 +226,11 @@ public class MainActivity : Activity
             RequestedOrientation = ScreenOrientation.Portrait;
         SetContentView(Resource.Layout.activity_main);
         ApplySafeAreaInsets();
+
+        _prefs = GetSharedPreferences("launcher_prefs", FileCreationMode.Private)!;
+        _skipLogin = _prefs.GetBoolean("skip_login", false);
+        _verboseLog = _prefs.GetBoolean("verbose_log", false);
+        _lastLauncherTab = Math.Clamp(_prefs.GetInt("last_tab", TabHome), TabHome, TabOptions);
 
         var paths = AndroidContentPaths.FromContext(this);
         _host = new AndroidPlatformHost(paths);
@@ -231,7 +255,9 @@ public class MainActivity : Activity
 
         BindViews();
         WireButtons();
+        LauncherTheme.StyleButtons(FindViewById(Resource.Id.root)!);
         RebuildServerList();
+        RebuildFavoriteList();
 
         var existing = AuthSessionConfig.TryLoad(_connect.AuthConfigPath);
         if (existing?.HasRequiredFields == true)
@@ -240,6 +266,8 @@ public class MainActivity : Activity
             if (_charName != null && string.IsNullOrWhiteSpace(_charName.Text))
                 _charName.Text = existing.UserName;
         }
+
+        SetVersionText();
 
         _uiTimer = new Timer(50);
         _uiTimer.Elapsed += (_, _) =>
@@ -276,7 +304,11 @@ public class MainActivity : Activity
                         }
                         else
                         {
+                            _uiTick++;
                             RenderStatus();
+                            // Rotate ConnectingOverlay random message every ~8 s.
+                            if (_uiTick % 160 == 0 && _screenLoading?.Visibility == ViewStates.Visible)
+                                _ = UpdateLoadingMessageAsync();
                         }
                     }
                     catch (Exception ex)
@@ -330,7 +362,7 @@ public class MainActivity : Activity
             Window.SetDecorFitsSystemWindows(false);
 
         Window.SetStatusBarColor(Color.Transparent);
-        Window.SetNavigationBarColor(Color.ParseColor("#1E232A"));
+        Window.SetNavigationBarColor(LauncherTheme.StripeA);
 
         if (OperatingSystem.IsAndroidVersionAtLeast(30) && Window.InsetsController is { } ctrl)
         {
@@ -364,7 +396,7 @@ public class MainActivity : Activity
             else
             {
                 ctrl.Show(WindowInsets.Type.SystemBars());
-                Window.SetNavigationBarColor(Color.ParseColor("#1E232A"));
+                Window.SetNavigationBarColor(LauncherTheme.StripeA);
                 root?.RequestApplyInsets();
             }
         }
@@ -424,14 +456,6 @@ public class MainActivity : Activity
         _screenLobby = FindViewById(Resource.Id.screen_lobby);
         _screenObserve = FindViewById(Resource.Id.screen_observe);
         _screenLoading = FindViewById(Resource.Id.screen_loading);
-        _loadingParallaxHost = FindViewById<FrameLayout>(Resource.Id.loading_parallax_host);
-        if (_loadingParallaxHost != null && _loadingParallaxHost.ChildCount == 0)
-        {
-            _loadingParallaxHost.AddView(new ParallaxStarfieldView(this),
-                new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MatchParent,
-                    ViewGroup.LayoutParams.MatchParent));
-        }
 
         _lobbyParallaxHost = FindViewById<FrameLayout>(Resource.Id.lobby_parallax_host);
         if (_lobbyParallaxHost != null && _lobbyParallaxHost.ChildCount == 0)
@@ -450,6 +474,8 @@ public class MainActivity : Activity
         _loadingServer = FindViewById<TextView>(Resource.Id.loading_server);
         _loadingStatus = FindViewById<TextView>(Resource.Id.loading_status);
         _loadingPct = FindViewById<TextView>(Resource.Id.loading_pct);
+        _loadingSpeed = FindViewById<TextView>(Resource.Id.loading_speed);
+        _loadingMessage = FindViewById<TextView>(Resource.Id.loading_message);
         _loadingProgress = FindViewById<ProgressBar>(Resource.Id.loading_progress);
         _loadingCancelBtn = FindViewById<Button>(Resource.Id.btn_loading_cancel);
         _authStatus = FindViewById<TextView>(Resource.Id.auth_status);
@@ -477,7 +503,6 @@ public class MainActivity : Activity
         _observeDiagScroll = FindViewById(Resource.Id.observe_diag_scroll);
         _observeCopyBtn = FindViewById<Button>(Resource.Id.btn_observe_copy);
         _joinDebug = FindViewById<TextView>(Resource.Id.join_debug);
-        _debugToggle = FindViewById<TextView>(Resource.Id.debug_toggle);
         _copyLogBtn = FindViewById<Button>(Resource.Id.btn_copy_log);
         _downloadLabel = FindViewById<TextView>(Resource.Id.download_label);
         _downloadPct = FindViewById<TextView>(Resource.Id.download_pct);
@@ -485,16 +510,19 @@ public class MainActivity : Activity
         _authUsername = FindViewById<EditText>(Resource.Id.auth_username);
         _authPassword = FindViewById<EditText>(Resource.Id.auth_password);
         _authTfa = FindViewById<EditText>(Resource.Id.auth_tfa);
-        _authLoginFields = FindViewById<LinearLayout>(Resource.Id.auth_login_fields);
+        _authShowPass = FindViewById<CheckBox>(Resource.Id.auth_show_pass);
+        _loginError = FindViewById<TextView>(Resource.Id.login_error);
         _hubStatus = FindViewById<TextView>(Resource.Id.hub_status);
-        _hubBody = FindViewById<LinearLayout>(Resource.Id.hub_body);
-        _hubHeader = FindViewById(Resource.Id.hub_header);
-        _hubHeaderTitle = FindViewById<TextView>(Resource.Id.hub_header_title);
-        _hubHeaderChevron = FindViewById<TextView>(Resource.Id.hub_header_chevron);
+        _hubSpinner = FindViewById<ProgressBar>(Resource.Id.hub_spinner);
         _hubSearch = FindViewById<EditText>(Resource.Id.hub_search);
+        _serverList = FindViewById<LinearLayout>(Resource.Id.server_list);
+        _favoriteList = FindViewById<LinearLayout>(Resource.Id.favorite_list);
+        _homeEmpty = FindViewById(Resource.Id.home_empty);
+        _newsList = FindViewById<LinearLayout>(Resource.Id.news_list);
+        _newsStatus = FindViewById<TextView>(Resource.Id.news_status);
+        _versionText = FindViewById<TextView>(Resource.Id.version_text);
         _charName = FindViewById<EditText>(Resource.Id.char_name);
         _customServer = FindViewById<EditText>(Resource.Id.custom_server);
-        _serverList = FindViewById<LinearLayout>(Resource.Id.server_list);
         _connectBtn = FindViewById<Button>(Resource.Id.btn_connect);
         _loginBtn = FindViewById<Button>(Resource.Id.btn_login_ss14);
         _logoutBtn = FindViewById<Button>(Resource.Id.btn_logout_ss14);
@@ -505,31 +533,76 @@ public class MainActivity : Activity
         _addServerBtn = FindViewById<Button>(Resource.Id.btn_add_server);
         _refreshHubBtn = FindViewById<Button>(Resource.Id.btn_refresh_hub);
         _observeGl = FindViewById<FrameLayout>(Resource.Id.observe_gl);
-
-        foreach (var b in new[] { _loginBtn, _logoutBtn, _connectBtn, _disconnectBtn, _observeLeaveBtn, _readyBtn, _observeBtn, _addServerBtn, _refreshHubBtn, _loadingCancelBtn, _copyLogBtn, _observeCopyBtn })
-            ClearMaterialTint(b);
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_up));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_down));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_left));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_touch_right));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_return));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_warps));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_follow));
-        ClearMaterialTint(FindViewById<Button>(Resource.Id.btn_ghost_roles));
     }
 
     void WireButtons()
     {
-        if (_debugToggle != null)
+        // ---- Launcher tabs ----
+        WireTab(Resource.Id.tab_home_btn, TabHome);
+        WireTab(Resource.Id.tab_servers_btn, TabServers);
+        WireTab(Resource.Id.tab_news_btn, TabNews);
+        WireTab(Resource.Id.tab_options_btn, TabOptions);
+
+        FindViewById<Button>(Resource.Id.btn_discord)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.DiscordUrl);
+        FindViewById<Button>(Resource.Id.btn_website)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.WebsiteUrl);
+        FindViewById<Button>(Resource.Id.btn_header_login)?.Click += (_, _) => SelectTab(TabLogin);
+        FindViewById<Button>(Resource.Id.btn_go_servers)?.Click += (_, _) => SelectTab(TabServers);
+        FindViewById<Button>(Resource.Id.btn_refresh_home)?.Click += async (_, _) => await RefreshHubAsync();
+        FindViewById<Button>(Resource.Id.btn_add_fav)?.Click += async (_, _) => await AddFavoriteAsync();
+        FindViewById<Button>(Resource.Id.btn_direct_connect)?.Click += async (_, _) => await DirectConnectAsync();
+
+        // ---- Login page ----
+        FindViewById<Button>(Resource.Id.btn_forgot)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.AccountForgotPasswordUrl);
+        FindViewById<Button>(Resource.Id.btn_login_resend)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.AccountResendConfirmationUrl);
+        FindViewById<Button>(Resource.Id.btn_login_register)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.AccountRegisterUrl);
+        FindViewById<Button>(Resource.Id.btn_login_skip)?.Click += (_, _) =>
         {
-            _debugToggle.Click += (_, _) =>
+            _skipLogin = true;
+            _prefs.Edit()?.PutBoolean("skip_login", true)?.Apply();
+            RenderStatus();
+        };
+        if (_authShowPass != null && _authPassword != null)
+            _authShowPass.CheckedChange += (_, e) =>
+                _authPassword.InputType = e.IsChecked
+                    ? Android.Text.InputTypes.ClassText | Android.Text.InputTypes.TextVariationVisiblePassword
+                    : Android.Text.InputTypes.ClassText | Android.Text.InputTypes.TextVariationPassword;
+
+        // ---- Options page ----
+        FindViewById<Button>(Resource.Id.btn_options_account)?.Click += (_, _) =>
+            LauncherTheme.OpenUrl(this, LauncherTheme.AccountManageUrl);
+        FindViewById<Button>(Resource.Id.btn_open_logs)?.Click += (_, _) =>
+        {
+            if (_joinDebug == null || _copyLogBtn == null)
+                return;
+            var open = _joinDebug.Visibility != ViewStates.Visible;
+            _joinDebug.Visibility = open ? ViewStates.Visible : ViewStates.Gone;
+            _copyLogBtn.Visibility = open ? ViewStates.Visible : ViewStates.Gone;
+        };
+        FindViewById<Button>(Resource.Id.btn_clear_content)?.Click += (_, _) =>
+            ConfirmAndClear("Очистить загруженный контент серверов?", () =>
             {
-                _debugOpen = !_debugOpen;
-                if (_joinDebug != null)
-                    _joinDebug.Visibility = _debugOpen ? ViewStates.Visible : ViewStates.Gone;
-                if (_copyLogBtn != null)
-                    _copyLogBtn.Visibility = _debugOpen ? ViewStates.Visible : ViewStates.Gone;
-                _debugToggle.Text = _debugOpen ? "Скрыть журнал" : GetString(Resource.String.debug_toggle);
+                TryDeleteDir(_connect.ContentRoot);
+                Toast.MakeText(this, "Контент очищен", ToastLength.Short)?.Show();
+            });
+        FindViewById<Button>(Resource.Id.btn_clear_engines)?.Click += (_, _) =>
+            ConfirmAndClear("Очистить скачанные сборки движка?", () =>
+            {
+                TryDeleteDir(_connect.Session.AssembliesDirectory);
+                Toast.MakeText(this, "Сборки очищены", ToastLength.Short)?.Show();
+            });
+        var verboseBox = FindViewById<CheckBox>(Resource.Id.opt_verbose_log);
+        if (verboseBox != null)
+        {
+            verboseBox.Checked = _verboseLog;
+            verboseBox.CheckedChange += (_, e) =>
+            {
+                _verboseLog = e.IsChecked;
+                _prefs.Edit()?.PutBoolean("verbose_log", e.IsChecked)?.Apply();
             };
         }
 
@@ -584,15 +657,8 @@ public class MainActivity : Activity
             _addServerBtn.Click += (_, _) => AddCustomServer();
         if (_refreshHubBtn != null)
         {
-            _refreshHubBtn.Click += async (_, e) =>
-            {
-                // Don't toggle collapse when tapping refresh.
-                await RefreshHubAsync();
-            };
+            _refreshHubBtn.Click += async (_, e) => await RefreshHubAsync();
         }
-
-        if (_hubHeader != null)
-            _hubHeader.Click += (_, _) => SetHubPanelExpanded(!_hubPanelExpanded);
 
         if (_hubSearch != null)
         {
@@ -600,10 +666,9 @@ public class MainActivity : Activity
             {
                 _hubSearchQuery = _hubSearch.Text?.Trim() ?? "";
                 RebuildServerList();
+                RebuildFavoriteList();
             };
         }
-
-        ApplyHubPanelVisibility();
 
         if (_readyBtn != null)
             _readyBtn.Click += (_, _) =>
@@ -737,288 +802,89 @@ public class MainActivity : Activity
         WireObserveChat();
     }
 
-    List<GhostWarpEntry>? _warpPickerItems;
-
-    void ShowGhostTargetPicker(bool places)
+    void WireTab(int id, int index)
     {
+        var v = FindViewById<View>(id);
+        if (v == null)
+            return;
+        v.Click += (_, _) => SelectTab(index);
+    }
+
+    void ConfirmAndClear(string message, Action action)
+    {
+        new AlertDialog.Builder(this)
+            .SetTitle("Подтверждение")
+            .SetMessage(message)
+            .SetPositiveButton("Очистить", (s, e) => action())
+            .SetNegativeButton("Отмена", (s, e) => { })
+            .Show();
+    }
+
+    static void TryDeleteDir(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !System.IO.Directory.Exists(path))
+            return;
         try
         {
-            _connect.Session.RequestGhostWarps();
-            var all = _connect.Session.GhostWarps;
-            var items = places
-                ? all.Where(w => w.IsWarpPoint || w.Category == "place").ToList()
-                : all.Where(w => !w.IsWarpPoint)
-                    .OrderBy(w => w.Category == "antag" ? 0 : 1)
-                    .ThenBy(w => w.DisplayName, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-            if (items.Count == 0)
-            {
-                Toast.MakeText(this, places ? "Запрос локаций…" : "Запрос игроков…", ToastLength.Short)?.Show();
-                return;
-            }
-
-            _warpPickerItems = items;
-            var overlay = FindViewById<FrameLayout>(Resource.Id.observe_warp_overlay);
-            var list = FindViewById<ListView>(Resource.Id.observe_warp_list);
-            var title = FindViewById<TextView>(Resource.Id.observe_warp_title);
-            var close = FindViewById<Button>(Resource.Id.btn_observe_warp_close);
-            var ghostnado = FindViewById<Button>(Resource.Id.btn_observe_warp_ghostnado);
-            if (overlay is null || list is null)
-                return;
-
-            if (title != null)
-                title.Text = places ? "Варп — локации" : "Следить — игроки";
-
-            if (ghostnado != null)
-            {
-                ghostnado.Visibility = places ? ViewStates.Gone : ViewStates.Visible;
-                ghostnado.Click -= OnGhostnadoClick;
-                ghostnado.Click += OnGhostnadoClick;
-            }
-
-            if (close != null)
-            {
-                close.Click -= OnWarpCloseClick;
-                close.Click += OnWarpCloseClick;
-            }
-
-            overlay.Click -= OnWarpCloseClick;
-            overlay.Click += OnWarpCloseClick;
-
-            var labels = items.Select(w =>
-            {
-                var prefix = w.Category switch
-                {
-                    "antag" => "◆ ",
-                    "place" => "○ ",
-                    _ => "· ",
-                };
-                return string.IsNullOrEmpty(w.Subtitle)
-                    ? prefix + w.DisplayName
-                    : $"{prefix}{w.DisplayName}  ({w.Subtitle})";
-            }).ToList();
-
-            list.Adapter = new ArrayAdapter<string>(
-                this,
-                Android.Resource.Layout.SimpleListItem1,
-                Android.Resource.Id.Text1,
-                labels);
-            list.ItemClick -= OnWarpItemClick;
-            list.ItemClick += OnWarpItemClick;
-            overlay.Visibility = ViewStates.Visible;
+            System.IO.Directory.Delete(path, recursive: true);
         }
         catch (Exception ex)
         {
-            Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
+            DiagLog.Error($"clear dir FAIL {path}: {ex.Message}");
         }
     }
 
-    void OnWarpCloseClick(object? sender, EventArgs e)
-    {
-        var overlay = FindViewById<FrameLayout>(Resource.Id.observe_warp_overlay);
-        if (overlay != null)
-            overlay.Visibility = ViewStates.Gone;
-        _warpPickerItems = null;
-    }
+    // ---- Launcher tab control ----
 
-    void OnGhostnadoClick(object? sender, EventArgs e)
+    void SelectTab(int index)
     {
-        try
-        {
-            if (_connect.Session.Ghostnado())
-                Toast.MakeText(this, "Ghostnado…", ToastLength.Short)?.Show();
-            else
-                Toast.MakeText(this, "Ghostnado недоступен", ToastLength.Short)?.Show();
-        }
-        catch (Exception ex)
-        {
-            Toast.MakeText(this, ex.Message, ToastLength.Short)?.Show();
-        }
+        if (index != TabLogin)
+            _lastLauncherTab = index;
+        var changed = _tabIndex != index;
+        _tabIndex = index;
 
-        OnWarpCloseClick(sender, e);
-    }
+        SetPage(Resource.Id.page_home, TabHome);
+        SetPage(Resource.Id.page_servers, TabServers);
+        SetPage(Resource.Id.page_news, TabNews);
+        SetPage(Resource.Id.page_options, TabOptions);
+        SetPage(Resource.Id.page_login, TabLogin);
 
-    void OnWarpItemClick(object? sender, AdapterView.ItemClickEventArgs e)
-    {
-        var items = _warpPickerItems;
-        if (items is null || e.Position < 0 || e.Position >= items.Count)
+        FindViewById(Resource.Id.tab_bar)!.Visibility =
+            index == TabLogin ? ViewStates.Gone : ViewStates.Visible;
+        MarkTab(Resource.Id.tab_home_btn, index == TabHome);
+        MarkTab(Resource.Id.tab_servers_btn, index == TabServers);
+        MarkTab(Resource.Id.tab_news_btn, index == TabNews);
+        MarkTab(Resource.Id.tab_options_btn, index == TabOptions);
+
+        if (!changed)
             return;
-        var target = items[e.Position];
-        if (_connect.Session.WarpTo(target.Entity))
-            Toast.MakeText(this, $"→ {target.DisplayName}", ToastLength.Short)?.Show();
-        OnWarpCloseClick(sender, EventArgs.Empty);
-    }
 
-    void RefreshGhostActionButtons()
-    {
-        var s = _connect.Session;
-        var ret = FindViewById<Button>(Resource.Id.btn_ghost_return);
-        if (ret != null)
-        {
-            ret.Enabled = s.CanReturnToBody;
-            ret.Alpha = s.CanReturnToBody ? 1f : 0.45f;
-        }
-
-        var roles = FindViewById<Button>(Resource.Id.btn_ghost_roles);
-        if (roles != null)
-        {
-            roles.Enabled = s.CanTakeGhostRoles;
-            roles.Alpha = s.CanTakeGhostRoles ? 1f : 0.45f;
-            roles.Text = s.GhostRoleCount > 0 ? $"Роли ({s.GhostRoleCount})" : "Роли";
-        }
-    }
-
-    void WireObserveChat()
-    {
-        var input = FindViewById<EditText>(Resource.Id.observe_chat_input);
-        var send = FindViewById<Button>(Resource.Id.btn_observe_chat_send);
-        var channelBtn = FindViewById<Button>(Resource.Id.btn_observe_chat_channel);
-        var filterBtn = FindViewById<Button>(Resource.Id.btn_observe_chat_filter);
-        var panel = FindViewById<LinearLayout>(Resource.Id.observe_chat_panel);
-        var scroll = FindViewById<ScrollView>(Resource.Id.observe_chat_scroll);
-
-        void Send()
-        {
-            var hud = _uiHost?.ObserveHud;
-            if (hud is not null)
-                _uiBinder.PullChatInput(hud);
-            var text = (hud?.ChatInput.Text ?? input?.Text)?.Trim();
-            if (string.IsNullOrEmpty(text)) return;
-            var cmd = ChatChannelCmds[Math.Clamp(_chatChannelIdx, 0, ChatChannelCmds.Length - 1)];
-            if (_connect.Session.SendChat(text, cmd))
-            {
-                if (hud is not null)
-                    _uiBinder.ClearChatInput(hud);
-                else if (input != null)
-                    input.Text = "";
-            }
-        }
-
-        if (send != null)
-            send.Click += (_, _) => Send();
-        if (input != null)
-        {
-            input.EditorAction += (_, e) =>
-            {
-                if (e.ActionId == Android.Views.InputMethods.ImeAction.Send
-                    || e.Event?.KeyCode == Keycode.Enter)
-                    Send();
-            };
-        }
-
-        if (channelBtn != null)
-        {
-            channelBtn.Click += (_, _) =>
-            {
-                _chatChannelIdx = (_chatChannelIdx + 1) % ChatChannelLabels.Length;
-                var label = ChatChannelLabels[_chatChannelIdx];
-                channelBtn.Text = label;
-                if (_uiHost?.ObserveHud is { } hud)
-                {
-                    hud.ChatChannelIndex = _chatChannelIdx;
-                    hud.ChatChannelButton.Text = label;
-                    hud.ChatInput.PlaceHolder = _chatChannelIdx switch
-                    {
-                        1 => "LOOC…",
-                        2 => "OOC…",
-                        3 => "шёпот…",
-                        4 => "действие…",
-                        _ => "E чтобы говорить…",
-                    };
-                }
-                if (input != null)
-                {
-                    input.Hint = _chatChannelIdx switch
-                    {
-                        1 => "LOOC…",
-                        2 => "OOC…",
-                        3 => "шёпот…",
-                        4 => "действие…",
-                        _ => "E чтобы говорить…",
-                    };
-                }
-            };
-        }
-
-        if (filterBtn != null && panel != null && scroll != null)
-        {
-            filterBtn.Click += (_, _) =>
-            {
-                _chatExpanded = !_chatExpanded;
-                if (_uiHost?.ObserveHud is { } hud)
-                    hud.ChatExpanded = _chatExpanded;
-                var lp = panel.LayoutParameters as FrameLayout.LayoutParams;
-                if (lp is null) return;
-                lp.Height = (int)(Resources!.DisplayMetrics!.Density * (_chatExpanded ? 180f : 44f));
-                panel.LayoutParameters = lp;
-                scroll.Visibility = _chatExpanded ? ViewStates.Visible : ViewStates.Gone;
-            };
-        }
-    }
-
-    VirtualJoystickView? _joystick;
-
-    void EnsureJoystick()
-    {
-        var host = FindViewById<FrameLayout>(Resource.Id.joystick_host);
-        if (host is null || _joystick != null)
-            return;
-        _joystick = new VirtualJoystickView(this);
-        host.AddView(_joystick, new FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MatchParent,
-            ViewGroup.LayoutParams.MatchParent));
-        _joystick.AxisChanged += (x, y) =>
-        {
-            _flightX = x;
-            _flightY = y;
-        };
-    }
-
-    void WireZoom(int id, float factor)
-    {
-        var btn = FindViewById<Button>(id);
-        if (btn is null) return;
-        btn.Click += (_, _) =>
-        {
-            _connect.Session.AdjustZoom(factor);
-            _glView?.Renderer.SetZoom(_connect.Session.Zoom);
-        };
-    }
-
-    void SetHubPanelExpanded(bool expanded)
-    {
-        _hubPanelExpanded = expanded;
-        ApplyHubPanelVisibility();
-        if (_hubPanelExpanded)
+        if (index == TabServers)
             RebuildServerList();
-        else
-            UpdateHubHeaderTitle();
+        if (index == TabHome)
+            RebuildFavoriteList();
+        if (index == TabNews && !_newsLoaded)
+            _ = RefreshNewsAsync();
+        if (index != TabLogin)
+            _prefs.Edit()?.PutInt("last_tab", index)?.Apply();
     }
 
-    void ApplyHubPanelVisibility()
+    void SetPage(int id, int index)
     {
-        if (_hubBody != null)
-            _hubBody.Visibility = _hubPanelExpanded ? ViewStates.Visible : ViewStates.Gone;
-        if (_hubHeaderChevron != null)
-            _hubHeaderChevron.Text = _hubPanelExpanded ? "▼" : "▶";
-        UpdateHubHeaderTitle();
-    }
-
-    void UpdateHubHeaderTitle()
-    {
-        if (_hubHeaderTitle is null || _hub is null)
+        var v = FindViewById<View>(id);
+        if (v == null)
             return;
-        var total = _hub.All.Count;
-        var filtered = FilterServers(_hub.All).Count;
-        var q = _hubSearchQuery;
-        if (!_hubPanelExpanded)
-            _hubHeaderTitle.Text = total > 0 ? $"СЕРВЕРЫ ({total})" : "СЕРВЕРЫ";
-        else if (!string.IsNullOrWhiteSpace(q))
-            _hubHeaderTitle.Text = $"СЕРВЕРЫ ({filtered}/{total})";
-        else
-            _hubHeaderTitle.Text = total > 0 ? $"СЕРВЕРЫ ({total})" : "СЕРВЕРЫ";
+        v.Visibility = _tabIndex == index ? ViewStates.Visible : ViewStates.Gone;
     }
+
+    void MarkTab(int id, bool selected)
+    {
+        var v = FindViewById<View>(id);
+        if (v != null)
+            v.Selected = selected;
+    }
+
+    // ---- Server table (ServerEntryView style: name | round | players | connect) ----
 
     bool DescMatches(string id, string q) =>
         _descCache.TryGetValue(id, out var d) && d.Contains(q, StringComparison.OrdinalIgnoreCase);
@@ -1046,210 +912,214 @@ public class MainActivity : Activity
 
     void RebuildServerList()
     {
-        UpdateHubHeaderTitle();
         if (_serverList is null || _hub is null)
-            return;
-        if (!_hubPanelExpanded)
             return;
 
         _serverList.RemoveAllViews();
-        var pad = (int)TypedValue.ApplyDimension(ComplexUnitType.Dip, 10, Resources!.DisplayMetrics);
-        var all = _hub.All;
-        var servers = FilterServers(all);
-
-        // Select before building rows so first paint shows the selected style.
-        if (_selected is null && all.Count > 0)
-            SelectServer(all.FirstOrDefault(s => s.Favorite) ?? all[0]);
-
-        if (servers.Count == 0)
-        {
-            var empty = new TextView(this)
-            {
-                Text = string.IsNullOrWhiteSpace(_hubSearchQuery)
-                    ? "Нет серверов — нажмите Обновить"
-                    : "Ничего не найдено",
-                TextSize = 13,
-            };
-            empty.SetTextColor(Color.ParseColor("#A8A295"));
-            empty.SetPadding(pad, pad, pad, pad);
-            _serverList.AddView(empty);
-            return;
-        }
-
+        var servers = FilterServers(_hub.All);
         foreach (var server in servers)
+            BuildServerRow(_serverList, server, _serverList.ChildCount);
+    }
+
+    void RebuildFavoriteList()
+    {
+        if (_favoriteList is null || _hub is null || _homeEmpty is null)
+            return;
+
+        _favoriteList.RemoveAllViews();
+        var favorites = FilterServers(_hub.All).Where(s => s.Favorite).ToList();
+        _homeEmpty.Visibility = favorites.Count == 0 ? ViewStates.Visible : ViewStates.Gone;
+        foreach (var server in favorites)
+            BuildServerRow(_favoriteList, server, _favoriteList.ChildCount);
+    }
+
+    void BuildServerRow(LinearLayout container, HubServerEntry server, int index)
+    {
+        var d = Resources!.DisplayMetrics!;
+        float Dp(float v) => v * d.Density;
+
+        var expanded = _expandedServers.Contains(server.Id);
+
+        var row = new LinearLayout(this)
         {
-            var expanded = _expandedServers.Contains(server.Id);
-            var selected = _selected?.Id == server.Id;
+            Orientation = Orientation.Vertical,
+            Clickable = true,
+            Focusable = true,
+            ContentDescription = $"Сервер {server.Name}. {server.SummaryLine}",
+        };
+        // Striped list: even rows #262626 over the #1e1e22 panel.
+        row.SetBackgroundColor(index % 2 == 1 ? LauncherTheme.StripeB : LauncherTheme.StripeA);
+        row.LayoutParameters = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent,
+            ViewGroup.LayoutParams.WrapContent);
 
-            var row = new LinearLayout(this)
+        var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        head.SetGravity(GravityFlags.CenterVertical);
+        head.SetPadding((int)Dp(8), (int)Dp(8), (int)Dp(4), (int)Dp(8));
+
+        // Name cell.
+        var nameCell = new LinearLayout(this)
+        {
+            Orientation = Orientation.Vertical,
+            LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f),
+        };
+        var name = new TextView(this)
+        {
+            Text = server.Name,
+            TextSize = 14,
+            MaxLines = 1,
+            Ellipsize = Android.Text.TextUtils.TruncateAt.End,
+        };
+        name.SetTextColor(LauncherTheme.Fg);
+        var subLine = server.Online
+            ? string.IsNullOrWhiteSpace(server.Map) && string.IsNullOrWhiteSpace(server.Preset)
+                ? "онлайн"
+                : string.Join(" · ", new[] { server.Map, server.Preset }.Where(s => !string.IsNullOrWhiteSpace(s)))
+            : "оффлайн";
+        var sub = new TextView(this)
+        {
+            Text = subLine,
+            TextSize = 11,
+            MaxLines = 1,
+            Ellipsize = Android.Text.TextUtils.TruncateAt.End,
+        };
+        sub.SetTextColor(LauncherTheme.SubText);
+        nameCell.AddView(name);
+        nameCell.AddView(sub);
+        head.AddView(nameCell);
+        head.AddView(CellDivider(Dp));
+
+        // Round cell.
+        var round = new TextView(this)
+        {
+            Text = server.RoundId > 0 ? $"#{server.RoundId}" : "—",
+            TextSize = 12,
+            Gravity = GravityFlags.Center,
+        };
+        round.LayoutParameters = new LinearLayout.LayoutParams(
+            (int)Dp(72), ViewGroup.LayoutParams.WrapContent);
+        round.SetTextColor(LauncherTheme.Fg);
+        head.AddView(round);
+        head.AddView(CellDivider(Dp));
+
+        // Players cell (mono, right — GridCell.Numeric).
+        var players = new TextView(this)
+        {
+            Text = server.PlayersLabel,
+            TextSize = 12,
+            Gravity = GravityFlags.Center,
+            Typeface = Typeface.MonoSpace,
+        };
+        players.LayoutParameters = new LinearLayout.LayoutParams(
+            (int)Dp(64), ViewGroup.LayoutParams.WrapContent);
+        players.SetTextColor(server.Online ? LauncherTheme.Fg : LauncherTheme.SubText);
+        head.AddView(players);
+        head.AddView(CellDivider(Dp));
+
+        // Connect cell.
+        var connect = new Button(this)
+        {
+            Text = GetString(Resource.String.server_entry_connect),
+            TextSize = 12,
+            Enabled = server.Online,
+        };
+        connect.LayoutParameters = new LinearLayout.LayoutParams(
+            (int)Dp(88), (int)Dp(32));
+        LauncherTheme.StyleAngleButton(connect);
+        var connectTarget = server;
+        connect.Click += (_, _) =>
+        {
+            SelectServer(connectTarget);
+            _ = RunConnectAsync();
+        };
+        head.AddView(connect);
+
+        row.AddView(head);
+
+        if (expanded)
+        {
+            var descText = _descCache.TryGetValue(server.Id, out var cached)
+                ? cached
+                : (server.Description ?? "Загрузка описания…");
+            var body = new LinearLayout(this) { Orientation = Orientation.Vertical };
+            body.SetPadding((int)Dp(12), 0, (int)Dp(12), (int)Dp(10));
+
+            var desc = new TextView(this)
             {
-                Orientation = Orientation.Vertical,
-                Clickable = true,
-                Focusable = true,
-                ContentDescription = $"Сервер {server.Name}. {server.SummaryLine}",
+                Text = descText,
+                TextSize = 12,
             };
-            row.SetMinimumHeight((int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 72, Resources!.DisplayMetrics));
-            row.SetBackgroundResource(selected
-                ? Resource.Drawable.hub_server_row_selected
-                : Resource.Drawable.hub_server_row);
-            // Extra start pad when selected so text clears the beige accent bar.
-            var startPad = selected ? pad + (int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 6, Resources.DisplayMetrics) : pad;
-            row.SetPadding(startPad, pad, pad, pad);
-            row.Elevation = TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, selected ? 6 : 1, Resources.DisplayMetrics);
-            var lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MatchParent,
-                ViewGroup.LayoutParams.WrapContent);
-            lp.BottomMargin = pad / 2;
-            row.LayoutParameters = lp;
+            desc.SetTextColor(LauncherTheme.Fg);
+            body.AddView(desc);
 
-            var head = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-            head.SetGravity(GravityFlags.CenterVertical);
-
-            var favBtn = new TextView(this)
+            var tags = server.Tags is { Count: > 0 }
+                ? "Теги: " + string.Join(", ", server.Tags.Take(12))
+                : "";
+            if (!string.IsNullOrEmpty(tags))
             {
-                Text = server.Favorite ? "★" : "☆",
-                TextSize = 20,
-                Clickable = true,
-                Focusable = true,
-                Gravity = GravityFlags.Center,
-                ContentDescription = server.Favorite
-                    ? $"Убрать {server.Name} из избранного"
-                    : $"Добавить {server.Name} в избранное",
-            };
-            favBtn.SetMinimumWidth((int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
-            favBtn.SetMinimumHeight((int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
-            favBtn.SetTextColor(Color.ParseColor(server.Favorite ? "#E8C96A" : "#A8A295"));
-            favBtn.SetPadding(0, 0, pad / 2, 0);
+                var tagsView = new TextView(this)
+                {
+                    Text = tags,
+                    TextSize = 11,
+                };
+                tagsView.SetTextColor(LauncherTheme.SubText);
+                body.AddView(tagsView);
+            }
 
-            var textCol = new LinearLayout(this)
+            var fetched = new TextView(this)
             {
-                Orientation = Orientation.Vertical,
-                LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f),
-            };
-
-            var title = new TextView(this)
-            {
-                Text = server.Name,
-                TextSize = selected ? 15 : 14,
-            };
-            title.SetTypeface(null, selected ? TypefaceStyle.Bold : TypefaceStyle.Normal);
-            title.SetTextColor(Color.ParseColor(selected ? "#FFF8E7" : "#F3F0E8"));
-
-            var meta = new TextView(this)
-            {
-                Text = server.SummaryLine,
-                TextSize = 11,
-            };
-            meta.SetTextColor(Color.ParseColor(selected ? "#E8D9B8" : "#D4C5A9"));
-
-            var addr = new TextView(this)
-            {
-                Text = server.ConnectUri,
+                Text = $"Адрес: {server.ConnectUri} · hub.spacestation14.com",
                 TextSize = 10,
             };
-            addr.SetTextColor(Color.ParseColor("#A8A295"));
-            addr.Typeface = Typeface.Monospace;
+            fetched.SetTextColor(LauncherTheme.SubText);
+            body.AddView(fetched);
 
-            textCol.AddView(title);
-            textCol.AddView(meta);
-            textCol.AddView(addr);
-
-            if (selected)
+            // Favorite toggle (star) — as in the launcher's expanded entry.
+            var favBtn = new Button(this)
             {
-                var selectedBadge = new TextView(this)
-                {
-                    Text = "ВЫБРАН",
-                    TextSize = 9,
-                    Gravity = GravityFlags.Center,
-                };
-                selectedBadge.SetTextColor(Color.ParseColor("#1E232A"));
-                selectedBadge.SetBackgroundResource(Resource.Drawable.ms_badge);
-                selectedBadge.SetPadding(pad / 2, pad / 4, pad / 2, pad / 4);
-                var badgeLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WrapContent,
-                    ViewGroup.LayoutParams.WrapContent)
-                {
-                    LeftMargin = pad / 2,
-                    RightMargin = pad / 2,
-                };
-                selectedBadge.LayoutParameters = badgeLp;
-                head.AddView(favBtn);
-                head.AddView(textCol);
-                head.AddView(selectedBadge);
-            }
-            else
-            {
-                head.AddView(favBtn);
-                head.AddView(textCol);
-            }
-
-            var expandBtn = new TextView(this)
-            {
-                Text = expanded ? "▲" : "▼",
-                TextSize = 14,
-                Clickable = true,
-                Focusable = true,
+                Text = server.Favorite ? "★ В избранном" : "☆ В избранное",
+                TextSize = 11,
                 Gravity = GravityFlags.Center,
-                ContentDescription = expanded
-                    ? $"Свернуть описание {server.Name}"
-                    : $"Развернуть описание {server.Name}",
             };
-            expandBtn.SetMinimumWidth((int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
-            expandBtn.SetMinimumHeight((int)TypedValue.ApplyDimension(
-                ComplexUnitType.Dip, 48, Resources.DisplayMetrics));
-            expandBtn.SetTextColor(Color.ParseColor("#D4C5A9"));
-            expandBtn.SetPadding(pad / 2, 0, 0, 0);
-
-            head.AddView(expandBtn);
-            row.AddView(head);
-
-            if (expanded)
-            {
-                var descText = _descCache.TryGetValue(server.Id, out var cached)
-                    ? cached
-                    : (server.Description ?? "Загрузка описания…");
-                var tags = server.Tags is { Count: > 0 }
-                    ? "\nТеги: " + string.Join(", ", server.Tags.Take(12))
-                    : "";
-                var body = new TextView(this)
-                {
-                    Text = descText + tags,
-                    TextSize = 12,
-                };
-                body.SetTextColor(Color.ParseColor("#F3F0E8"));
-                body.SetPadding(0, pad / 2, 0, 0);
-                row.AddView(body);
-            }
-
-            var captured = server;
+            favBtn.LayoutParameters = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, (int)Dp(32));
+            LauncherTheme.StyleAngleButton(favBtn);
+            var favTarget = server;
             favBtn.Click += (_, _) =>
             {
-                _hub.ToggleFavorite(captured.Id);
+                _hub?.ToggleFavorite(favTarget.Id);
                 RebuildServerList();
+                RebuildFavoriteList();
             };
-            expandBtn.Click += (_, _) =>
-            {
-                if (!_expandedServers.Add(captured.Id))
-                    _expandedServers.Remove(captured.Id);
-                RebuildServerList();
-                if (_expandedServers.Contains(captured.Id))
-                    _ = LoadDescriptionAsync(captured);
-            };
-            row.Click += (_, _) =>
-            {
-                SelectServer(captured);
-                RebuildServerList();
-                _ = RefreshHomeStatusAsync();
-            };
+            body.AddView(favBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, (int)Dp(32))
+            { TopMargin = (int)Dp(6) });
 
-            _serverList.AddView(row);
+            row.AddView(body);
         }
+
+        var captured = server;
+        row.Click += (_, _) =>
+        {
+            if (!_expandedServers.Add(captured.Id))
+                _expandedServers.Remove(captured.Id);
+            RebuildServerList();
+            RebuildFavoriteList();
+            if (_expandedServers.Contains(captured.Id))
+                _ = LoadDescriptionAsync(captured);
+        };
+
+        container.AddView(row);
+    }
+
+    View CellDivider(Func<float, float> dp)
+    {
+        var sep = new View(this);
+        sep.LayoutParameters = new LinearLayout.LayoutParams(
+            (int)dp(2), ViewGroup.LayoutParams.MatchParent)
+        { LeftMargin = (int)dp(8), RightMargin = (int)dp(8) };
+        sep.SetBackgroundColor(LauncherTheme.ListSep);
+        return sep;
     }
 
     async Task LoadDescriptionAsync(HubServerEntry server)
@@ -1270,7 +1140,11 @@ public class MainActivity : Activity
             _descCache[server.Id] = $"Описание недоступно: {ex.Message}";
         }
 
-        RunOnUiThread(RebuildServerList);
+        RunOnUiThread(() =>
+        {
+            RebuildServerList();
+            RebuildFavoriteList();
+        });
     }
 
     async Task RefreshHubAsync()
@@ -1282,6 +1156,8 @@ public class MainActivity : Activity
         _hubCts = new CancellationTokenSource();
         if (_hubStatus != null)
             _hubStatus.Text = "Обновление хаба…";
+        if (_hubSpinner != null)
+            _hubSpinner.Visibility = ViewStates.Visible;
         if (_refreshHubBtn != null)
             _refreshHubBtn.Enabled = false;
         try
@@ -1290,9 +1166,9 @@ public class MainActivity : Activity
             RunOnUiThread(() =>
             {
                 if (_hubStatus != null)
-                    _hubStatus.Text = $"Хабов: {_hub.All.Count} · {_hub.LastRefreshUtc:HH:mm:ss} UTC";
-                UpdateHubHeaderTitle();
+                    _hubStatus.Text = $"Серверов: {_hub.All.Count} · {_hub.LastRefreshUtc:HH:mm:ss} UTC";
                 RebuildServerList();
+                RebuildFavoriteList();
             });
         }
         catch (Exception ex)
@@ -1300,8 +1176,9 @@ public class MainActivity : Activity
             RunOnUiThread(() =>
             {
                 if (_hubStatus != null)
-                    _hubStatus.Text = $"Хабу недоступен: {ex.Message}. Показаны избранные/локальные.";
+                    _hubStatus.Text = $"Хаб недоступен: {ex.Message}. Показаны избранные/локальные.";
                 RebuildServerList();
+                RebuildFavoriteList();
             });
         }
         finally
@@ -1311,6 +1188,8 @@ public class MainActivity : Activity
             {
                 if (_refreshHubBtn != null)
                     _refreshHubBtn.Enabled = true;
+                if (_hubSpinner != null)
+                    _hubSpinner.Visibility = ViewStates.Gone;
             });
         }
     }
@@ -1324,6 +1203,41 @@ public class MainActivity : Activity
             _serverChip.Text = $"выбран: {server.Name}\n{server.ConnectUri}\n{server.SummaryLine}";
         if (_connectStatus != null)
             _connectStatus.Text = $"Сервер: {server.Name} · {server.PlayersLabel}";
+    }
+
+    async Task AddFavoriteAsync()
+    {
+        var result = await LauncherTheme.ShowAddressDialogAsync(this, "Добавить в избранное", withName: true);
+        if (result is null || _hub is null)
+            return;
+        var entry = HubServerEntry.TryParse(result.Value.Address, result.Value.Name);
+        if (entry is null)
+        {
+            Toast.MakeText(this, "Адрес: ss14://host:port", ToastLength.Short)?.Show();
+            return;
+        }
+
+        _hub.AddCustom(entry);
+        RebuildServerList();
+        RebuildFavoriteList();
+        Toast.MakeText(this, $"Добавлен {entry.Name}", ToastLength.Short)?.Show();
+    }
+
+    async Task DirectConnectAsync()
+    {
+        var result = await LauncherTheme.ShowAddressDialogAsync(this, "Прямое подключение", withName: false);
+        if (result is null)
+            return;
+        var entry = HubServerEntry.TryParse(result.Value.Address);
+        if (entry is null)
+        {
+            Toast.MakeText(this, "Адрес: ss14://host:port", ToastLength.Short)?.Show();
+            return;
+        }
+
+        SelectServer(entry);
+        _descCache[entry.Id] = "Прямое подключение";
+        await RunConnectAsync();
     }
 
     void AddCustomServer()
@@ -1341,6 +1255,75 @@ public class MainActivity : Activity
         RebuildServerList();
         if (_customServer != null) _customServer.Text = "";
         Toast.MakeText(this, $"Добавлен {entry.Name}", ToastLength.Short)?.Show();
+    }
+
+    // ---- News tab (NewsTabView: headline buttons from the RSS feed) ----
+
+    async Task RefreshNewsAsync()
+    {
+        if (_newsList is null || _newsStatus is null || _newsBusy)
+            return;
+        _newsBusy = true;
+        _newsStatus.Visibility = ViewStates.Visible;
+        _newsStatus.Text = GetString(Resource.String.news_pulling);
+        try
+        {
+            var xml = await LauncherTheme.Http.GetStringAsync(LauncherTheme.NewsFeedUrl);
+            var doc = XDocument.Parse(xml);
+            var items = doc.Descendants()
+                .Where(e => e.Name.LocalName == "item")
+                .Take(15)
+                .Select(i => (
+                    Title: (string?)i.Elements().FirstOrDefault(e => e.Name.LocalName == "title"),
+                    Link: (string?)i.Elements().FirstOrDefault(e => e.Name.LocalName == "link"),
+                    Date: (string?)i.Elements().FirstOrDefault(e => e.Name.LocalName == "pubDate")))
+                .Where(x => !string.IsNullOrWhiteSpace(x.Title))
+                .ToList();
+
+            RunOnUiThread(() =>
+            {
+                _newsList.RemoveAllViews();
+                var d = Resources!.DisplayMetrics!;
+                if (items.Count == 0)
+                {
+                    _newsStatus.Visibility = ViewStates.Visible;
+                    _newsStatus.Text = "Новостей пока нет";
+                    return;
+                }
+
+                _newsStatus.Visibility = ViewStates.Gone;
+                foreach (var item in items)
+                {
+                    var btn = new Button(this)
+                    {
+                        Text = item.Title,
+                        TextSize = 13,
+                        Gravity = GravityFlags.Start | GravityFlags.CenterVertical,
+                    };
+                    btn.LayoutParameters = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+                    { BottomMargin = (int)(4 * d.Density) };
+                    LauncherTheme.StyleAngleButton(btn);
+                    var link = item.Link ?? LauncherTheme.WebsiteUrl;
+                    btn.Click += (_, _) => LauncherTheme.OpenUrl(this, link);
+                    _newsList.AddView(btn);
+                }
+
+                _newsLoaded = true;
+            });
+        }
+        catch (Exception)
+        {
+            RunOnUiThread(() =>
+            {
+                _newsStatus.Visibility = ViewStates.Visible;
+                _newsStatus.Text = "Новости недоступны — spacestation14.com";
+            });
+        }
+        finally
+        {
+            _newsBusy = false;
+        }
     }
 
     void ApplyOrientation(bool landscape)
@@ -1715,6 +1698,7 @@ public class MainActivity : Activity
         _loginCts?.Cancel();
         _loginCts = new CancellationTokenSource();
         if (_loginBtn != null) _loginBtn.Enabled = false;
+        SetLoginError(null);
 
         var user = _authUsername?.Text?.Trim() ?? "";
         var pass = _authPassword?.Text ?? "";
@@ -1728,6 +1712,7 @@ public class MainActivity : Activity
             if (!result.Ok)
             {
                 _authUiStatus = $"Ошибка [{result.ErrorCode}]: {result.Error}";
+                SetLoginError(_authUiStatus);
                 return;
             }
 
@@ -1744,12 +1729,28 @@ public class MainActivity : Activity
         catch (Exception ex)
         {
             _authUiStatus = $"Ошибка входа: {ex.Message}";
+            SetLoginError(_authUiStatus);
         }
         finally
         {
             _loginBusy = false;
             if (_loginBtn != null) _loginBtn.Enabled = true;
             RenderStatus();
+        }
+    }
+
+    void SetLoginError(string? message)
+    {
+        if (_loginError is null)
+            return;
+        if (string.IsNullOrEmpty(message))
+        {
+            _loginError.Visibility = ViewStates.Gone;
+        }
+        else
+        {
+            _loginError.Text = message;
+            _loginError.Visibility = ViewStates.Visible;
         }
     }
 
@@ -1775,12 +1776,15 @@ public class MainActivity : Activity
         _connectCts?.Cancel();
         _connectCts = new CancellationTokenSource();
         if (_connectBtn != null) _connectBtn.Enabled = false;
+        _speedLastBytes = 0;
+        _speedLastMs = 0;
+        _speedEma = 0;
 
         // Landscape locked from the moment content loading starts (and lobby/observe).
         s_forceLandscape = true;
         ApplyOrientation(landscape: true);
         if (_loadingTitle != null)
-            _loadingTitle.Text = "ПОДКЛЮЧЕНИЕ";
+            _loadingTitle.Text = "Подключение";
         if (_loadingServer != null)
             _loadingServer.Text = _selected.Name;
         if (_loadingStatus != null)
@@ -1788,11 +1792,12 @@ public class MainActivity : Activity
         if (_loadingProgress != null)
             _loadingProgress.Progress = 0;
         if (_loadingPct != null)
-            _loadingPct.Text = "0%";
+            _loadingPct.Text = "";
+        if (_loadingSpeed != null)
+            _loadingSpeed.Visibility = ViewStates.Gone;
         if (_screenLoading != null)
             _screenLoading.Visibility = ViewStates.Visible;
-        if (_screenHome != null)
-            _screenHome.Visibility = ViewStates.Gone;
+        _ = UpdateLoadingMessageAsync();
 
         RenderStatus();
         try
@@ -1814,6 +1819,31 @@ public class MainActivity : Activity
         {
             if (_connectBtn != null) _connectBtn.Enabled = true;
             RenderStatus();
+        }
+    }
+
+    async Task UpdateLoadingMessageAsync()
+    {
+        if (_loadingMessage is null)
+            return;
+        var msg = await LauncherTheme.GetRandomMessageAsync();
+        if (_loadingMessage is null)
+            return;
+        _loadingMessage.Text = msg;
+    }
+
+    void SetVersionText()
+    {
+        if (_versionText is null)
+            return;
+        try
+        {
+            var pkg = PackageManager?.GetPackageInfo(PackageName ?? "", 0);
+            _versionText.Text = $"SS14 Hub {pkg?.VersionName} · beta";
+        }
+        catch
+        {
+            _versionText.Text = "SS14 Hub · beta";
         }
     }
 
@@ -1901,7 +1931,7 @@ public class MainActivity : Activity
         var observing = _uiObserving || _connect.Observing;
         var lobby = _connect.InLobby && !observing;
         var loading = _connect.Busy && !lobby && !observing;
-        var fullscreenChrome = observing || lobby || loading;
+        var fullscreenChrome = observing || lobby;
         if (fullscreenChrome != _immersiveApplied)
         {
             _immersiveApplied = fullscreenChrome;
@@ -1910,8 +1940,9 @@ public class MainActivity : Activity
 
         if (_screenLoading != null)
             _screenLoading.Visibility = loading ? ViewStates.Visible : ViewStates.Gone;
+        // The launcher stays visible under the ConnectingOverlay, as on PC.
         if (_screenHome != null)
-            _screenHome.Visibility = lobby || observing || loading ? ViewStates.Gone : ViewStates.Visible;
+            _screenHome.Visibility = lobby || observing ? ViewStates.Gone : ViewStates.Visible;
         if (_screenLobby != null)
             _screenLobby.Visibility = lobby ? ViewStates.Visible : ViewStates.Gone;
         if (_screenObserve != null)
@@ -1919,11 +1950,23 @@ public class MainActivity : Activity
 
         s_uiObserving = _uiObserving;
 
-        // Landscape while loading / lobby / observe. Portrait only on hub home.
+        // Landscape while loading / lobby / observe. Portrait only on launcher pages.
         if (loading || _connect.Busy || lobby || observing)
             ApplyOrientation(landscape: true);
         else
             ApplyOrientation(landscape: false);
+
+        // MainWindowLogin replaces the tabbed content while logged out (unless skipped).
+        var loggedIn = AuthSessionConfig.TryLoad(_connect.AuthConfigPath)?.HasRequiredFields == true;
+        if (!loggedIn && !_skipLogin)
+        {
+            if (_tabIndex != TabLogin)
+                SelectTab(TabLogin);
+        }
+        else if (_tabIndex == TabLogin)
+        {
+            SelectTab(_lastLauncherTab);
+        }
 
         if (loading)
         {
@@ -1941,32 +1984,12 @@ public class MainActivity : Activity
             EnsureGl();
 
         if (_authStatus != null)
-            _authStatus.Text = _authUiStatus;
-
-        var loggedIn = AuthSessionConfig.TryLoad(_connect.AuthConfigPath)?.HasRequiredFields == true;
-        if (loggedIn)
-        {
-            var session = AuthSessionConfig.TryLoad(_connect.AuthConfigPath)!;
-            _authUiStatus = session.StatusLine();
-            if (_authStatus != null)
-            {
-                _authStatus.Text = _authUiStatus;
-                _authStatus.SetTextColor(Color.ParseColor("#F3F0E8"));
-            }
-            if (_authLoginFields != null)
-                _authLoginFields.Visibility = ViewStates.Gone;
-            if (_logoutBtn != null)
-                _logoutBtn.Visibility = ViewStates.Visible;
-        }
-        else
-        {
-            if (_authStatus != null)
-                _authStatus.SetTextColor(Color.ParseColor("#A8A295"));
-            if (_authLoginFields != null)
-                _authLoginFields.Visibility = ViewStates.Visible;
-            if (_logoutBtn != null)
-                _logoutBtn.Visibility = ViewStates.Gone;
-        }
+            _authStatus.Text = loggedIn ? _authUiStatus : GetString(Resource.String.account_not_logged);
+        if (_logoutBtn != null)
+            _logoutBtn.Visibility = loggedIn ? ViewStates.Visible : ViewStates.Gone;
+        var headerLogin = FindViewById<Button>(Resource.Id.btn_header_login);
+        if (headerLogin != null)
+            headerLogin.Visibility = !loggedIn && _skipLogin ? ViewStates.Visible : ViewStates.Gone;
 
         if (_connectStatus != null && string.IsNullOrWhiteSpace(_connectStatus.Text))
             _connectStatus.Text = _connect.Summary;
@@ -1998,8 +2021,7 @@ public class MainActivity : Activity
                 _lobbyRound.Text = string.IsNullOrWhiteSpace(map)
                     ? phase
                     : $"{phase}  ·  {map}  ·  {preset}";
-                _lobbyRound.SetTextColor(Color.ParseColor(
-                    st == RobustSessionStatus.InGame ? "#6B9B6E" : "#D4C5A9"));
+                _lobbyRound.SetTextColor(LauncherTheme.SubText);
             }
             else
                 _lobbyRound.Text = "Offline";
@@ -2012,7 +2034,7 @@ public class MainActivity : Activity
         {
             var ready = _connect.Session.IsReady;
             _lobbyCharStatus.Text = ready ? "Статус: READY" : "Статус: Not Ready";
-            _lobbyCharStatus.SetTextColor(Color.ParseColor(ready ? "#6B9B6E" : "#D4C5A9"));
+            _lobbyCharStatus.SetTextColor(ready ? LauncherTheme.Green : LauncherTheme.SubText);
         }
 
         if (_lobbyContentStatus != null && lobby)
@@ -2035,7 +2057,7 @@ public class MainActivity : Activity
             if (chat.Count == 0)
             {
                 _lobbyPlayers.Text = lobby ? "ожидание чата…" : "—";
-                _lobbyPlayers.SetTextColor(Color.ParseColor("#F3F0E8"));
+                _lobbyPlayers.SetTextColor(LauncherTheme.Fg);
             }
             else
             {
@@ -2073,15 +2095,7 @@ public class MainActivity : Activity
         if (_readyBtn != null)
         {
             _readyBtn.Text = _connect.Session.IsReady ? "UNREADY" : "READY";
-            _readyBtn.SetBackgroundResource(
-                _connect.Session.IsReady ? Resource.Drawable.hub_btn_danger : Resource.Drawable.hub_btn);
         }
-    }
-
-    static void ClearMaterialTint(Button? btn)
-    {
-        if (btn is null) return;
-        btn.BackgroundTintList = null;
     }
 
     void ApplyProgress(ContentDownloadProgress p)
@@ -2102,11 +2116,39 @@ public class MainActivity : Activity
         }
 
         if (_loadingProgress != null)
-            _loadingProgress.Progress = p.Percent;
+        {
+            var indeterminate = p.Total <= 0;
+            _loadingProgress.Indeterminate = indeterminate;
+            if (!indeterminate)
+                _loadingProgress.Progress = p.Percent;
+        }
+
+        // Smoothed download speed for the ConnectingOverlay speed cell.
+        double mbps = 0;
+        var nowMs = Environment.TickCount64;
+        if (_speedLastMs > 0 && p.BytesWritten >= _speedLastBytes && nowMs > _speedLastMs)
+        {
+            var rate = (p.BytesWritten - _speedLastBytes) / (nowMs - _speedLastMs) / 1024.0 / 1024.0;
+            _speedEma = _speedEma <= 0 ? rate : _speedEma * 0.7 + rate * 0.3;
+            mbps = _speedEma;
+        }
+        _speedLastBytes = p.BytesWritten;
+        _speedLastMs = nowMs;
+
+        if (_loadingSpeed != null)
+        {
+            var showSpeed = mbps > 0.01;
+            _loadingSpeed.Visibility = showSpeed ? ViewStates.Visible : ViewStates.Gone;
+            if (showSpeed)
+                _loadingSpeed.Text = $"{mbps:0.0} MB/s";
+        }
+
         if (_loadingPct != null)
         {
             var mb = p.BytesWritten > 0 ? $" · {p.BytesWritten / (1024.0 * 1024.0):0.0} MB" : "";
-            _loadingPct.Text = $"{p.Percent}%  ·  {p.Stage}  {p.Done}/{p.Total}{mb}";
+            _loadingPct.Text = p.Total <= 0
+                ? ""
+                : $"{p.Percent}%  ·  {p.Stage}  {p.Done}/{p.Total}{mb}";
         }
 
         if (_loadingStatus != null)
@@ -2115,12 +2157,12 @@ public class MainActivity : Activity
         {
             _loadingTitle.Text = p.Stage switch
             {
-                "textures" => "ТЕКСТУРЫ",
-                "prototypes" => "ПРОТОТИПЫ",
-                "assemblies" => "СБОРКИ",
-                "manifest" or "index" => "МАНИФЕСТ",
-                "done" => "ГОТОВО",
-                _ => "ПОДКЛЮЧЕНИЕ",
+                "textures" => "Загрузка контента",
+                "prototypes" => "Прототипы",
+                "assemblies" => "Сборки",
+                "manifest" or "index" => "Манифест",
+                "done" => "Готово",
+                _ => "Подключение",
             };
         }
 
@@ -2129,14 +2171,4 @@ public class MainActivity : Activity
         if (_joinDebug != null)
             _joinDebug.Text = _connect.DebugLog;
     }
-
-    static string StatusLabel(RobustSessionStatus s) => s switch
-    {
-        RobustSessionStatus.Connected => "LOBBY",
-        RobustSessionStatus.InGame => "ROUND",
-        RobustSessionStatus.Connecting => "JOIN",
-        RobustSessionStatus.Zombie => "ZOMBIE",
-        RobustSessionStatus.Disconnected => "OFF",
-        _ => s.ToString().ToUpperInvariant(),
-    };
 }

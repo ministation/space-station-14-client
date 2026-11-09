@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SS14.Launcher ScrollViewerSep line (#2e2e35, 1px). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/la_scroll_sep" />
+    <size android:height="1dp" />
+</shape>

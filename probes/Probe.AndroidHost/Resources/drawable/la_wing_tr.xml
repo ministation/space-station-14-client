@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SS14.Launcher TextBox corner wing, top-right (ThemeTextBox.xaml path data). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="14dp"
+    android:height="10dp"
+    android:viewportWidth="14"
+    android:viewportHeight="10">
+    <path
+        android:pathData="M 1 0.5 L 4 0.5 L 13.5 10"
+        android:strokeColor="#464966"
+        android:strokeWidth="1"
+        android:fillColor="#00000000" />
+</vector>
