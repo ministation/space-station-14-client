@@ -675,6 +675,7 @@ namespace Content.Android
                 if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
                 {
                     Window.SetDecorFitsSystemWindows(false);
+                    CaptureSafeAreaInsets();
                     var controller = Window.InsetsController;
                     if (controller != null)
                     {
@@ -1049,8 +1050,14 @@ namespace Content.Android
 
                 var hasZip = !string.IsNullOrEmpty(mountZip) && File.Exists(mountZip);
 
+                CaptureSafeAreaInsets();
+
                 var args = new List<string>
                 {
+                    "--cvar", $"mobile.safe_area_left={_safeAreaLeft}",
+                    "--cvar", $"mobile.safe_area_right={_safeAreaRight}",
+                    "--cvar", $"mobile.safe_area_top={_safeAreaTop}",
+                    "--cvar", $"mobile.safe_area_bottom={_safeAreaBottom}",
                     "--cvar", "thread.parallel_count=4",
                     "--cvar", "light.blur=false",
                     "--cvar", "light.soft_shadows=false",
@@ -1142,5 +1149,36 @@ namespace Content.Android
                 throw;
             }
         }
+
+    private int _safeAreaLeft;
+    private int _safeAreaRight;
+    private int _safeAreaTop;
+    private int _safeAreaBottom;
+
+    /// <summary>
+    /// Reads the display cutout safe area. The pad uses it so buttons never sit
+    /// under the camera hole or a rounded corner.
+    /// </summary>
+    private void CaptureSafeAreaInsets()
+    {
+        try
+        {
+            if (!OperatingSystem.IsAndroidVersionAtLeast(28))
+                return;
+
+            var cutout = Window?.DecorView?.RootWindowInsets?.DisplayCutout;
+            if (cutout == null)
+                return;
+
+            _safeAreaLeft = cutout.SafeInsetLeft;
+            _safeAreaRight = cutout.SafeInsetRight;
+            _safeAreaTop = cutout.SafeInsetTop;
+            _safeAreaBottom = cutout.SafeInsetBottom;
+        }
+        catch
+        {
+            // Insets are cosmetic here: fall back to the percentage frame.
+        }
+    }
     }
 }

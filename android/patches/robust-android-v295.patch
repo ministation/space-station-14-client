@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..94db0fc
+index 0000000..390298c
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1396 @@
+@@ -0,0 +1,1478 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3782,6 +3782,21 @@ index 0000000..94db0fc
 +            sb.AppendLine($"display.uiScale={_cfg.GetCVar(CVars.DisplayUIScale).ToString(CultureInfo.InvariantCulture)}");
 +            sb.AppendLine($"stick_default={_thumbstick.DefaultPosition} stick_custom={_thumbstick.CustomPosition?.ToString() ?? "<none>"}");
 +            sb.AppendLine($"stick_size={_thumbstick.Size} overlay_size={Size} overlay_visible={Visible}");
++
++            // Root paint order proves the pad sits under game windows.
++            var root = UserInterfaceManager.RootControl;
++            var rootOrder = new System.Text.StringBuilder();
++            for (var i = 0; i < root.ChildCount; i++)
++            {
++                if (i > 0)
++                    rootOrder.Append(',');
++                rootOrder.Append(root.GetChild(i).Name);
++            }
++            sb.AppendLine($"root_order={rootOrder}");
++
++            sb.AppendLine($"move_stick={_thumbstick.Position}:{_thumbstick.Size} aim_stick={_aimStick.Position}:{_aimStick.Size}");
++            foreach (var btn in _allButtons)
++                sb.AppendLine($"btn:{btn.Id}={btn.Position.X.ToString("F1", CultureInfo.InvariantCulture)},{btn.Position.Y.ToString("F1", CultureInfo.InvariantCulture)}:{btn.Size.X.ToString("F0", CultureInfo.InvariantCulture)}:{(btn.CustomPosition.HasValue ? "custom" : "auto")}");
 +            File.WriteAllText(Path.Combine(dir, "mobile-controls-debug.txt"), sb.ToString());
 +        }
 +        catch { }
@@ -3878,78 +3893,124 @@ index 0000000..94db0fc
 +    }
 +
 +    /// <summary>
-+    /// Places a button around a stick: it starts at the requested angle, then
-+    /// rotates in 15 degree steps, then moves outward, then shrinks a little.
-+    /// Buttons never overlap each other or leave the safe frame; only the very
-+    /// last resort lets a button bite deeper into its own stick rim.
++    /// Finds the first free slot for a ring button: it starts at the requested
++    /// angle, turns in 15 degree steps, then moves outward by rings.
 +    /// </summary>
-+    private void PlaceClusterButton(PojavActionButton button, Vector2 stickCenter, float preferAngle, float size,
-+        float stickRadius, float gap, Vector2 viewport, float safeX, float safeTop, float safeBottom)
++    private bool TryFindSlot(Vector2 stickCenter, float preferAngle, float size, float stickRadius, float gap,
++        Vector2 min, Vector2 max, int maxRing, out Vector2 pos)
 +    {
-+        var min = new Vector2(safeX, safeTop);
-+        var max = viewport - new Vector2(safeX, safeBottom);
-+
-+        if (button.CustomPosition.HasValue)
++        var half = size * 0.5f;
++        // Hugging the rim is the point, so a button may bite a little into it.
++        var rimAllow = size * 0.22f;
++        for (var ring = 0; ring <= maxRing; ring++)
 +        {
-+            var customSize = button.CustomSize.HasValue ? new Vector2(button.CustomSize.Value, button.CustomSize.Value) : new Vector2(size, size);
-+            ArrangeChild(button, button.CustomPosition.Value, customSize, viewport);
-+            return;
-+        }
-+
-+        bool TryPlace(float trySize, float rimAllow)
-+        {
-+            var half = trySize * 0.5f;
-+            for (var ring = 0; ring < 10; ring++)
++            var radius = stickRadius + half + gap + ring * stickRadius * 0.1f;
++            for (var step = 0; step < 25; step++)
 +            {
-+                var radius = stickRadius + half + gap + ring * stickRadius * 0.1f;
-+                for (var step = 0; step < 25; step++)
-+                {
-+                    var offset = step == 0 ? 0f : (step % 2 == 0 ? 1f : -1f) * ((step + 1) / 2) * 15f;
-+                    var rad = (preferAngle + offset) * MathF.PI / 180f;
-+                    var pos = new Vector2(
-+                        stickCenter.X + MathF.Cos(rad) * radius,
-+                        stickCenter.Y - MathF.Sin(rad) * radius) - new Vector2(half, half);
++                var offset = step == 0 ? 0f : (step % 2 == 0 ? 1f : -1f) * ((step + 1) / 2) * 15f;
++                var rad = (preferAngle + offset) * MathF.PI / 180f;
++                pos = new Vector2(
++                    stickCenter.X + MathF.Cos(rad) * radius,
++                    stickCenter.Y - MathF.Sin(rad) * radius) - new Vector2(half, half);
 +
-+                    var rect = new UIBox2(pos, pos + new Vector2(trySize, trySize));
-+                    if (rect.Left < min.X || rect.Top < min.Y || rect.Right > max.X || rect.Bottom > max.Y)
-+                        continue;
-+                    if (OverlapsOccupied(rect, 2f) || OverlapsStick(rect, rimAllow))
-+                        continue;
++                var rect = new UIBox2(pos, pos + new Vector2(size, size));
++                if (rect.Left < min.X || rect.Top < min.Y || rect.Right > max.X || rect.Bottom > max.Y)
++                    continue;
++                if (OverlapsOccupied(rect, 2f) || OverlapsStick(rect, rimAllow))
++                    continue;
 +
-+                    ArrangeChild(button, pos, new Vector2(trySize, trySize), viewport);
-+                    _occupiedRects.Add(rect);
-+                    return true;
-+                }
++                return true;
 +            }
-+
-+            return false;
 +        }
 +
-+        // Rim counts as part of the button: hugging the stick is the point.
-+        if (TryPlace(size, size * 0.22f))
-+            return;
++        pos = Vector2.Zero;
++        return false;
++    }
 +
-+        for (var shrink = 0; shrink < 8; shrink++)
++    /// <summary>
++    /// One try at a whole cluster at one scale. A dry run (apply false) only
++    /// claims rects, so the caller can search for the biggest scale that fits.
++    /// </summary>
++    private bool TryLayoutCluster(PojavActionButton[] buttons, float[] sizes, float[] preferAngles, Vector2 stickCenter,
++        float stickRadius, float gap, Vector2 viewport, Vector2 min, Vector2 max, float scale, int maxRing, bool apply)
++    {
++        for (var i = 0; i < buttons.Length; i++)
 +        {
-+            size *= 0.9f;
-+            if (TryPlace(size, size * 0.22f))
-+                return;
++            var button = buttons[i];
++            if (button.CustomPosition.HasValue)
++                continue;
++
++            var size = sizes[i] * scale;
++            if (!TryFindSlot(stickCenter, preferAngles[i], size, stickRadius, gap, min, max, maxRing, out var pos))
++                return false;
++
++            if (apply)
++                ArrangeChild(button, pos, new Vector2(size, size), viewport);
++            _occupiedRects.Add(new UIBox2(pos, pos + new Vector2(size, size)));
 +        }
 +
-+        // Nowhere to hide: keep the button off the other controls, even if it
-+        // covers part of its own stick. Overlapping the stick is usable, a pile
-+        // of overlapping buttons is not.
-+        if (TryPlace(size, -size))
-+            return;
++        return true;
++    }
 +
-+        var fallbackRad = preferAngle * MathF.PI / 180f;
-+        var fallbackRadius = stickRadius + size * 0.5f + gap;
-+        var fallback = new Vector2(
-+            stickCenter.X + MathF.Cos(fallbackRad) * fallbackRadius,
-+            stickCenter.Y - MathF.Sin(fallbackRad) * fallbackRadius) - new Vector2(size * 0.5f, size * 0.5f);
-+        fallback = Vector2.Clamp(fallback, min, Vector2.Max(min, max - new Vector2(size, size)));
-+        ArrangeChild(button, fallback, new Vector2(size, size), viewport);
-+        _occupiedRects.Add(new UIBox2(fallback, fallback + new Vector2(size, size)));
++    /// <summary>
++    /// Lays out one cluster: custom-placed buttons are fixed, then the biggest
++    /// uniform scale that fits in a tight ring is used, so a cluster never mixes
++    /// button sizes. The fan itself is what spreads the buttons around the stick.
++    /// </summary>
++    private void PlaceCluster(PojavActionButton[] buttons, float[] sizes, float[] preferAngles, Vector2 stickCenter,
++        float stickRadius, float gap, Vector2 viewport, Vector2 min, Vector2 max)
++    {
++        var reserved = new List<UIBox2>(_occupiedRects);
++        for (var i = 0; i < buttons.Length; i++)
++        {
++            if (!buttons[i].CustomPosition.HasValue)
++                continue;
++
++            var size = buttons[i].CustomSize ?? sizes[i];
++            var pos = buttons[i].CustomPosition!.Value;
++            ArrangeChild(buttons[i], pos, new Vector2(size, size), viewport);
++            var rect = new UIBox2(pos, pos + new Vector2(size, size));
++            _occupiedRects.Add(rect);
++            reserved.Add(rect);
++        }
++
++        // Size first, distance second: an approved button size is worth more than
++        // one ring of extra closeness.
++        for (var k100 = 100; k100 >= 60; k100 -= 5)
++        {
++            foreach (var maxRing in new[] { 3, 6 })
++            {
++                _occupiedRects.Clear();
++                _occupiedRects.AddRange(reserved);
++                if (!TryLayoutCluster(buttons, sizes, preferAngles, stickCenter, stickRadius, gap, viewport, min, max, k100 / 100f, maxRing, false))
++                    continue;
++
++                _occupiedRects.Clear();
++                _occupiedRects.AddRange(reserved);
++                TryLayoutCluster(buttons, sizes, preferAngles, stickCenter, stickRadius, gap, viewport, min, max, k100 / 100f, maxRing, true);
++                return;
++            }
++        }
++
++        // Last resort, tiny screens: sit on the rim and clamp into the frame.
++        _occupiedRects.Clear();
++        _occupiedRects.AddRange(reserved);
++        for (var i = 0; i < buttons.Length; i++)
++        {
++            var button = buttons[i];
++            if (button.CustomPosition.HasValue)
++                continue;
++
++            var size = sizes[i] * 0.6f;
++            var half = size * 0.5f;
++            var rad = preferAngles[i] * MathF.PI / 180f;
++            var pos = new Vector2(
++                stickCenter.X + MathF.Cos(rad) * (stickRadius + half + gap),
++                stickCenter.Y - MathF.Sin(rad) * (stickRadius + half + gap)) - new Vector2(half, half);
++            pos = Vector2.Clamp(pos, min, Vector2.Max(min, max - new Vector2(size, size)));
++            ArrangeChild(button, pos, new Vector2(size, size), viewport);
++            _occupiedRects.Add(new UIBox2(pos, pos + new Vector2(size, size)));
++        }
 +    }
 +
 +    private void ArrangeOnArc(Control control, Vector2 center, float angleDeg, float radius, Vector2 size, Vector2 viewport)
@@ -3961,6 +4022,8 @@ index 0000000..94db0fc
 +        ArrangeChild(control, pos, size, viewport);
 +    }
 +
++    private bool _dumpedLayout;
++
 +    protected override Vector2 ArrangeOverride(Vector2 finalSize)
 +    {
 +        _clusterContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
@@ -3970,10 +4033,16 @@ index 0000000..94db0fc
 +        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
 +
 +        // Side frame: rounded screen corners and a camera cutout eat the edges,
-+        // so nothing on the pad sits closer than this to a border.
-+        var safeX = MathF.Max(10f * scale, finalSize.X * 0.02f);
-+        var safeTop = MathF.Max(6f * scale, finalSize.Y * 0.006f);
-+        var safeBottom = MathF.Max(6f * scale, finalSize.Y * 0.008f);
++        // so nothing on the pad sits closer than this to a border. The host
++        // reports the real cutout in physical pixels; percentages are the floor.
++        var uiScale = Math.Clamp(_cfg.GetCVar(CVars.DisplayUIScale), 0.5f, 4f);
++        var cutLeft = _cfg.GetCVar(CVars.MobileSafeAreaLeft) / uiScale;
++        var cutRight = _cfg.GetCVar(CVars.MobileSafeAreaRight) / uiScale;
++        var cutTop = _cfg.GetCVar(CVars.MobileSafeAreaTop) / uiScale;
++        var cutBottom = _cfg.GetCVar(CVars.MobileSafeAreaBottom) / uiScale;
++        var safeX = MathF.Max(MathF.Max(10f * scale, finalSize.X * 0.02f), MathF.Max(cutLeft, cutRight));
++        var safeTop = MathF.Max(MathF.Max(6f * scale, finalSize.Y * 0.006f), cutTop);
++        var safeBottom = MathF.Max(MathF.Max(6f * scale, finalSize.Y * 0.008f), cutBottom);
 +        // Sticks ride lower than the frame: thumbs rest on the bottom of the phone.
 +        var margin = MathF.Max(24f * scale, finalSize.X * 0.02f);
 +        var gap = 8f * scale;
@@ -4043,15 +4112,28 @@ index 0000000..94db0fc
 +        ReserveControl(_examButton);
 +        ReserveControl(_hideButton);
 +
-+        PlaceClusterButton(_useButton, aimCenter, 105f, useSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_interactButton, aimCenter, 150f, interSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_secButton, aimCenter, 195f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_throwButton, aimCenter, 240f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_handButton, moveCenter, 75f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_dropButton, moveCenter, 30f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_bagButton, moveCenter, 120f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_inventoryButton, moveCenter, 165f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
-+        PlaceClusterButton(_pullButton, moveCenter, 345f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        var frameMin = new Vector2(safeX, safeTop);
++        var frameMax = finalSize - new Vector2(safeX, safeBottom);
++
++        // Aim side: combat buttons in a fan up and toward the middle.
++        PlaceCluster(
++            new[] { _useButton, _interactButton, _secButton, _throwButton },
++            new[] { useSize, interSize, utilSize, utilSize },
++            new[] { 100f, 145f, 190f, 235f },
++            aimCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
++
++        // Move side: the rest in a fan up and toward the middle.
++        PlaceCluster(
++            new[] { _handButton, _dropButton, _bagButton, _inventoryButton, _pullButton },
++            new[] { utilSize, utilSize, utilSize, utilSize, utilSize },
++            new[] { 80f, 35f, 125f, 170f, 300f },
++            moveCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
++
++        if (!_dumpedLayout && finalSize.X > 0f)
++        {
++            _dumpedLayout = true;
++            DumpMobileDebugInfo();
++        }
 +
 +        if (_editorBarContainer.Visible)
 +        {
@@ -5485,7 +5567,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..a3f26a0 100644
+index 5267fc7..a558bc8 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,44 @@ namespace Robust.Shared
@@ -5548,7 +5630,7 @@ index 5267fc7..a3f26a0 100644
  
          // Clyde related enums are in Clyde.Constants.cs.
  
-@@ -1357,6 +1363,36 @@ namespace Robust.Shared
+@@ -1357,6 +1363,52 @@ namespace Robust.Shared
          public static readonly CVarDef<bool> DisplayWin32Experience =
              CVarDef.Create("display.win32_experience", false, CVar.CLIENTONLY);
  
@@ -5579,6 +5661,22 @@ index 5267fc7..a3f26a0 100644
 +        /// <summary>
 +        /// Additional scale multiplier specifically for the on-screen virtual thumbstick.
 +        /// </summary>
++        /// <summary>
++        /// Safe-area insets in physical pixels reported by the host (camera cutout,
++        /// rounded corners). The mobile pad stays inside them.
++        /// </summary>
++        public static readonly CVarDef<int> MobileSafeAreaLeft =
++            CVarDef.Create("mobile.safe_area_left", 0, CVar.CLIENTONLY);
++
++        public static readonly CVarDef<int> MobileSafeAreaRight =
++            CVarDef.Create("mobile.safe_area_right", 0, CVar.CLIENTONLY);
++
++        public static readonly CVarDef<int> MobileSafeAreaTop =
++            CVarDef.Create("mobile.safe_area_top", 0, CVar.CLIENTONLY);
++
++        public static readonly CVarDef<int> MobileSafeAreaBottom =
++            CVarDef.Create("mobile.safe_area_bottom", 0, CVar.CLIENTONLY);
++
 +        public static readonly CVarDef<float> MobileThumbstickScale =
 +            CVarDef.Create("mobile.thumbstick_scale", 1.1f, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
