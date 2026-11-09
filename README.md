@@ -1,18 +1,29 @@
-# Robust Toolbox → Android (R&D port)
+# Space Station 14 на Android (Mini Station)
 
-Экспериментальный порт игрового движка [Robust Toolbox](https://github.com/space-wizards/RobustToolbox) (движок Space Station 14) под Android.
-
-Это **не готовый клиент**. Цель репозитория — идти маленькими шагами: понять блокеры, снять их по одному, в итоге получить возможность хотя бы observe/ghost на телефоне.
-
-## Честные ожидания
+Android-клиент Mini Station на настоящем движке SS14. Это не самописный UI и не заглушка: приложение
+запускает [RobustToolbox](https://github.com/space-wizards/RobustToolbox) 295.0.2 (та же версия, что на
+сервере Mini Station), подгружает готовый контент сервера с CDN и показывает штатный игровой интерфейс
+Space Station 14, как на ПК. Сверху движок добавляет тач-управление и экранные кнопки, сам UI остаётся
+родным.
 
 | Что | Статус |
 |---|---|
-| APK-хост на .NET Android | ✅ probe собирается |
-| Полный клиент SS14 на телефоне | ❌ далеко |
-| Observe/ghost на сервер | ❌ после сети + рендера + контента |
+| Движок RobustToolbox 295.0.2 на Android | работает (android/patches/robust-android-v295.patch) |
+| Сборка APK под arm64-v8a и x86_64 | работает |
+| Загрузка контента Mini Station (SS14.Client.zip, около 1.27 ГБ) | работает |
+| Загрузка Content.Client и всех контентных сборок движком | работает |
+| Прототипы, локали, рендер (EGL/GLES) | работает |
+| Главное меню и вход на сервер | проверяется на эмуляторе |
+| Hub-лаунчер (выбор сервера и аккаунта) | есть в probes/Probe.AndroidHost, объединяется с игрой |
 
-Upstream (space-wizards) прямо писал: движок сильно завязан на **reflection и runtime codegen** (IoC, сериализация, сеть). На AOT-платформах (Android, консоли) это ломается, пока инфраструктуру не сделают AOT-совместимой.
+Код и сборка: [android/README.md](android/README.md). Устройство порта движка:
+[android/ENGINE-PORT.md](android/ENGINE-PORT.md).
+
+## История R&D
+
+До появления рабочего клиента репозиторий был R&D-портом: probes/, src/, docs/ описывают фазы 0-7,
+блокеры AOT/reflection и сетевые эксперименты. Это осталось как история исследований, рабочий клиент
+живёт в android/.
 
 ## Структура
 
