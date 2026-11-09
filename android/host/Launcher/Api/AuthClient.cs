@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Content.Android.Launcher.Models;
@@ -16,6 +17,11 @@ public sealed class AuthClient
     private static readonly HttpClient Http = new()
     {
         Timeout = TimeSpan.FromSeconds(15)
+    };
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     private static readonly string[] AuthBases =
@@ -35,12 +41,14 @@ public sealed class AuthClient
         }
     }
 
-    public async Task<AuthResult> AuthenticateAsync(string username, string password, CancellationToken ct = default)
+    public async Task<AuthResult> AuthenticateAsync(string username, string password, string? tfaCode = null,
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             return AuthResult.Fail("Enter username and password.");
 
-        var payload = JsonSerializer.Serialize(new AuthAuthenticateRequest(username.Trim(), password));
+        var code = string.IsNullOrWhiteSpace(tfaCode) ? null : tfaCode.Trim();
+        var payload = JsonSerializer.Serialize(new AuthAuthenticateRequest(username.Trim(), password, code), JsonOptions);
         string? lastError = null;
 
         foreach (var baseUrl in AuthBases)
@@ -58,7 +66,7 @@ public sealed class AuthClient
 
                 using var resp = await Http.SendAsync(request, cts.Token);
                 var body = await resp.Content.ReadAsStringAsync(cts.Token);
-                Log($"authenticate {endpoint} status={(int)resp.StatusCode} body={Truncate(body, 400)}");
+                Log($"authenticate {endpoint} tfa={(code != null ? "yes" : "no")} status={(int)resp.StatusCode} body={Truncate(body, 400)}");
 
                 if (resp.IsSuccessStatusCode)
                 {
@@ -94,6 +102,12 @@ public sealed class AuthClient
                     try
                     {
                         var err = JsonSerializer.Deserialize<AuthErrorResponse>(body);
+                        if (err?.Code == "TfaRequired")
+                            return AuthResult.NeedsTfa();
+
+                        if (err?.Code == "TfaInvalid")
+                            return AuthResult.Fail("Invalid two factor code.");
+
                         if (err?.Errors is { Length: > 0 })
                             return AuthResult.Fail(string.Join("\n", err.Errors));
 
@@ -127,7 +141,7 @@ public sealed class AuthClient
         {
             "InvalidCredentials" => "Invalid username or password.",
             "AccountUnconfirmed" => "Account is not confirmed. Check your email.",
-            "TfaRequired" => "Two factor authentication is required but not supported yet.",
+            "TfaRequired" => "Two factor authentication required.",
             "TfaInvalid" => "Invalid two factor code.",
             "AccountLocked" => "Account is locked.",
             null or "" => "Invalid login or password.",
