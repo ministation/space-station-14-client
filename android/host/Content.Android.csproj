@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>ru.ministation.client</ApplicationId>
-    <ApplicationVersion>10</ApplicationVersion>
-    <ApplicationDisplayVersion>0.5.4</ApplicationDisplayVersion>
+    <ApplicationVersion>11</ApplicationVersion>
+    <ApplicationDisplayVersion>0.5.5</ApplicationDisplayVersion>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>NU1701;CA1416</NoWarn>

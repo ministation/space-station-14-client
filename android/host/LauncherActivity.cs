@@ -435,29 +435,27 @@ public sealed class LauncherActivity : Activity
             Orientation = Orientation.Vertical,
             Visibility = ViewStates.Gone
         };
-        _overlayBox.SetBackgroundColor(LauncherTheme.Background);
+        _overlayBox.SetBackgroundColor(Color.Argb(204, 0x18, 0x18, 0x1A));
         _overlayBox.SetGravity(GravityFlags.Center);
         _overlayBox.Clickable = true;
 
-        var title = new TextView(this) { Text = "Downloading content", TextSize = 20f };
+        var modal = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        modal.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.StripeEdge, 1);
+        modal.SetPadding(Dp(18), Dp(14), Dp(18), Dp(12));
+        _overlayBox.AddView(modal, new LinearLayout.LayoutParams(Dp(420), ViewGroup.LayoutParams.WrapContent));
+
+        var title = new TextView(this) { Text = "Connecting" };
         title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.TextSize = 16f;
         title.SetTextColor(LauncherTheme.Foreground);
         title.Gravity = GravityFlags.Center;
-        _overlayBox.AddView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        modal.AddView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
-        var goldLine = new View(this);
-        goldLine.SetBackgroundColor(LauncherTheme.NanoGold);
-        _overlayBox.AddView(goldLine, new LinearLayout.LayoutParams(Dp(260), Dp(2))
-        {
-            Gravity = GravityFlags.CenterHorizontal,
-            TopMargin = Dp(8)
-        });
-
-        _overlayText = new TextView(this) { Text = "Connecting...", TextSize = 12f };
+        _overlayText = new TextView(this) { Text = "Connecting...", TextSize = 11f };
         _overlayText.SetTextColor(LauncherTheme.SubText);
         _overlayText.Gravity = GravityFlags.Center;
-        _overlayText.SetPadding(Dp(24), Dp(16), Dp(24), 0);
-        _overlayBox.AddView(_overlayText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent));
+        _overlayText.SetPadding(0, Dp(10), 0, 0);
+        modal.AddView(_overlayText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
         _overlayProgress = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
         {
@@ -465,23 +463,22 @@ public sealed class LauncherActivity : Activity
             Max = 100
         };
         _overlayProgress.IndeterminateTintList = global::Android.Content.Res.ColorStateList.ValueOf(LauncherTheme.NanoGold);
-        _overlayBox.AddView(_overlayProgress, new LinearLayout.LayoutParams(Dp(300), Dp(8))
+        modal.AddView(_overlayProgress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(8))
         {
-            Gravity = GravityFlags.CenterHorizontal,
-            TopMargin = Dp(14)
+            TopMargin = Dp(12)
         });
 
-        var cancel = CreateAngleButton("Cancel", 30, 120);
+        var bottom = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        bottom.SetGravity(GravityFlags.CenterVertical);
+        bottom.SetPadding(0, Dp(12), 0, 0);
+        var cancel = CreateAngleButton("Cancel", 28, 96);
         cancel.Click += (_, _) =>
         {
             Window?.ClearFlags(WindowManagerFlags.KeepScreenOn);
             _overlayBox.Visibility = ViewStates.Gone;
         };
-        _overlayBox.AddView(cancel, new LinearLayout.LayoutParams(Dp(120), Dp(30))
-        {
-            Gravity = GravityFlags.CenterHorizontal,
-            TopMargin = Dp(18)
-        });
+        bottom.AddView(cancel, new LinearLayout.LayoutParams(Dp(96), Dp(28)));
+        modal.AddView(bottom, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
         AddContentView(_overlayBox, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
     }
@@ -2919,7 +2916,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.5.4";
+    public const string CurrentAppVersion = "v0.5.5";
 
 
     public string GetCurrentAppVersion()
