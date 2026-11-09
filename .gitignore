@@ -83,3 +83,8 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+# Android client build outputs
+android/native/
+android/host/lib/
+android/host/bin/
+android/host/obj/
