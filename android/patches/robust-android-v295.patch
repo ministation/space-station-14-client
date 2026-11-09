@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..396ba25
+index 0000000..e59edfd
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1267 @@
+@@ -0,0 +1,1277 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3487,6 +3487,19 @@ index 0000000..396ba25
 +        {
 +            case TouchFingerAction.Down:
 +            {
++                // Buttons ride on the stick rim, so they win over the stick under them.
++                for (int i = _allButtons.Count - 1; i >= 0; i--)
++                {
++                    var btn = _allButtons[i];
++                    var btnPos = args.Coordinates.Position / btn.UIScale - btn.GlobalPosition;
++                    if (btn.VisibleInTree && btn.HasPoint(btnPos))
++                    {
++                        _claimedTouches[args.FingerId] = btn;
++                        btn.OnTouchDown(args.FingerId);
++                        return true;
++                    }
++                }
++
 +                var stickPos = args.Coordinates.Position / _thumbstick.UIScale - _thumbstick.GlobalPosition;
 +                if (_thumbstick.VisibleInTree && _thumbstick.HasPoint(stickPos))
 +                {
@@ -3501,18 +3514,6 @@ index 0000000..396ba25
 +                    _claimedTouches[args.FingerId] = _aimStick;
 +                    _aimStick.OnTouchDown(args.FingerId, aimPos);
 +                    return true;
-+                }
-+
-+                for (int i = _allButtons.Count - 1; i >= 0; i--)
-+                {
-+                    var btn = _allButtons[i];
-+                    var btnPos = args.Coordinates.Position / btn.UIScale - btn.GlobalPosition;
-+                    if (btn.VisibleInTree && btn.HasPoint(btnPos))
-+                    {
-+                        _claimedTouches[args.FingerId] = btn;
-+                        btn.OnTouchDown(args.FingerId);
-+                        return true;
-+                    }
 +                }
 +
 +                PojavActionButton[] topBtns = [_editButton, _hideButton, _escButton, _keybButton, _altButton, _examButton];
@@ -3837,6 +3838,14 @@ index 0000000..396ba25
 +        control.Arrange(new UIBox2(pos, pos + size));
 +    }
 +
++    private void ArrangeAroundStick(Control control, Vector2 center, float angleDeg, float size, float stickRadius, float gap, Vector2 viewport)
++    {
++        // Buttons ride on the stick edge, not on a fixed ring: a bigger button
++        // stays as close to the thumb as a small one.
++        var radius = stickRadius + size * 0.5f + gap;
++        ArrangeOnArc(control, center, angleDeg, radius, new Vector2(size, size), viewport);
++    }
++
 +    private void ArrangeOnArc(Control control, Vector2 center, float angleDeg, float radius, Vector2 size, Vector2 viewport)
 +    {
 +        var rad = angleDeg * MathF.PI / 180f;
@@ -3863,10 +3872,15 @@ index 0000000..396ba25
 +        var fit = Math.Clamp(MathF.Min(finalSize.X, finalSize.Y) / 720f, 0.5f, 1.3f);
 +
 +        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
-+        var stickRadius = 98f * scale * stickScale * fit;
++        var stickRadius = 127f * scale * stickScale * fit;
++        // Both sticks must always fit side by side, otherwise a small logical
++        // screen (high uiScale) would overlap them.
++        var maxStickRadius = MathF.Max(40f, (finalSize.X - 2f * margin - 20f) / 4f);
++        if (stickRadius > maxStickRadius)
++            stickRadius = maxStickRadius;
 +        _thumbstick.Radius = stickRadius;
-+        _thumbstick.KnobRadius = 36f * scale * stickScale * fit;
-+        _thumbstick.Deadzone = 11f * scale * stickScale * fit;
++        _thumbstick.KnobRadius = stickRadius * 0.30f;
++        _thumbstick.Deadzone = stickRadius * 0.11f;
 +
 +        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
 +        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
@@ -3875,53 +3889,49 @@ index 0000000..396ba25
 +        // Right stick aims, Terraria style. It sits in the bottom right corner and the
 +        // action buttons sit in arcs around it.
 +        _aimStick.Radius = stickRadius;
-+        _aimStick.KnobRadius = 36f * scale * stickScale * fit;
-+        _aimStick.Deadzone = 11f * scale * stickScale * fit;
++        _aimStick.KnobRadius = stickRadius * 0.30f;
++        _aimStick.Deadzone = stickRadius * 0.11f;
 +        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - margin - stickRadius * 2f - 10f);
 +        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
 +
-+        var useSize = 66f * scale * fit;
-+        var interSize = 60f * scale * fit;
-+        var utilSize = 53f * scale * fit;
++        var useSize = 130f * scale * fit;
++        var interSize = 118f * scale * fit;
++        var utilSize = 102f * scale * fit;
++        var stickGap = 6f * scale * fit;
 +
 +        // Right stick: aim, so the right thumb gets the combat ring around it.
 +        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - margin - stickRadius);
-+        var aimInner = stickRadius + 48f * scale * fit;
-+        var aimOuter = stickRadius + 108f * scale * fit;
 +
-+        var ringRight = stickRadius + 74f * scale * fit;
-+        ArrangeOnArc(_useButton, aimCenter, 52f, ringRight, new Vector2(useSize, useSize), finalSize);
-+        ArrangeOnArc(_interactButton, aimCenter, 86f, ringRight, new Vector2(interSize, interSize), finalSize);
-+        ArrangeOnArc(_secButton, aimCenter, 120f, ringRight, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_throwButton, aimCenter, 154f, ringRight, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeAroundStick(_useButton, aimCenter, 50f, useSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_interactButton, aimCenter, 84f, interSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_secButton, aimCenter, 118f, utilSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_throwButton, aimCenter, 152f, utilSize, stickRadius, stickGap, finalSize);
 +
 +        // Left stick: movement, four buttons around it as well.
 +        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - margin - stickRadius);
-+        var ringLeft = stickRadius + 74f * scale * fit;
++        ArrangeAroundStick(_handButton, moveCenter, 24f, utilSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_dropButton, moveCenter, 52f, utilSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_bagButton, moveCenter, 80f, utilSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_inventoryButton, moveCenter, 108f, utilSize, stickRadius, stickGap, finalSize);
++        ArrangeAroundStick(_pullButton, moveCenter, 136f, utilSize, stickRadius, stickGap, finalSize);
 +
-+        ArrangeOnArc(_handButton, moveCenter, 24f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_dropButton, moveCenter, 52f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_bagButton, moveCenter, 80f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_inventoryButton, moveCenter, 108f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_pullButton, moveCenter, 136f, ringLeft, new Vector2(utilSize, utilSize), finalSize);
++        var topBtnW = 70f * scale;
++        var topBtnH = 50f * scale;
++        var topY = 8f * scale;
 +
-+        var topBtnW = 46f * scale;
-+        var topBtnH = 34f * scale;
-+        var topY = 14f * scale;
++        ArrangeChild(_escButton, new Vector2(10f * scale, topY), new Vector2(topBtnW, topBtnH), finalSize);
++        ArrangeChild(_editButton, new Vector2(10f * scale + topBtnW + 8f * scale, topY), new Vector2(topBtnW + 10f * scale, topBtnH), finalSize);
 +
-+        ArrangeChild(_escButton, new Vector2(24f * scale, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        ArrangeChild(_editButton, new Vector2(24f * scale + topBtnW + 12f * scale, topY), new Vector2(topBtnW + 8f * scale, topBtnH), finalSize);
-+
-+        var keybX = finalSize.X - topBtnW - (24f * scale);
++        var keybX = finalSize.X - topBtnW - (10f * scale);
 +        ArrangeChild(_keybButton, new Vector2(keybX, topY), new Vector2(topBtnW, topBtnH), finalSize);
 +
-+        var altX = keybX - topBtnW - 12f * scale;
++        var altX = keybX - topBtnW - 8f * scale;
 +        ArrangeChild(_altButton, new Vector2(altX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        var examX = altX - topBtnW - 12f * scale;
++        var examX = altX - topBtnW - 8f * scale;
 +        ArrangeChild(_examButton, new Vector2(examX, topY), new Vector2(topBtnW, topBtnH), finalSize);
 +
-+        var hideW = 48f * scale;
-+        var hideH = 28f * scale;
++        var hideW = 72f * scale;
++        var hideH = 40f * scale;
 +        ArrangeChild(_hideButton, new Vector2((finalSize.X - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
 +
 +        if (_editorBarContainer.Visible)
@@ -4586,7 +4596,7 @@ index 0000000..c15a109
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..33390d0
+index 0000000..cd8bb12
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 @@ -0,0 +1,407 @@
@@ -4896,22 +4906,22 @@ index 0000000..33390d0
 +        var center = Size / 2f;
 +        var pressed = _isPressed;
 +        var activeColor = new Color(255, 222, 120, 255);
-+        var idleColor = new Color(225, 235, 250, 147);
++        var idleColor = new Color(215, 220, 228, 103);
 +        var unit = MathF.Max(2f, MathF.Round(Radius / 7f));
 +
 +        // Terraria style: chunky pixel ring with a dark translucent face.
 +        PixelKit.DrawDisc(handle, center, Radius,
-+            new Color(5, 7, 11, 77),
-+            new Color(255, 255, 255, 18),
-+            new Color(0, 0, 0, 56),
-+            new Color(210, 220, 240, pressed ? 119 : 77),
++            new Color(7, 8, 10, 54),
++            new Color(255, 255, 255, 13),
++            new Color(0, 0, 0, 39),
++            new Color(182, 188, 198, pressed ? 83 : 54),
 +            unit, pressed);
 +
 +        PixelKit.DrawDisc(handle, center, Radius * 0.6f,
-+            new Color(0, 0, 0, 28),
-+            new Color(255, 255, 255, 6),
-+            new Color(0, 0, 0, 21),
-+            new Color(0, 0, 0, 35),
++            new Color(0, 0, 0, 20),
++            new Color(255, 255, 255, 4),
++            new Color(0, 0, 0, 15),
++            new Color(0, 0, 0, 24),
 +            MathF.Max(2f, unit * 0.8f), pressed);
 +
 +        var block = MathF.Max(2f, MathF.Round(Radius * 0.11f));
@@ -4919,7 +4929,7 @@ index 0000000..33390d0
 +        if (IsAimStick)
 +        {
 +            var arm = Radius * 0.42f;
-+            var crossColor = new Color(225, 235, 250, pressed ? 168 : 119);
++            var crossColor = new Color(215, 220, 228, pressed ? 118 : 83);
 +            void PixelBlock(Vector2 at, Color color)
 +            {
 +                handle.DrawRect(UIBox2.FromDimensions(center + at - new Vector2(block / 2f, block / 2f), new Vector2(block, block)), color);
@@ -4980,15 +4990,15 @@ index 0000000..33390d0
 +        var knobCenter = center + _knobOffset;
 +        var knobUnit = MathF.Max(2f, MathF.Round(KnobRadius / 5f));
 +        PixelKit.DrawDisc(handle, knobCenter, KnobRadius,
-+            new Color(112, 130, 155, 190),
-+            new Color(230, 238, 250, 150),
-+            new Color(40, 52, 68, 190),
-+            new Color(12, 16, 22, 200),
++            new Color(118, 126, 140, 133),
++            new Color(224, 229, 236, 105),
++            new Color(44, 48, 56, 133),
++            new Color(18, 20, 24, 140),
 +            knobUnit, pressed);
 +
 +        handle.DrawRect(UIBox2.FromDimensions(
 +            knobCenter + new Vector2(-KnobRadius * 0.38f, -KnobRadius * 0.38f),
-+            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(255, 255, 255, 55));
++            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(255, 255, 255, 38));
 +
 +        if (IsEditMode)
 +        {
