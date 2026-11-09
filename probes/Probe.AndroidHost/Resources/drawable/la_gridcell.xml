@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SS14.Launcher GridCell: 2px vertical separator #AA575B7F on the right. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="right" android:width="2dp" android:height="match_parent">
+        <color android:color="@color/la_list_sep" />
+    </item>
+</layer-list>

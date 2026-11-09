@@ -5,7 +5,7 @@
     <string name="hub_title">SPACE STATION 14</string>
     <string name="hub_subtitle">Mobile Hub · Public Beta</string>
     <string name="servers_title">Серверы</string>
-    <string name="hub_search_hint">Поиск: имя, адрес, карта, тег…</string>
+    <string name="hub_search_hint">Поиск серверов…</string>
     <string name="custom_server_hint">ss14://host:port</string>
     <string name="btn_add_server">Добавить</string>
     <string name="btn_refresh_servers">Обновить</string>
@@ -21,11 +21,44 @@
     <string name="char_name_hint">Имя персонажа</string>
     <string name="lobby_title">Лобби</string>
     <string name="players_title">Игроки</string>
-    <string name="debug_toggle">Журнал</string>
+    <string name="debug_toggle">Открыть папку логов</string>
     <string name="btn_copy_log">Копировать лог / ошибку</string>
     <string name="btn_copy_short">📋 Лог</string>
     <string name="toast_copied">Скопировано в буфер</string>
     <string name="toast_copy_fail">Не удалось скопировать</string>
     <string name="touch_hint">Перетащите для камеры · тач-зоны по краям</string>
     <string name="beta_banner">PUBLIC BETA · open hub</string>
+
+    <!-- Launcher chrome (SS14.Launcher style, MIT) -->
+    <string name="tab_home">Главная</string>
+    <string name="tab_servers">Серверы</string>
+    <string name="tab_news">Новости</string>
+    <string name="tab_options">Настройки</string>
+    <string name="home_favorites">Избранные серверы</string>
+    <string name="home_direct_connect">Прямое подключение</string>
+    <string name="home_go_servers">К списку серверов</string>
+    <string name="home_favorites_guide">Добавьте избранные серверы кнопкой ★ в списке серверов,\nи они появятся здесь.</string>
+    <string name="servers_table_name">Название</string>
+    <string name="servers_table_round">Раунд</string>
+    <string name="servers_table_players">Игроки</string>
+    <string name="server_entry_connect">Войти</string>
+    <string name="filters_toggle">Фильтры</string>
+    <string name="news_title">Последние новости</string>
+    <string name="news_pulling">Получение новостей…</string>
+    <string name="login_title">Вход в аккаунт</string>
+    <string name="login_forgot">Забыли пароль?</string>
+    <string name="login_register">Зарегистрироваться</string>
+    <string name="login_show_password">Показать пароль</string>
+    <string name="login_resend">Отправить письмо повторно</string>
+    <string name="options_account">Настройки аккаунта</string>
+    <string name="options_account_desc">Управление аккаунтом SS14 — на сайте accounts.spacestation14.com</string>
+    <string name="options_clear_engines">Очистить движки</string>
+    <string name="options_clear_content">Очистить контент серверов</string>
+    <string name="options_open_logs">Журнал отладки</string>
+    <string name="options_hub_settings">Настройки хаба</string>
+    <string name="options_hub_desc">Официальный хаб: hub.spacestation14.com · плюс избранные/локальные серверы</string>
+    <string name="connecting_cancel">Отмена</string>
+    <string name="discord_btn">Discord</string>
+    <string name="website_btn">Сайт</string>
+    <string name="account_not_logged">Не выполнен вход</string>
 </resources>
