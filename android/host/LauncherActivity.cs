@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using Android.App;
 using Android.Content;
 using Android.Graphics;
+using Android.Graphics.Drawables;
 using Android.OS;
 using Android.Views;
 using Android.Widget;
@@ -48,9 +49,9 @@ public sealed class LauncherActivity : Activity
 {
     private enum Tab
     {
+        Home,
         Servers,
-        Favorites,
-        DirectConnect
+        Options
     }
 
     private readonly LauncherStorage _storage = new();
@@ -59,7 +60,7 @@ public sealed class LauncherActivity : Activity
     private readonly AczClient _aczClient = new();
 
     private List<ServerListEntry> _servers = new();
-    private Tab _activeTab = Tab.Servers;
+    private Tab _activeTab = Tab.Home;
     private string _searchFilter = string.Empty;
 
     private Button _accountBtn = default!;
@@ -201,309 +202,18 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    private void BuildOfficialUi()
-    {
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
 
-        var root = new FrameLayout(this);
-        root.SetBackgroundColor(LauncherTheme.Background);
+    private LinearLayout _pageHost = default!;
+    private LinearLayout _bottomBar = default!;
+    private TextView _versionLabel = default!;
+    private EditText _loginUser = default!;
+    private EditText _loginPass = default!;
+    private TextView _loginError = default!;
+    private Button _loginSubmit = default!;
+    private bool _loginBusy;
 
-        var mainLayout = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        mainLayout.LayoutParameters = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
-
-        var header = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        header.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        header.SetPadding((int)(16 * density), (int)(8 * density), (int)(16 * density), (int)(8 * density));
-        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(76 * density));
-
-        var logoImage = new ImageView(this);
-        logoImage.SetScaleType(ImageView.ScaleType.FitCenter);
-        logoImage.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent);
-        LoadLogo(logoImage);
-        header.AddView(logoImage);
-
-        var headerSpacer = new View(this);
-        headerSpacer.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f);
-        header.AddView(headerSpacer);
-
-        var discordBtn = CreateHeaderLinkButton("Discord", () => OpenUrl("https://discord.ss14.io/"));
-        header.AddView(discordBtn);
-
-        var websiteBtn = CreateHeaderLinkButton("Website", () => OpenUrl("https://spacestation14.com"));
-        header.AddView(websiteBtn);
-
-        var githubBtn = CreateHeaderLinkButton("GitHub", () => OpenUrl("https://github.com/ministation/space-station-14-client"));
-        header.AddView(githubBtn);
-
-        _accountBtn = new Button(this)
-        {
-            TextSize = 12,
-            Typeface = Typeface.DefaultBold
-        };
-        _accountBtn.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.Separator);
-        _accountBtn.SetTextColor(LauncherTheme.Foreground);
-        _accountBtn.SetPadding((int)(12 * density), 0, (int)(12 * density), 0);
-        _accountBtn.Click += (_, _) => ShowAccountDialog();
-        UpdateAccountButton();
-        header.AddView(_accountBtn);
-
-        mainLayout.AddView(header);
-
-        var goldLine = new View(this);
-        goldLine.SetBackgroundColor(LauncherTheme.NanoGold);
-        goldLine.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(2 * density));
-        mainLayout.AddView(goldLine);
-
-        var controlsRow = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        controlsRow.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        controlsRow.SetPadding((int)(10 * density), (int)(4 * density), (int)(10 * density), (int)(4 * density));
-        controlsRow.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(42 * density));
-
-        _searchInput = new EditText(this)
-        {
-            Hint = "Search servers...",
-            TextSize = 12,
-            InputType = global::Android.Text.InputTypes.ClassText,
-            ImeOptions = (global::Android.Views.InputMethods.ImeAction)global::Android.Views.InputMethods.ImeFlags.NoExtractUi | global::Android.Views.InputMethods.ImeAction.Search
-        };
-        _searchInput.SetHintTextColor(LauncherTheme.ForegroundMuted);
-        _searchInput.SetTextColor(LauncherTheme.Foreground);
-        _searchInput.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 3, LauncherTheme.ControlMid);
-        _searchInput.SetPadding((int)(10 * density), (int)(4 * density), (int)(10 * density), (int)(4 * density));
-        _searchInput.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(32 * density), 1f);
-        _searchInput.TextChanged += (_, e) =>
-        {
-            _searchFilter = e?.Text?.ToString() ?? string.Empty;
-            RenderServerList();
-        };
-        _searchInput.EditorAction += (_, e) =>
-        {
-            if (e.ActionId == global::Android.Views.InputMethods.ImeAction.Search ||
-                e.ActionId == global::Android.Views.InputMethods.ImeAction.Done ||
-                (e.Event?.KeyCode == global::Android.Views.Keycode.Enter && e.Event.Action == global::Android.Views.KeyEventActions.Down))
-            {
-                HideKeyboard(_searchInput);
-            }
-        };
-        controlsRow.AddView(_searchInput);
-
-        var filterLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, (int)(32 * density));
-        filterLp.SetMargins((int)(6 * density), 0, (int)(6 * density), 0);
-        _filterBtn = new Button(this)
-        {
-            Text = "Filters",
-            TextSize = 11,
-            Typeface = Typeface.DefaultBold
-        };
-        _filterBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        _filterBtn.SetTextColor(LauncherTheme.Foreground);
-        _filterBtn.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
-        _filterBtn.LayoutParameters = filterLp;
-        _filterBtn.Click += (_, _) =>
-        {
-            _filtersVisible = !_filtersVisible;
-            _filtersPanel.Visibility = _filtersVisible ? ViewStates.Visible : ViewStates.Gone;
-            UpdateFilterButtonState();
-        };
-        controlsRow.AddView(_filterBtn);
-
-        var refreshBtn = new Button(this)
-        {
-            Text = "↻",
-            TextSize = 14,
-            Typeface = Typeface.DefaultBold
-        };
-        refreshBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        refreshBtn.SetTextColor(LauncherTheme.Foreground);
-        refreshBtn.LayoutParameters = new LinearLayout.LayoutParams((int)(34 * density), (int)(32 * density));
-        refreshBtn.SetPadding(0, 0, 0, 0);
-        refreshBtn.Click += async (_, _) => await RefreshHubServersAsync();
-        controlsRow.AddView(refreshBtn);
-
-        var directBtn = new Button(this)
-        {
-            Text = "+",
-            TextSize = 16,
-            Typeface = Typeface.DefaultBold
-        };
-        directBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
-        directBtn.SetTextColor(LauncherTheme.NanoGold);
-        var directLp = new LinearLayout.LayoutParams((int)(34 * density), (int)(32 * density));
-        directLp.SetMargins((int)(6 * density), 0, 0, 0);
-        directBtn.LayoutParameters = directLp;
-        directBtn.Click += (_, _) => SwitchTab(Tab.DirectConnect);
-        controlsRow.AddView(directBtn);
-
-        mainLayout.AddView(controlsRow);
-
-        _filtersPanel = BuildFiltersPanel(density);
-        _filtersPanel.Visibility = ViewStates.Gone;
-        mainLayout.AddView(_filtersPanel);
-
-        var sep = new View(this);
-        sep.SetBackgroundColor(LauncherTheme.Separator);
-        sep.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(1 * density));
-        mainLayout.AddView(sep);
-
-        var statusRow = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        statusRow.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        statusRow.SetPadding((int)(12 * density), (int)(2 * density), (int)(12 * density), (int)(2 * density));
-        statusRow.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(22 * density));
-
-        _statusCountText = new TextView(this)
-        {
-            Text = "Loading servers...",
-            TextSize = 10
-        };
-        _statusCountText.SetTextColor(LauncherTheme.SubText);
-        _statusCountText.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f);
-        statusRow.AddView(_statusCountText);
-        mainLayout.AddView(statusRow);
-
-        var tableHeader = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        tableHeader.SetBackgroundColor(LauncherTheme.HeaderBackground);
-        tableHeader.SetPadding((int)(12 * density), (int)(4 * density), (int)(12 * density), (int)(4 * density));
-
-        var thName = CreateTableHeaderText("SERVER NAME", 1f);
-        var thTime = CreateTableHeaderText("TIME", 0.35f);
-        var thPlayers = CreateTableHeaderText("PLAYERS", 0.25f);
-        var thAction = CreateTableHeaderText("CONNECT", 0.3f);
-
-        tableHeader.AddView(thName);
-        tableHeader.AddView(thTime);
-        tableHeader.AddView(thPlayers);
-        tableHeader.AddView(thAction);
-        mainLayout.AddView(tableHeader);
-
-        _scroll = new ScrollView(this)
-        {
-            LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f)
-        };
-        _listLayout = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        _scroll.AddView(_listLayout);
-        mainLayout.AddView(_scroll);
-
-        var tabTopLine = new View(this);
-        tabTopLine.SetBackgroundColor(Color.ParseColor("#525252"));
-        tabTopLine.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(2 * density));
-        mainLayout.AddView(tabTopLine);
-
-        var tabBar = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        tabBar.SetBackgroundColor(Color.ParseColor("#1E1E22"));
-        tabBar.SetPadding((int)(8 * density), (int)(3 * density), (int)(8 * density), (int)(3 * density));
-        tabBar.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(44 * density));
-
-        _tabDirectBtn = CreateTabButton("Home", false);
-        _tabServersBtn = CreateTabButton("Servers", true);
-        _tabFavsBtn = CreateTabButton("Options", false);
-
-        _tabDirectBtn.Click += (_, _) => SwitchTab(Tab.DirectConnect);
-        _tabServersBtn.Click += (_, _) => SwitchTab(Tab.Servers);
-        _tabFavsBtn.Click += (_, _) => ShowSettingsDialog();
-
-        tabBar.AddView(_tabDirectBtn);
-        tabBar.AddView(_tabServersBtn);
-        tabBar.AddView(_tabFavsBtn);
-
-        var tabSpacer2 = new View(this);
-        tabSpacer2.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f);
-        tabBar.AddView(tabSpacer2);
-
-        var versionText = new TextView(this)
-        {
-            Text = GetCurrentAppVersion(),
-            TextSize = 10
-        };
-        versionText.SetTextColor(LauncherTheme.SubText);
-        versionText.Gravity = GravityFlags.CenterVertical;
-        versionText.Clickable = true;
-        versionText.Click += async (_, _) => await CheckForUpdatesAsync(userInitiated: true);
-        tabBar.AddView(versionText);
-
-        mainLayout.AddView(tabBar);
-        root.AddView(mainLayout);
-
-        _overlayBox = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical,
-            Visibility = ViewStates.Gone
-        };
-        _overlayBox.SetBackgroundColor(Color.ParseColor("#CC18181A"));
-        _overlayBox.SetGravity(GravityFlags.Center);
-        _overlayBox.LayoutParameters = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
-
-        var modal = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        modal.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 6, LauncherTheme.NanoGold);
-        modal.SetPadding((int)(24 * density), (int)(20 * density), (int)(24 * density), (int)(20 * density));
-        modal.LayoutParameters = new LinearLayout.LayoutParams((int)(340 * density), ViewGroup.LayoutParams.WrapContent);
-
-        _overlayText = new TextView(this)
-        {
-            Text = "Connecting...",
-            TextSize = 14,
-            Typeface = Typeface.DefaultBold
-        };
-        _overlayText.SetTextColor(LauncherTheme.Foreground);
-        _overlayText.Gravity = GravityFlags.Center;
-        modal.AddView(_overlayText);
-
-        _overlayProgress = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
-        {
-            Indeterminate = true,
-            Max = 100
-        };
-        _overlayProgress.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(14 * density));
-        modal.AddView(_overlayProgress);
-
-        var cancelBtn = new Button(this)
-        {
-            Text = "Cancel",
-            TextSize = 12
-        };
-        cancelBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        cancelBtn.SetTextColor(LauncherTheme.Foreground);
-        var cancelLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(32 * density))
-        {
-            TopMargin = (int)(12 * density)
-        };
-        cancelBtn.LayoutParameters = cancelLp;
-        cancelBtn.Click += (_, _) =>
-        {
-            ContentDownloadService.Cancel();
-            _overlayBox.Visibility = ViewStates.Gone;
-            Window?.ClearFlags(WindowManagerFlags.KeepScreenOn);
-        };
-        modal.AddView(cancelBtn);
-
-        _overlayBox.AddView(modal);
-        root.AddView(_overlayBox);
-
-        SetContentView(root);
-    }
+    private float Density => Resources?.DisplayMetrics?.Density ?? 1f;
+    private int Dp(float value) => (int)(value * Density);
 
     private void LoadLogo(ImageView imageView)
     {
@@ -525,88 +235,604 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
+    private void BuildOfficialUi()
+    {
+        var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        root.SetBackgroundColor(LauncherTheme.Background);
+
+        var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        header.SetBackgroundColor(LauncherTheme.HeaderBackground);
+        header.SetGravity(GravityFlags.CenterVertical);
+        header.SetPadding(Dp(4), Dp(4), Dp(6), Dp(4));
+
+        var logo = new ImageView(this);
+        logo.SetAdjustViewBounds(true);
+        logo.LayoutParameters = new LinearLayout.LayoutParams(Dp(184), Dp(46));
+        LoadLogo(logo);
+        header.AddView(logo);
+
+        var headerSpacer = new Space(this);
+        header.AddView(headerSpacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+        var right = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        right.SetGravity(GravityFlags.End);
+
+        var links = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        links.SetGravity(GravityFlags.End);
+        var discord = CreateHeaderLinkButton("Discord", () => OpenUrl("https://discord.gg/ss14"));
+        links.AddView(discord, new LinearLayout.LayoutParams(Dp(86), Dp(26)) { RightMargin = Dp(2) });
+        var website = CreateHeaderLinkButton("Website", () => OpenUrl("https://spacestation14.com/"));
+        links.AddView(website, new LinearLayout.LayoutParams(Dp(86), Dp(26)));
+        right.AddView(links);
+
+        _accountBtn = new Button(this) { TextSize = 10f };
+        _accountBtn.SetTextColor(LauncherTheme.Foreground);
+        _accountBtn.SetPadding(Dp(10), 0, Dp(10), 0);
+        _accountBtn.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        _accountBtn.LayoutParameters = new LinearLayout.LayoutParams(Dp(176), Dp(26)) { TopMargin = Dp(2) };
+        _accountBtn.Click += (_, _) => OnAccountButtonClicked();
+        right.AddView(_accountBtn);
+
+        header.AddView(right);
+        root.AddView(header);
+
+        var goldLine = new View(this);
+        goldLine.SetBackgroundColor(LauncherTheme.NanoGold);
+        root.AddView(goldLine, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(2)));
+
+        _pageHost = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _pageHost.SetBackgroundColor(LauncherTheme.Background);
+        root.AddView(_pageHost, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        var edge = new View(this);
+        edge.SetBackgroundColor(LauncherTheme.StripeEdge);
+        root.AddView(edge, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(2)));
+
+        _bottomBar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        _bottomBar.SetPadding(Dp(4), 0, Dp(4), 0);
+        root.AddView(_bottomBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(38)));
+
+        SetContentView(root);
+        UpdateAccountButton();
+    }
+
+    private static LinearLayout.LayoutParams MatchParent() =>
+        new(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
+
+    private Drawable CreateAngleButtonBackground(float corner, AngleSide side)
+    {
+        var states = new StateListDrawable();
+        states.AddState(new[] { global::Android.Resource.Attribute.StatePressed }, new AngleDrawable(LauncherTheme.ControlHigh, corner, side));
+        states.AddState(new[] { global::Android.Resource.Attribute.StateEnabled }, new AngleDrawable(LauncherTheme.ControlMid, corner, side));
+        states.AddState(Array.Empty<int>(), new AngleDrawable(LauncherTheme.ControlMid, corner, side));
+        return states;
+    }
+
+    private Button CreateAngleButton(string text, float heightDp, int widthDp)
+    {
+        var button = new Button(this) { Text = text, TextSize = 12f };
+        button.SetTextColor(LauncherTheme.Foreground);
+        button.SetPadding(Dp(10), 0, Dp(10), 0);
+        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        button.LayoutParameters = new LinearLayout.LayoutParams(Dp(widthDp), Dp(heightDp)) { RightMargin = Dp(4) };
+        return button;
+    }
+
     private Button CreateHeaderLinkButton(string text, Action onClick)
     {
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-        var btn = new Button(this)
-        {
-            Text = text,
-            TextSize = 11
-        };
-        btn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        btn.SetTextColor(LauncherTheme.Foreground);
-        btn.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
-        btn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, (int)(32 * density))
-        {
-            RightMargin = (int)(6 * density)
-        };
-        btn.Click += (_, _) => onClick();
-        return btn;
+        var button = new Button(this) { Text = text, TextSize = 10f };
+        button.SetTextColor(LauncherTheme.Foreground);
+        button.SetPadding(Dp(8), 0, Dp(8), 0);
+        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        button.Click += (_, _) => onClick();
+        return button;
     }
 
-    private Button CreateTabButton(string text, bool active)
+    private void UpdateAccountButton()
     {
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-        var btn = new Button(this)
-        {
-            Text = text,
-            TextSize = 13
-        };
-        btn.SetPadding((int)(16 * density), 0, (int)(16 * density), 0);
-        btn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, (int)(38 * density));
-        ApplyTabStyle(btn, active);
-        return btn;
+        if (_accountBtn == null)
+            return;
+
+        var account = _storage.GetActiveAccount();
+        _accountBtn.Text = account != null && !string.IsNullOrEmpty(account.Token)
+            ? account.Username + " ▼"
+            : "Log in ▼";
+        _accountBtn.SetTextColor(account != null ? Color.ParseColor("#86EFAC") : LauncherTheme.SubText);
+        RebuildShell();
     }
 
-    // Official launcher tabs are flat: selected tab is gold, the rest are grey.
-    private void ApplyTabStyle(Button btn, bool active)
+    private void RebuildShell()
     {
-        btn.Background = LauncherTheme.CreateBox(Color.Transparent, 0, active ? LauncherTheme.NanoGold : Color.Transparent, active ? 2 : 0);
-        btn.SetTextColor(active ? LauncherTheme.NanoGold : LauncherTheme.SubText);
-        btn.Typeface = Typeface.Create(Typeface.Default, active ? TypefaceStyle.Bold : TypefaceStyle.Normal);
+        if (_pageHost == null || _bottomBar == null)
+            return;
+
+        _pageHost.RemoveAllViews();
+        _bottomBar.RemoveAllViews();
+        _bottomBar.Background = new StripedBackgroundDrawable(Density);
+
+        var account = _storage.GetActiveAccount();
+        if (account == null || string.IsNullOrEmpty(account.Token))
+        {
+            _pageHost.AddView(BuildLoginPage(), MatchParent());
+            var logs = CreateFooterTextButton("Open log directory", () => ShowCrashReporterDialog());
+            _bottomBar.AddView(logs, new LinearLayout.LayoutParams(Dp(150), Dp(30)) { LeftMargin = Dp(4), TopMargin = Dp(4) });
+            var spacer = new Space(this);
+            _bottomBar.AddView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+            var version = new TextView(this) { Text = GetCurrentAppVersion(), TextSize = 10f };
+            version.SetTextColor(LauncherTheme.SubText);
+            version.Gravity = GravityFlags.CenterVertical;
+            version.SetPadding(0, 0, Dp(6), 0);
+            _bottomBar.AddView(version, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent));
+            return;
+        }
+
+        View page = _activeTab switch
+        {
+            Tab.Home => BuildHomePage(),
+            Tab.Options => BuildOptionsPage(),
+            _ => BuildServersPage()
+        };
+        _pageHost.AddView(page, MatchParent());
+        BuildTabBar();
     }
 
-    private TextView CreateTableHeaderText(string title, float weight)
+    private TextView CreateFooterTextButton(string text, Action onClick)
     {
-        var tv = new TextView(this)
+        var view = new TextView(this) { Text = text, TextSize = 10f };
+        view.SetTextColor(LauncherTheme.Foreground);
+        view.Gravity = GravityFlags.CenterVertical;
+        view.SetPadding(Dp(10), 0, Dp(10), 0);
+        view.Click += (_, _) => onClick();
+        return view;
+    }
+
+    private void BuildTabBar()
+    {
+        _bottomBar.RemoveAllViews();
+        var tabs = new[] { (Tab.Home, "Home"), (Tab.Servers, "Servers"), (Tab.Options, "Options") };
+        foreach (var (tab, label) in tabs)
         {
-            Text = title,
-            TextSize = 10,
-            Typeface = Typeface.DefaultBold
-        };
-        tv.SetTextColor(LauncherTheme.NanoGold);
-        tv.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, weight);
-        return tv;
+            var tabView = new TextView(this) { Text = label, TextSize = 12f };
+            tabView.Gravity = GravityFlags.Center;
+            tabView.SetPadding(Dp(14), 0, Dp(14), 0);
+            tabView.SetTextColor(_activeTab == tab ? LauncherTheme.Foreground : LauncherTheme.SubText);
+            if (_activeTab == tab)
+                tabView.Background = new ColorDrawable(Color.Argb(204, 0x3E, 0x6C, 0x45));
+            tabView.Click += (_, _) => SwitchTab(tab);
+            _bottomBar.AddView(tabView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent));
+        }
+
+        var spacer = new Space(this);
+        _bottomBar.AddView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+        _versionLabel = new TextView(this) { Text = GetCurrentAppVersion(), TextSize = 10f };
+        _versionLabel.SetTextColor(LauncherTheme.SubText);
+        _versionLabel.Gravity = GravityFlags.CenterVertical;
+        _versionLabel.SetPadding(Dp(8), 0, Dp(8), 0);
+        _versionLabel.Click += (_, _) => _ = CheckForUpdatesAsync(true);
+        _bottomBar.AddView(_versionLabel, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent));
     }
 
     private void SwitchTab(Tab tab)
     {
         _activeTab = tab;
-        ApplyTabStyle(_tabServersBtn, tab == Tab.Servers);
-        ApplyTabStyle(_tabFavsBtn, tab == Tab.Favorites);
-        ApplyTabStyle(_tabDirectBtn, tab == Tab.DirectConnect);
-        RenderServerList();
+        RebuildShell();
     }
 
-    private void UpdateAccountButton()
+    private void OnAccountButtonClicked()
     {
-        if (_accountBtn == null) return;
-        var acc = _storage.GetActiveAccount();
-        if (acc != null && !string.IsNullOrEmpty(acc.Token))
+        var account = _storage.GetActiveAccount();
+        if (account == null || string.IsNullOrEmpty(account.Token))
         {
-            _accountBtn.Text = $"{acc.Username} ▼";
-            _accountBtn.SetTextColor(Color.ParseColor("#86efac"));
+            if (_loginUser != null)
+            {
+                _loginUser.RequestFocus();
+                ShowKeyboard(_loginUser);
+            }
+            return;
         }
-        else
+
+        var dialog = new AlertDialog.Builder(this);
+        dialog.SetTitle(account.Username);
+        dialog.SetItems(new[] { "Log out", "Switch account", "Account settings (web)" }, (_, args) =>
         {
-            _accountBtn.Text = "Log in ▼";
-            _accountBtn.SetTextColor(LauncherTheme.SubText);
+            switch (args.Which)
+            {
+                case 0:
+                    PerformLogout();
+                    break;
+                case 1:
+                    PerformLogout();
+                    break;
+                case 2:
+                    OpenUrl("https://spacestation14.com/auth/login");
+                    break;
+            }
+        });
+        dialog.Show();
+    }
+
+    private void PerformLogout()
+    {
+        var account = _storage.GetActiveAccount();
+        if (account != null)
+            _ = _authClient.LogoutAsync(account.Token);
+        if (!string.IsNullOrEmpty(account.UserId))
+            _storage.RemoveAccount(account.UserId);
+        try
+        {
+            var authFile = Path.Combine(FilesDir?.AbsolutePath ?? "", "auth.json");
+            if (File.Exists(authFile))
+                File.Delete(authFile);
         }
+        catch
+        {
+        }
+
+        UpdateAccountButton();
+    }
+
+    private View BuildLoginPage()
+    {
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        page.SetGravity(GravityFlags.CenterHorizontal);
+        page.SetPadding(Dp(16), Dp(10), Dp(16), Dp(6));
+
+        var title = new TextView(this) { Text = "Log in", TextSize = 20f };
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(LauncherTheme.NanoGold);
+        title.Gravity = GravityFlags.Center;
+        page.AddView(title, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+
+        var form = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        form.SetGravity(GravityFlags.CenterHorizontal);
+        page.AddView(form, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        _loginUser = new EditText(this) { Hint = "Username" };
+        _loginUser.SetSingleLine(true);
+        _loginUser.TextSize = 12f;
+        _loginUser.SetTextColor(LauncherTheme.Foreground);
+        _loginUser.SetHintTextColor(LauncherTheme.SubText);
+        _loginUser.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.StripeEdge, 1);
+        _loginUser.SetPadding(Dp(8), 0, Dp(8), 0);
+        form.AddView(_loginUser, new LinearLayout.LayoutParams(Dp(300), Dp(32)) { TopMargin = Dp(8) });
+
+        _loginPass = new EditText(this) { Hint = "Password" };
+        _loginPass.SetSingleLine(true);
+        _loginPass.TextSize = 12f;
+        _loginPass.InputType = global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationPassword;
+        _loginPass.SetTextColor(LauncherTheme.Foreground);
+        _loginPass.SetHintTextColor(LauncherTheme.SubText);
+        _loginPass.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.StripeEdge, 1);
+        _loginPass.SetPadding(Dp(8), 0, Dp(8), 0);
+        form.AddView(_loginPass, new LinearLayout.LayoutParams(Dp(300), Dp(32)) { TopMargin = Dp(4) });
+
+        var showPassword = new CheckBox(this) { Text = "Show password", TextSize = 11f };
+        showPassword.SetTextColor(LauncherTheme.Foreground);
+        showPassword.ButtonTintList = global::Android.Content.Res.ColorStateList.ValueOf(LauncherTheme.NanoGold);
+        showPassword.CheckedChange += (_, args) =>
+        {
+            _loginPass.InputType = args.IsChecked
+                ? global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationVisiblePassword
+                : global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationPassword;
+        };
+        form.AddView(showPassword, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(28)) { TopMargin = Dp(2) });
+
+        _loginError = new TextView(this) { TextSize = 11f };
+        _loginError.SetTextColor(Color.ParseColor("#FF6B6B"));
+        _loginError.Gravity = GravityFlags.Center;
+        _loginError.Visibility = ViewStates.Gone;
+        form.AddView(_loginError, new LinearLayout.LayoutParams(Dp(300), ViewGroup.LayoutParams.WrapContent));
+
+        var buttons = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        buttons.SetGravity(GravityFlags.Center);
+        _loginSubmit = CreateAngleButton("Log In", 32, 100);
+        _loginSubmit.Click += async (_, _) => await SubmitLoginAsync();
+        buttons.AddView(_loginSubmit);
+        var forgot = CreateAngleButton("Forgot password", 32, 150);
+        forgot.Click += (_, _) => OpenUrl("https://spacestation14.com/auth/password-reset");
+        buttons.AddView(forgot);
+        form.AddView(buttons, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent) { TopMargin = Dp(4) });
+
+        var footer = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        footer.SetGravity(GravityFlags.CenterHorizontal);
+        var register = CreateAngleButton("Register", 32, 150);
+        register.Click += (_, _) => OpenUrl("https://spacestation14.com/auth/register");
+        footer.AddView(register, new LinearLayout.LayoutParams(Dp(150), Dp(32)));
+        page.AddView(footer, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent) { BottomMargin = Dp(4) });
+
+        return page;
+    }
+
+    private async Task SubmitLoginAsync()
+    {
+        if (_loginBusy || _loginUser == null || _loginPass == null)
+            return;
+
+        _loginBusy = true;
+        if (_loginError != null)
+            _loginError.Visibility = ViewStates.Gone;
+        HideKeyboard(_loginPass);
+
+        var result = await _authClient.AuthenticateAsync(_loginUser.Text ?? "", _loginPass.Text ?? "");
+        _loginBusy = false;
+
+        if (result.Success && result.Account != null)
+        {
+            _storage.AddOrUpdateAccount(result.Account);
+            try
+            {
+                var authFile = Path.Combine(FilesDir?.AbsolutePath ?? "", "auth.json");
+                var json = "{\"token\":\"" + result.Account.Token + "\",\"username\":\"" + result.Account.Username + "\",\"userId\":\"" + result.Account.UserId + "\"}";
+                File.WriteAllText(authFile, json);
+            }
+            catch
+            {
+            }
+
+            Toast.MakeText(this, "Logged in as " + result.Account.Username, ToastLength.Short)?.Show();
+            UpdateAccountButton();
+            _ = RefreshHubServersAsync();
+            return;
+        }
+
+        if (_loginError != null)
+        {
+            _loginError.Text = result.ErrorMessage ?? "Login failed.";
+            _loginError.Visibility = ViewStates.Visible;
+        }
+    }
+
+    private View BuildHomePage()
+    {
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+
+        var heading = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        heading.SetGravity(GravityFlags.CenterVertical);
+        heading.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        var title = new TextView(this) { Text = "Favorite Servers", TextSize = 20f };
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(LauncherTheme.NanoGold);
+        heading.AddView(title);
+        var spacer = new Space(this);
+        heading.AddView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        var refresh = CreateAngleButton("Refresh", 26, 80);
+        refresh.Click += async (_, _) => await RefreshHubServersAsync();
+        heading.AddView(refresh);
+        page.AddView(heading);
+
+        var sep = new View(this);
+        sep.SetBackgroundColor(LauncherTheme.Separator);
+        page.AddView(sep, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 1));
+
+        var scroll = new ScrollView(this);
+        _listLayout = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _listLayout.SetBackgroundColor(LauncherTheme.RowBase);
+        scroll.AddView(_listLayout);
+        page.AddView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        var footer = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        footer.SetGravity(GravityFlags.CenterHorizontal);
+        footer.SetPadding(0, Dp(4), 0, Dp(2));
+        var direct = CreateAngleButton("Direct Connect", 30, 130);
+        direct.Click += (_, _) => ShowDirectConnectDialog();
+        footer.AddView(direct, new LinearLayout.LayoutParams(Dp(130), Dp(30)) { RightMargin = Dp(6) });
+        var sandbox = CreateAngleButton("Offline Sandbox", 30, 140);
+        sandbox.Click += (_, _) => LaunchOfflineSandbox();
+        footer.AddView(sandbox, new LinearLayout.LayoutParams(Dp(140), Dp(30)));
+        page.AddView(footer);
+
+        RenderServerList();
+        return page;
+    }
+
+    private View BuildServersPage()
+    {
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+
+        var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        header.SetGravity(GravityFlags.CenterVertical);
+        header.SetPadding(Dp(12), 0, Dp(12), 0);
+        header.AddView(CreateTableCell("SERVER NAME", 1f, GravityFlags.Left, 10f, false));
+        header.AddView(CreateTableCell("TIME", 0f, GravityFlags.Center, 10f, false, Dp(80)));
+        header.AddView(CreateTableCell("PLAYERS", 0f, GravityFlags.Center, 10f, false, Dp(66)));
+        header.AddView(CreateTableCell("", 0f, GravityFlags.Center, 10f, false, Dp(92)));
+        page.AddView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(24)));
+
+        var sep = new View(this);
+        sep.SetBackgroundColor(LauncherTheme.Separator);
+        page.AddView(sep, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 1));
+
+        _filtersPanel = BuildFiltersPanel(Density);
+        _filtersPanel.Visibility = _filtersVisible ? ViewStates.Visible : ViewStates.Gone;
+        page.AddView(_filtersPanel);
+
+        var scroll = new ScrollView(this);
+        _listLayout = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        _listLayout.SetBackgroundColor(LauncherTheme.RowBase);
+        scroll.AddView(_listLayout);
+        page.AddView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        var toolbarSep = new View(this);
+        toolbarSep.SetBackgroundColor(LauncherTheme.Separator);
+        page.AddView(toolbarSep, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 1));
+
+        var toolbar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        toolbar.SetGravity(GravityFlags.CenterVertical);
+        toolbar.SetPadding(Dp(4), 0, Dp(4), Dp(4));
+
+        _searchInput = new EditText(this) { Hint = "Search servers" };
+        _searchInput.SetSingleLine(true);
+        _searchInput.TextSize = 11f;
+        _searchInput.SetTextColor(LauncherTheme.Foreground);
+        _searchInput.SetHintTextColor(LauncherTheme.SubText);
+        _searchInput.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.StripeEdge, 1);
+        _searchInput.SetPadding(Dp(8), 0, Dp(8), 0);
+        _searchInput.TextChanged += (_, e) =>
+        {
+            _searchFilter = e?.Text?.ToString() ?? string.Empty;
+            RenderServerList();
+        };
+        toolbar.AddView(_searchInput, new LinearLayout.LayoutParams(0, Dp(30), 1f) { RightMargin = Dp(8) });
+
+        _statusCountText = new TextView(this) { TextSize = 10f };
+        _statusCountText.SetTextColor(LauncherTheme.SubText);
+        _statusCountText.Gravity = GravityFlags.CenterVertical;
+        _statusCountText.SetPadding(Dp(4), 0, Dp(8), 0);
+        toolbar.AddView(_statusCountText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent));
+
+        _filterBtn = new Button(this) { TextSize = 11f };
+        _filterBtn.SetTextColor(LauncherTheme.Foreground);
+        _filterBtn.SetPadding(Dp(10), 0, Dp(10), 0);
+        _filterBtn.Background = CreateAngleButtonBackground(Dp(10), AngleSide.OpenRight);
+        _filterBtn.Click += (_, _) =>
+        {
+            _filtersVisible = !_filtersVisible;
+            if (_filtersPanel != null)
+                _filtersPanel.Visibility = _filtersVisible ? ViewStates.Visible : ViewStates.Gone;
+        };
+        toolbar.AddView(_filterBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(30)));
+
+        var refresh = new Button(this) { Text = "Refresh", TextSize = 11f };
+        refresh.SetTextColor(LauncherTheme.Foreground);
+        refresh.SetPadding(Dp(10), 0, Dp(10), 0);
+        refresh.Background = CreateAngleButtonBackground(Dp(10), AngleSide.OpenLeft);
+        refresh.Click += async (_, _) => await RefreshHubServersAsync();
+        toolbar.AddView(refresh, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(30)) { LeftMargin = Dp(2) });
+
+        page.AddView(toolbar);
+
+        UpdateFilterButtonState();
+        _statusCountText.Text = _servers.Count > 0 ? $"{_servers.Count} servers" : "Loading servers...";
+        RenderServerList();
+        return page;
+    }
+
+    private View BuildOptionsPage()
+    {
+        var page = new LinearLayout(this) { Orientation = Orientation.Vertical };
+
+        var title = new TextView(this) { Text = "Options", TextSize = 20f };
+        title.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        title.SetTextColor(LauncherTheme.NanoGold);
+        title.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        page.AddView(title);
+
+        var scroll = new ScrollView(this);
+        var list = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        list.SetPadding(Dp(4), 0, Dp(4), Dp(4));
+        scroll.AddView(list);
+        page.AddView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private)!;
+
+        AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 1.5f, new[] { 1.0f, 1.3f, 1.5f, 1.7f }, "%");
+        AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
+        AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.85f, new[] { 0.6f, 0.75f, 0.85f, 1.0f }, "%");
+        AddCycleRow(list, "UI scale", prefs, "gui_scale", 1.0f, new[] { 0.8f, 0.9f, 1.0f, 1.1f, 1.2f }, "x");
+
+        AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
+        AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
+        AddActionRow(list, "Open log directory", () => ShowCrashReporterDialog());
+        AddActionRow(list, "Offline sandbox", () => LaunchOfflineSandbox());
+        AddActionRow(list, "Check for updates", () => _ = CheckForUpdatesAsync(true));
+        AddActionRow(list, "Website", () => OpenUrl("https://spacestation14.com/"));
+        AddActionRow(list, "GitHub", () => OpenUrl("https://github.com/ministation/space-station-14-client"));
+
+        return page;
+    }
+
+    private void AddCycleRow(LinearLayout list, string label, ISharedPreferences prefs, string key, float fallback, float[] values, string suffix)
+    {
+        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        row.SetGravity(GravityFlags.CenterVertical);
+        row.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        var text = new TextView(this) { Text = label, TextSize = 12f };
+        text.SetTextColor(LauncherTheme.Foreground);
+        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(30), 1f));
+
+        var current = prefs.GetFloat(key, fallback);
+        var button = new Button(this) { TextSize = 11f };
+        button.SetTextColor(LauncherTheme.Foreground);
+        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        button.SetPadding(Dp(10), 0, Dp(10), 0);
+        void UpdateLabel()
+        {
+            button.Text = key == "gui_scale" ? current.ToString("0.0", CultureInfo.InvariantCulture) + suffix
+                : ((int)Math.Round(current * 100)) + suffix;
+        }
+        UpdateLabel();
+        button.Click += (_, _) =>
+        {
+            var index = Array.FindIndex(values, v => Math.Abs(v - current) < 0.001f);
+            index = (index + 1) % values.Length;
+            current = values[index];
+            prefs.Edit()?.PutFloat(key, current)?.Apply();
+            UpdateLabel();
+        };
+        row.AddView(button, new LinearLayout.LayoutParams(Dp(76), Dp(30)));
+        list.AddView(row);
+    }
+
+    private void AddActionRow(LinearLayout list, string label, Action action)
+    {
+        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        row.SetGravity(GravityFlags.CenterVertical);
+        row.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        var text = new TextView(this) { Text = label, TextSize = 12f };
+        text.SetTextColor(LauncherTheme.Foreground);
+        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(30), 1f));
+        var button = new Button(this) { Text = "Open", TextSize = 11f };
+        button.SetTextColor(LauncherTheme.Foreground);
+        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        button.SetPadding(Dp(10), 0, Dp(10), 0);
+        button.Click += (_, _) => action();
+        row.AddView(button, new LinearLayout.LayoutParams(Dp(76), Dp(30)));
+        list.AddView(row);
+    }
+
+    private void ShowDirectConnectDialog()
+    {
+        var input = new EditText(this) { Hint = "ss14://host:port" };
+        input.SetTextColor(LauncherTheme.Foreground);
+        input.SetHintTextColor(LauncherTheme.SubText);
+        input.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 0, LauncherTheme.StripeEdge, 1);
+        input.SetPadding(Dp(8), Dp(4), Dp(8), Dp(4));
+
+        var dialog = new AlertDialog.Builder(this);
+        dialog.SetTitle("Direct Connect");
+        dialog.SetView(input);
+        dialog.SetPositiveButton("Connect", (_, _) =>
+        {
+            var address = input.Text?.Trim();
+            if (!string.IsNullOrEmpty(address))
+                _ = StartConnectingAsync(address);
+        });
+        dialog.SetNegativeButton("Cancel", (_, _) => { });
+        dialog.Show();
+    }
+
+    private TextView CreateTableCell(string text, float weight, GravityFlags gravity, float textSize, bool numeric, int width = 0)
+    {
+        var view = new TextView(this) { Text = text, TextSize = textSize };
+        view.SetTextColor(numeric ? LauncherTheme.Foreground : LauncherTheme.SubText);
+        view.Gravity = gravity | GravityFlags.CenterVertical;
+        view.SetPadding(Dp(10), 0, Dp(10), 0);
+        view.SetSingleLine(true);
+        view.Ellipsize = global::Android.Text.TextUtils.TruncateAt.End;
+        if (numeric)
+            view.Typeface = Typeface.Monospace;
+        var lp = width > 0
+            ? new LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.MatchParent)
+            : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, weight);
+        view.LayoutParameters = lp;
+        return view;
     }
 
     private async Task RefreshHubServersAsync()
     {
-        _statusCountText.Text = "Querying Space Station 14 servers...";
+        if (_statusCountText != null)
+            _statusCountText.Text = "Querying servers...";
         try
         {
             var list = await _hubClient.FetchAllServersAsync(_storage.Data.HubUrls);
@@ -620,24 +846,34 @@ public sealed class LauncherActivity : Activity
         {
             RunOnUiThread(() =>
             {
-                _statusCountText.Text = $"Failed to load hub servers: {ex.Message}";
+                if (_statusCountText != null)
+                    _statusCountText.Text = "Failed to load servers: " + ex.Message;
             });
         }
     }
+    private void ShowKeyboard(View view)
+    {
+        try
+        {
+            var imm = (global::Android.Views.InputMethods.InputMethodManager?)GetSystemService(global::Android.Content.Context.InputMethodService);
+            imm?.ShowSoftInput(view, global::Android.Views.InputMethods.ShowFlags.Implicit);
+        }
+        catch
+        {
+        }
+    }
+
 
     private void RenderServerList()
     {
-        _listLayout.RemoveAllViews();
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-
-        if (_activeTab == Tab.DirectConnect)
-        {
-            RenderDirectConnectView(density);
+        if (_listLayout == null)
             return;
-        }
+
+        _listLayout.RemoveAllViews();
+        var density = Density;
 
         IEnumerable<ServerListEntry> items = _servers;
-        if (_activeTab == Tab.Favorites)
+        if (_activeTab == Tab.Home)
         {
             items = items.Where(s => _storage.IsFavorite(s.Address));
         }
@@ -652,23 +888,19 @@ public sealed class LauncherActivity : Activity
                 (_serverInfoCache.TryGetValue(s.Address, out var inf) && (inf.Description?.Contains(q, StringComparison.OrdinalIgnoreCase) ?? false)));
         }
 
-        // Language filter
         if (_filterLanguage == "ru")
         {
             items = items.Where(s => s.StatusData?.Tags != null && s.StatusData.Tags.Any(t =>
                 t.Equals("lang:ru", StringComparison.OrdinalIgnoreCase) ||
-                t.StartsWith("lang:ru-", StringComparison.OrdinalIgnoreCase) ||
-                t.Contains("ru", StringComparison.OrdinalIgnoreCase)));
+                t.StartsWith("lang:ru-", StringComparison.OrdinalIgnoreCase)));
         }
         else if (_filterLanguage == "en")
         {
             items = items.Where(s => s.StatusData?.Tags != null && s.StatusData.Tags.Any(t =>
                 t.Equals("lang:en", StringComparison.OrdinalIgnoreCase) ||
-                t.StartsWith("lang:en-", StringComparison.OrdinalIgnoreCase) ||
-                t.Contains("en", StringComparison.OrdinalIgnoreCase)));
+                t.StartsWith("lang:en-", StringComparison.OrdinalIgnoreCase)));
         }
 
-        // Region filter
         if (_filterRegion == "eu")
         {
             items = items.Where(s => s.StatusData?.Tags != null && s.StatusData.Tags.Any(t =>
@@ -682,11 +914,8 @@ public sealed class LauncherActivity : Activity
                 t.StartsWith("region:na", StringComparison.OrdinalIgnoreCase)));
         }
 
-        // Hide empty / hide full
         if (_filterHideEmpty)
-        {
             items = items.Where(s => (s.StatusData?.Players ?? 0) > 0);
-        }
 
         if (_filterHideFull)
         {
@@ -700,14 +929,33 @@ public sealed class LauncherActivity : Activity
 
         var sorted = items.OrderByDescending(s => s.StatusData?.Players ?? 0).ToList();
         var totalPlayers = sorted.Sum(s => s.StatusData?.Players ?? 0);
-        _statusCountText.Text = $"{sorted.Count} servers online, {totalPlayers} players total";
 
-        if (_filterBtn != null)
+        if (_statusCountText != null)
         {
-            _filterBtn.Text = $"Filters ({sorted.Count} / {_servers.Count})";
+            _statusCountText.Text = _activeTab == Tab.Home
+                ? $"{sorted.Count} favorites"
+                : $"{sorted.Count} online, {totalPlayers} players";
         }
 
+        if (_filterBtn != null && _activeTab == Tab.Servers)
+            _filterBtn.Text = $"Filters ({sorted.Count} / {_servers.Count})";
+
         _renderedServerRows.Clear();
+
+        if (sorted.Count == 0)
+        {
+            var empty = new TextView(this)
+            {
+                Text = _activeTab == Tab.Home
+                    ? "No favorites yet. Add servers from the Servers tab."
+                    : _servers.Count == 0 ? "Loading server list..." : "No servers match the filters.",
+                TextSize = 12f
+            };
+            empty.SetTextColor(LauncherTheme.SubText);
+            empty.SetPadding(Dp(12), Dp(12), Dp(12), Dp(12));
+            _listLayout.AddView(empty);
+            return;
+        }
 
         const int batchSize = 35;
         var firstBatch = sorted.Take(batchSize).ToList();
@@ -733,9 +981,7 @@ public sealed class LauncherActivity : Activity
                 }
 
                 if (startIdx < sorted.Count)
-                {
                     _listLayout.Post(() => AppendBatch(startIdx));
-                }
             }
 
             _listLayout.Post(() => AppendBatch(batchSize));
@@ -744,134 +990,106 @@ public sealed class LauncherActivity : Activity
 
     private View CreateServerTableRow(ServerListEntry server, bool alternate, float density)
     {
-        var container = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
+        var container = new LinearLayout(this) { Orientation = Orientation.Vertical };
         container.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
 
         var isExpanded = string.Equals(_expandedServerAddress, server.Address, StringComparison.OrdinalIgnoreCase);
-
-        var row = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
+        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         row.SetBackgroundColor(alternate ? LauncherTheme.RowAlternate : LauncherTheme.RowBase);
-        row.SetPadding((int)(12 * density), (int)(3 * density), (int)(12 * density), (int)(3 * density));
-        row.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(52 * density));
+        row.SetPadding(Dp(12), 0, Dp(12), 0);
+        row.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(44));
 
-        var nameCol = new LinearLayout(this)
-        {
-            Orientation = Orientation.Horizontal
-        };
-        nameCol.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 1f);
+        var nameCol = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        nameCol.SetGravity(GravityFlags.CenterVertical);
+        nameCol.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f);
 
-        var chevron = new TextView(this)
-        {
-            Text = isExpanded ? "▼ " : "▶ ",
-            TextSize = 11
-        };
+        var chevron = new TextView(this) { Text = isExpanded ? "▼" : "▶", TextSize = 8f };
         chevron.SetTextColor(isExpanded ? LauncherTheme.NanoGold : LauncherTheme.ForegroundMuted);
+        chevron.Gravity = GravityFlags.Center;
+        chevron.SetPadding(0, 0, Dp(2), 0);
         chevron.Clickable = true;
         chevron.Click += (_, _) => ToggleExpandServer(server.Address);
-        nameCol.AddView(chevron);
+        nameCol.AddView(chevron, new LinearLayout.LayoutParams(Dp(12), ViewGroup.LayoutParams.MatchParent));
 
         var isFav = _storage.IsFavorite(server.Address);
-        var starBtn = new TextView(this)
-        {
-            Text = isFav ? "★ " : "☆ ",
-            TextSize = 14
-        };
-        starBtn.SetTextColor(isFav ? LauncherTheme.NanoGold : LauncherTheme.ForegroundMuted);
-        starBtn.Clickable = true;
-        starBtn.Click += (_, _) =>
+        var star = new TextView(this) { Text = isFav ? "★" : "☆", TextSize = 12f };
+        star.SetTextColor(isFav ? LauncherTheme.NanoGold : LauncherTheme.ForegroundMuted);
+        star.Gravity = GravityFlags.Center;
+        star.SetPadding(0, 0, Dp(6), 0);
+        star.Clickable = true;
+        star.Click += (_, _) =>
         {
             _storage.ToggleFavorite(server.Address);
-            var isFavNow = _storage.IsFavorite(server.Address);
-            starBtn.Text = isFavNow ? "★ " : "☆ ";
-            starBtn.SetTextColor(isFavNow ? LauncherTheme.NanoGold : LauncherTheme.ForegroundMuted);
-            if (_activeTab == Tab.Favorites)
-            {
-                _listLayout.RemoveView(container);
-                _renderedServerRows.Remove(server.Address);
-            }
+            var nowFav = _storage.IsFavorite(server.Address);
+            star.Text = nowFav ? "★" : "☆";
+            star.SetTextColor(nowFav ? LauncherTheme.NanoGold : LauncherTheme.ForegroundMuted);
+            if (_activeTab == Tab.Home)
+                RenderServerList();
         };
-        nameCol.AddView(starBtn);
+        nameCol.AddView(star, new LinearLayout.LayoutParams(Dp(20), ViewGroup.LayoutParams.MatchParent));
 
-        var titleLayout = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        titleLayout.Clickable = true;
-        titleLayout.Click += (_, _) => ToggleExpandServer(server.Address);
-
-        var titleText = new TextView(this)
+        var title = new TextView(this)
         {
             Text = server.StatusData?.Name ?? server.Address,
-            TextSize = 13,
-            Typeface = Typeface.DefaultBold
+            TextSize = 11f
         };
-        titleText.SetTextColor(LauncherTheme.Foreground);
-        titleLayout.AddView(titleText);
-
-        var addrText = new TextView(this)
-        {
-            Text = server.Address,
-            TextSize = 10
-        };
-        addrText.SetTextColor(LauncherTheme.SubText);
-        titleLayout.AddView(addrText);
-
-        nameCol.AddView(titleLayout);
+        title.SetTextColor(LauncherTheme.Foreground);
+        title.SetSingleLine(true);
+        title.Ellipsize = global::Android.Text.TextUtils.TruncateAt.End;
+        title.Clickable = true;
+        title.Click += (_, _) => ToggleExpandServer(server.Address);
+        nameCol.AddView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent, 1f));
         row.AddView(nameCol);
 
-        var timeCol = new TextView(this)
-        {
-            Text = FormatRoundTime(server.StatusData),
-            TextSize = 11
-        };
-        timeCol.SetTextColor(LauncherTheme.SubText);
-        timeCol.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 0.35f);
-        timeCol.Clickable = true;
-        timeCol.Click += (_, _) => ToggleExpandServer(server.Address);
-        row.AddView(timeCol);
+        var sep1 = CreateListSeparator();
+        row.AddView(sep1);
+
+        var time = new TextView(this) { Text = FormatRoundTime(server.StatusData), TextSize = 10f };
+        time.SetTextColor(LauncherTheme.SubText);
+        time.Gravity = GravityFlags.Center;
+        time.SetSingleLine(true);
+        time.LayoutParameters = new LinearLayout.LayoutParams(Dp(80), ViewGroup.LayoutParams.MatchParent);
+        row.AddView(time);
+
+        row.AddView(CreateListSeparator());
 
         var players = server.StatusData?.Players ?? 0;
         var maxPlayers = server.StatusData?.SoftMaxPlayers ?? 0;
-        var playersCol = new TextView(this)
-        {
-            Text = $"{players} / {maxPlayers}",
-            TextSize = 12,
-            Typeface = Typeface.DefaultBold
-        };
-        playersCol.SetTextColor(players > 0 ? Color.ParseColor("#22c55e") : LauncherTheme.SubText);
-        playersCol.LayoutParameters = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WrapContent, 0.25f);
-        row.AddView(playersCol);
+        var playersText = new TextView(this) { Text = players + "/" + maxPlayers, TextSize = 10f };
+        playersText.SetTextColor(players > 0 ? Color.ParseColor("#86EFAC") : LauncherTheme.SubText);
+        playersText.Typeface = Typeface.Monospace;
+        playersText.Gravity = GravityFlags.Center;
+        playersText.SetSingleLine(true);
+        playersText.LayoutParameters = new LinearLayout.LayoutParams(Dp(66), ViewGroup.LayoutParams.MatchParent);
+        row.AddView(playersText);
 
-        var connectBtn = new Button(this)
-        {
-            Text = "Connect",
-            TextSize = 11,
-            Typeface = Typeface.DefaultBold
-        };
-        connectBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
-        connectBtn.SetTextColor(Color.White);
-        connectBtn.SetPadding((int)(8 * density), 0, (int)(8 * density), 0);
-        connectBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(30 * density), 0.3f);
-        connectBtn.Click += async (_, _) => await StartConnectingAsync(server.Address);
-        row.AddView(connectBtn);
+        row.AddView(CreateListSeparator());
+
+        var connectColumn = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        connectColumn.SetGravity(GravityFlags.Center);
+        connectColumn.LayoutParameters = new LinearLayout.LayoutParams(Dp(92), ViewGroup.LayoutParams.MatchParent);
+        var connect = new Button(this) { Text = "Connect", TextSize = 10f };
+        connect.SetTextColor(LauncherTheme.Foreground);
+        connect.SetPadding(Dp(8), 0, Dp(8), 0);
+        connect.Background = CreateAngleButtonBackground(Dp(8), AngleSide.Both);
+        connect.Click += async (_, _) => await StartConnectingAsync(server.Address);
+        connectColumn.AddView(connect, new LinearLayout.LayoutParams(Dp(80), Dp(30)));
+        row.AddView(connectColumn);
 
         container.AddView(row);
-
         _renderedServerRows[server.Address] = (container, chevron, server);
 
         if (isExpanded)
-        {
-            var detailsBox = BuildServerDetailsView(server, density);
-            container.AddView(detailsBox);
-        }
+            container.AddView(BuildServerDetailsView(server, density));
 
         return container;
+    }
+
+    private View CreateListSeparator()
+    {
+        var sep = new View(this) { LayoutParameters = new LinearLayout.LayoutParams(Dp(2), ViewGroup.LayoutParams.MatchParent) };
+        sep.SetBackgroundColor(Color.Argb(170, 0x57, 0x5B, 0x7F));
+        return sep;
     }
 
     private View BuildServerDetailsView(ServerListEntry server, float density)
@@ -1179,75 +1397,6 @@ public sealed class LauncherActivity : Activity
             : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
     }
 
-    private void RenderDirectConnectView(float density)
-    {
-        var box = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        box.Background = LauncherTheme.CreateBox(LauncherTheme.PopupBackground, 6, LauncherTheme.Separator);
-        box.SetPadding((int)(20 * density), (int)(16 * density), (int)(20 * density), (int)(16 * density));
-        box.LayoutParameters = new LinearLayout.LayoutParams((int)(400 * density), ViewGroup.LayoutParams.WrapContent)
-        {
-            TopMargin = (int)(20 * density),
-            Gravity = GravityFlags.CenterHorizontal
-        };
-
-        var label = new TextView(this)
-        {
-            Text = "Direct Server Address (ss14:// or host:port):",
-            TextSize = 12
-        };
-        label.SetTextColor(LauncherTheme.SubText);
-        box.AddView(label);
-
-        var directInput = new EditText(this)
-        {
-            Text = _storage.Data.LastServer ?? "central.spacestation14.io:1212",
-            TextSize = 13,
-            InputType = global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationUri,
-            ImeOptions = (global::Android.Views.InputMethods.ImeAction)global::Android.Views.InputMethods.ImeFlags.NoExtractUi | global::Android.Views.InputMethods.ImeAction.Go
-        };
-        directInput.SetTextColor(LauncherTheme.Foreground);
-        directInput.Background = LauncherTheme.CreateBox(LauncherTheme.Background, 3, LauncherTheme.ControlMid);
-        directInput.SetPadding((int)(10 * density), (int)(8 * density), (int)(10 * density), (int)(8 * density));
-        box.AddView(directInput);
-
-        var connectBtn = new Button(this)
-        {
-            Text = "Connect to Server",
-            TextSize = 13,
-            Typeface = Typeface.DefaultBold
-        };
-        connectBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 4);
-        connectBtn.SetTextColor(Color.White);
-        connectBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(38 * density))
-        {
-            TopMargin = (int)(12 * density)
-        };
-        connectBtn.Click += async (_, _) =>
-        {
-            HideKeyboard(directInput);
-            var addr = directInput.Text?.Trim();
-            if (!string.IsNullOrEmpty(addr))
-            {
-                await StartConnectingAsync(addr);
-            }
-        };
-        directInput.EditorAction += (_, e) =>
-        {
-            if (e.ActionId == global::Android.Views.InputMethods.ImeAction.Go ||
-                e.ActionId == global::Android.Views.InputMethods.ImeAction.Done ||
-                (e.Event?.KeyCode == global::Android.Views.Keycode.Enter && e.Event.Action == global::Android.Views.KeyEventActions.Down))
-            {
-                connectBtn.PerformClick();
-            }
-        };
-        box.AddView(connectBtn);
-
-        _listLayout.AddView(box);
-    }
-
     private string FormatRunLevel(int? runLevel)
     {
         return runLevel switch
@@ -1272,171 +1421,6 @@ public sealed class LauncherActivity : Activity
             }
         }
         catch {}
-    }
-
-    private void ShowAccountDialog()
-    {
-        var builder = new AlertDialog.Builder(this);
-        var density = Resources?.DisplayMetrics?.Density ?? 1f;
-
-        var view = new LinearLayout(this)
-        {
-            Orientation = Orientation.Vertical
-        };
-        view.SetBackgroundColor(LauncherTheme.PopupBackground);
-        view.SetPadding((int)(20 * density), (int)(16 * density), (int)(20 * density), (int)(16 * density));
-
-        var title = new TextView(this)
-        {
-            Text = "Space Station 14 Account",
-            TextSize = 16,
-            Typeface = Typeface.DefaultBold
-        };
-        title.SetTextColor(LauncherTheme.NanoGold);
-        title.SetPadding(0, 0, 0, (int)(10 * density));
-        view.AddView(title);
-
-        var current = _storage.GetActiveAccount();
-        if (current != null && !string.IsNullOrEmpty(current.Token))
-        {
-            var userText = new TextView(this)
-            {
-                Text = $"Active Account: {current.Username}\nUser ID: {current.UserId}",
-                TextSize = 13
-            };
-            userText.SetTextColor(Color.ParseColor("#86efac"));
-            view.AddView(userText);
-
-            var logoutBtn = new Button(this)
-            {
-                Text = "Log Out"
-            };
-            logoutBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            logoutBtn.SetTextColor(Color.ParseColor("#ef4444"));
-            logoutBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(36 * density))
-            {
-                TopMargin = (int)(8 * density)
-            };
-            logoutBtn.Click += async (_, _) =>
-            {
-                await _authClient.LogoutAsync(current.Token);
-                _storage.RemoveAccount(current.UserId);
-                try { File.Delete(Path.Combine(FilesDir?.AbsolutePath ?? "", "auth.json")); } catch {}
-                UpdateAccountButton();
-                Toast.MakeText(this, "Logged out", ToastLength.Short)?.Show();
-            };
-            view.AddView(logoutBtn);
-        }
-        else
-        {
-            var uInput = new EditText(this)
-            {
-                Hint = "Username or Email",
-                TextSize = 13,
-                InputType = global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationEmailAddress,
-                ImeOptions = (global::Android.Views.InputMethods.ImeAction)global::Android.Views.InputMethods.ImeFlags.NoExtractUi | global::Android.Views.InputMethods.ImeAction.Next
-            };
-            uInput.SetHintTextColor(LauncherTheme.ForegroundMuted);
-            uInput.SetTextColor(LauncherTheme.Foreground);
-            uInput.Background = LauncherTheme.CreateBox(LauncherTheme.Background, 3, LauncherTheme.ControlMid);
-            uInput.SetPadding((int)(10 * density), (int)(6 * density), (int)(10 * density), (int)(6 * density));
-            uInput.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
-            view.AddView(uInput);
-
-            var pInput = new EditText(this)
-            {
-                Hint = "Password",
-                TextSize = 13,
-                InputType = global::Android.Text.InputTypes.ClassText | global::Android.Text.InputTypes.TextVariationPassword,
-                ImeOptions = (global::Android.Views.InputMethods.ImeAction)global::Android.Views.InputMethods.ImeFlags.NoExtractUi | global::Android.Views.InputMethods.ImeAction.Done
-            };
-            pInput.SetHintTextColor(LauncherTheme.ForegroundMuted);
-            pInput.SetTextColor(LauncherTheme.Foreground);
-            pInput.Background = LauncherTheme.CreateBox(LauncherTheme.Background, 3, LauncherTheme.ControlMid);
-            pInput.SetPadding((int)(10 * density), (int)(6 * density), (int)(10 * density), (int)(6 * density));
-            pInput.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
-            {
-                TopMargin = (int)(6 * density)
-            };
-            view.AddView(pInput);
-
-            uInput.EditorAction += (_, e) =>
-            {
-                if (e.ActionId == global::Android.Views.InputMethods.ImeAction.Next ||
-                    (e.Event?.KeyCode == global::Android.Views.Keycode.Enter && e.Event.Action == global::Android.Views.KeyEventActions.Down))
-                {
-                    pInput.RequestFocus();
-                }
-            };
-
-            var loginBtn = new Button(this)
-            {
-                Text = "Log In",
-                TextSize = 13,
-                Typeface = Typeface.DefaultBold
-            };
-            loginBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3);
-            loginBtn.SetTextColor(Color.White);
-            loginBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(36 * density))
-            {
-                TopMargin = (int)(10 * density)
-            };
-            loginBtn.Click += async (_, _) =>
-            {
-                HideKeyboard(pInput);
-                var res = await _authClient.AuthenticateAsync(uInput.Text ?? "", pInput.Text ?? "");
-                if (res.Success && res.Account != null)
-                {
-                    _storage.AddOrUpdateAccount(res.Account);
-                    try
-                    {
-                        var authFile = Path.Combine(FilesDir?.AbsolutePath ?? "", "auth.json");
-                        var json = $"{{\"token\":\"{res.Account.Token}\",\"username\":\"{res.Account.Username}\",\"userId\":\"{res.Account.UserId}\"}}";
-                        File.WriteAllText(authFile, json);
-                    }
-                    catch {}
-                    UpdateAccountButton();
-                    Toast.MakeText(this, $"Logged in as {res.Account.Username}", ToastLength.Short)?.Show();
-                }
-                else
-                {
-                    Toast.MakeText(this, $"Error: {res.ErrorMessage}", ToastLength.Long)?.Show();
-                }
-            };
-            view.AddView(loginBtn);
-
-            pInput.EditorAction += (_, e) =>
-            {
-                if (e.ActionId == global::Android.Views.InputMethods.ImeAction.Done ||
-                    e.ActionId == global::Android.Views.InputMethods.ImeAction.Go ||
-                    (e.Event?.KeyCode == global::Android.Views.Keycode.Enter && e.Event.Action == global::Android.Views.KeyEventActions.Down))
-                {
-                    loginBtn.PerformClick();
-                }
-            };
-
-            var regBtn = new Button(this)
-            {
-                Text = "Register SS14 Account (Web)"
-            };
-            regBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            regBtn.SetTextColor(LauncherTheme.Foreground);
-            regBtn.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(34 * density))
-            {
-                TopMargin = (int)(6 * density)
-            };
-            regBtn.Click += (_, _) => OpenUrl("https://account.spacestation14.com/Identity/Account/Register");
-            view.AddView(regBtn);
-
-
-        }
-
-        var scroll = new ScrollView(this);
-        scroll.AddView(view, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
-        builder.SetView(scroll);
-        builder.SetPositiveButton("Close", (IDialogInterfaceOnClickListener?)null);
-        var dialog = builder.Show();
-        dialog.Window?.SetSoftInputMode(SoftInput.AdjustResize);
     }
 
     private sealed class MobileButtonConfig
@@ -2252,7 +2236,7 @@ public sealed class LauncherActivity : Activity
         if (activeAccount == null || string.IsNullOrEmpty(activeAccount.Token))
         {
             Toast.MakeText(this, "Войдите в аккаунт Space Station 14, чтобы играть", ToastLength.Long)?.Show();
-            ShowAccountDialog();
+            UpdateAccountButton();
             return;
         }
 
@@ -2665,7 +2649,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.3.0";
+    public const string CurrentAppVersion = "v0.4.0";
 
 
     public string GetCurrentAppVersion()

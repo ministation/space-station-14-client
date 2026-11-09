@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,7 +15,7 @@ public sealed class AuthClient
 {
     private static readonly HttpClient Http = new()
     {
-        Timeout = TimeSpan.FromSeconds(12)
+        Timeout = TimeSpan.FromSeconds(15)
     };
 
     private static readonly string[] AuthBases =
@@ -23,61 +24,120 @@ public sealed class AuthClient
         "https://auth.fallback.spacestation14.com/"
     };
 
+    private static void Log(string message)
+    {
+        try
+        {
+            global::Android.Util.Log.Info("SS14Auth", message);
+        }
+        catch
+        {
+        }
+    }
+
     public async Task<AuthResult> AuthenticateAsync(string username, string password, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
-            return AuthResult.Fail("Username and password are required.");
+            return AuthResult.Fail("Enter username and password.");
 
-        var req = new AuthAuthenticateRequest(username.Trim(), password);
+        var payload = JsonSerializer.Serialize(new AuthAuthenticateRequest(username.Trim(), password));
+        string? lastError = null;
 
         foreach (var baseUrl in AuthBases)
         {
+            var endpoint = baseUrl + "api/auth/authenticate";
             try
             {
-                var endpoint = baseUrl + "api/auth/authenticate";
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(10));
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+                {
+                    Content = new StringContent(payload, Encoding.UTF8, "application/json")
+                };
 
-                using var resp = await Http.PostAsJsonAsync(endpoint, req, cts.Token);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(12));
+
+                using var resp = await Http.SendAsync(request, cts.Token);
+                var body = await resp.Content.ReadAsStringAsync(cts.Token);
+                Log($"authenticate {endpoint} status={(int)resp.StatusCode} body={Truncate(body, 400)}");
 
                 if (resp.IsSuccessStatusCode)
                 {
-                    var data = await resp.Content.ReadFromJsonAsync<AuthAuthenticateResponse>(cancellationToken: cts.Token);
-                    if (data != null && !string.IsNullOrEmpty(data.Token))
+                    try
                     {
-                        var account = new AccountInfo
+                        var data = JsonSerializer.Deserialize<AuthAuthenticateResponse>(body);
+                        if (data != null && !string.IsNullOrEmpty(data.Token))
                         {
-                            UserId = data.UserId.ToString(),
-                            Username = data.Username,
-                            Token = data.Token,
-                            Expires = data.ExpireTime
-                        };
-                        return AuthResult.Ok(account);
+                            var account = new AccountInfo
+                            {
+                                UserId = data.UserId.ToString(),
+                                Username = data.Username,
+                                Token = data.Token,
+                                Expires = data.ExpireTime
+                            };
+                            return AuthResult.Ok(account);
+                        }
+
+                        lastError = "Authentication server returned an empty token.";
                     }
+                    catch (JsonException ex)
+                    {
+                        lastError = "Authentication server sent an invalid response.";
+                        Log("invalid json: " + ex.Message);
+                    }
+
+                    continue;
                 }
 
-                if (resp.StatusCode == HttpStatusCode.Unauthorized || resp.StatusCode == HttpStatusCode.BadRequest)
+                if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.BadRequest
+                    or HttpStatusCode.UnprocessableEntity)
                 {
                     try
                     {
-                        var err = await resp.Content.ReadFromJsonAsync<AuthErrorResponse>(cancellationToken: cts.Token);
-                        if (err?.Errors != null && err.Errors.Length > 0)
-                        {
+                        var err = JsonSerializer.Deserialize<AuthErrorResponse>(body);
+                        if (err?.Errors is { Length: > 0 })
                             return AuthResult.Fail(string.Join("\n", err.Errors));
-                        }
+
+                        return AuthResult.Fail(DescribeDeny(err?.Code));
                     }
-                    catch
+                    catch (JsonException)
                     {
+                        return AuthResult.Fail("Invalid login or password.");
                     }
-                    return AuthResult.Fail("Invalid login or password.");
                 }
+
+                lastError = $"Authentication server returned HTTP {(int)resp.StatusCode}.";
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lastError = "Connection error: " + ex.Message;
+                Log($"authenticate {endpoint} failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        return AuthResult.Fail("Could not connect to authentication servers.");
+        return AuthResult.Fail(lastError ?? "Could not connect to authentication servers.");
+    }
+
+    private static string DescribeDeny(string? code)
+    {
+        return code switch
+        {
+            "InvalidCredentials" => "Invalid username or password.",
+            "AccountUnconfirmed" => "Account is not confirmed. Check your email.",
+            "TfaRequired" => "Two factor authentication is required but not supported yet.",
+            "TfaInvalid" => "Invalid two factor code.",
+            "AccountLocked" => "Account is locked.",
+            null or "" => "Invalid login or password.",
+            _ => "Login denied: " + code
+        };
+    }
+
+    private static string Truncate(string value, int max)
+    {
+        return value.Length <= max ? value : value.Substring(0, max) + "...";
     }
 
     public async Task<bool> ValidateTokenAsync(string token, CancellationToken ct = default)
@@ -93,7 +153,7 @@ public sealed class AuthClient
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(5));
+                cts.CancelAfter(TimeSpan.FromSeconds(8));
 
                 using var resp = await Http.SendAsync(request, cts.Token);
                 if (resp.IsSuccessStatusCode) return true;

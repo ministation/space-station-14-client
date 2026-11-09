@@ -18,6 +18,9 @@ public static class LauncherTheme
     public static readonly Color RowBase = Color.ParseColor("#1E1E22");
     public static readonly Color RowAlternate = Color.ParseColor("#262626");
     public static readonly Color Separator = Color.ParseColor("#2E2E35");
+    public static readonly Color StripeEdge = Color.ParseColor("#525252");
+    public static readonly Color TabSelected = Color.ParseColor("#CC3E6C45");
+    public static readonly Color ListSeparator = Color.ParseColor("#AA575B7F");
 
     public static GradientDrawable CreateBox(Color color, float radiusDp = 4, Color? strokeColor = null, float strokeWidthDp = 1)
     {
