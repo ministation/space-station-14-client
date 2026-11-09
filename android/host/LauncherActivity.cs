@@ -35,6 +35,7 @@ public class LauncherActivity : Activity
 
     private TextView _status = default!;
     private TextView _detail = default!;
+    private TextView _message = default!;
     private ProgressBar _bar = default!;
     private LinearLayout _root = default!;
     private CancellationTokenSource? _cancel;
@@ -50,47 +51,116 @@ public class LauncherActivity : Activity
 
     protected override void OnDestroy()
     {
+        _destroyed = true;
         _cancel?.Cancel();
         base.OnDestroy();
     }
 
+    // ConnectingOverlay look (official SS14.Launcher, MIT): dark theme background,
+    // logo + NanoGold heading, status, progress, random message line.
     private void BuildUi()
     {
+        var density = Resources?.DisplayMetrics?.Density ?? 1f;
         _root = new LinearLayout(this)
         {
             Orientation = Orientation.Vertical,
         };
         _root.SetGravity(GravityFlags.Center);
-        _root.SetBackgroundColor(global::Android.Graphics.Color.ParseColor("#15151A"));
-        var pad = (int)(24 * Resources!.DisplayMetrics!.Density);
+        _root.SetBackgroundColor(LauncherTheme.Bg);
+        var pad = (int)(24 * density);
         _root.SetPadding(pad, pad, pad, pad);
+
+        var logo = LauncherTheme.LoadEmbeddedLogo();
+        if (logo != null)
+        {
+            var logoView = new ImageView(this) { ScaleType = ImageView.ScaleType.FitCenter };
+            logoView.SetImageBitmap(logo);
+            _root.AddView(logoView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent, (int)(64 * density))
+            { BottomMargin = (int)(12 * density) });
+        }
 
         var title = new TextView(this)
         {
             Text = "Mini Station",
-            TextSize = 32,
+            TextSize = 24,
             TextAlignment = TextAlignment.Center,
         };
-        title.SetTextColor(global::Android.Graphics.Color.ParseColor("#E8E8F0"));
+        title.SetTextColor(LauncherTheme.NanoGold);
+        title.SetTypeface(null, TypefaceStyle.Bold);
+        _root.AddView(title, new ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        _root.AddView(LauncherTheme.GoldLine(this));
 
-        _status = new TextView(this) { Text = "Подготовка...", TextSize = 18, Gravity = GravityFlags.Center };
-        _status.SetTextColor(global::Android.Graphics.Color.ParseColor("#B8B8C8"));
+        _status = new TextView(this)
+        {
+            Text = "Подготовка...",
+            TextSize = 16,
+            Gravity = GravityFlags.Center,
+            TextAlignment = TextAlignment.Center,
+        };
+        _status.SetTextColor(LauncherTheme.Fg);
 
-        _detail = new TextView(this) { Text = string.Empty, TextSize = 14, Gravity = GravityFlags.Center };
-        _detail.SetTextColor(global::Android.Graphics.Color.ParseColor("#8888A0"));
+        _detail = new TextView(this)
+        {
+            Text = string.Empty,
+            TextSize = 13,
+            Gravity = GravityFlags.Center,
+            TextAlignment = TextAlignment.Center,
+        };
+        _detail.SetTextColor(LauncherTheme.SubText);
 
         _bar = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
         {
             Indeterminate = true,
             Max = 1000,
         };
+        _bar.ProgressTintList = global::Android.Content.Res.ColorStateList.ValueOf(LauncherTheme.ControlMid);
 
-        _root.AddView(title);
-        _root.AddView(_bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, (int)(8 * Resources!.DisplayMetrics!.Density)) { TopMargin = pad, BottomMargin = pad / 2 });
-        _root.AddView(_status);
-        _root.AddView(_detail);
+        _message = new TextView(this)
+        {
+            Text = string.Empty,
+            TextSize = 12,
+            Gravity = GravityFlags.Center,
+            TextAlignment = TextAlignment.Center,
+        };
+        _message.SetTextColor(LauncherTheme.SubText);
+
+        var barLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+        {
+            TopMargin = pad,
+            BottomMargin = (int)(8 * density),
+        };
+        _root.AddView(_bar, barLp);
+        _root.AddView(_status, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        _root.AddView(_detail, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+        { TopMargin = (int)(4 * density) });
+        _root.AddView(_message, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+        { TopMargin = (int)(10 * density) });
         SetContentView(_root);
+        _ = RotateMessageAsync();
     }
+
+    private async Task RotateMessageAsync()
+    {
+        while (!_destroyed)
+        {
+            var msg = await LauncherTheme.GetRandomMessageAsync();
+            if (_destroyed)
+                break;
+            RunOnUiThread(() =>
+            {
+                if (!_destroyed)
+                    _message.Text = msg;
+            });
+            await Task.Delay(8000);
+        }
+    }
+
+    private bool _destroyed;
 
     private void StartProvisioning()
     {
