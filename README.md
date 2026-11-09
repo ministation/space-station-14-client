@@ -26,7 +26,7 @@ APK: [Release android-v0.7.0](https://github.com/ministation/space-station-14-cl
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.7.0: 75f0c41575c69fccc187e500243ed84d4aa97bbe472c954147b2ff07e212c777
+sha256 версии 0.7.0: 9568b88e7795c290f10c8820946ddc383d70f8f5291314c05cdc7518227b748f
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/robust-cdn/android/<версия>).

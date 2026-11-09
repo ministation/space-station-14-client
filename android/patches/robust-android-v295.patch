@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..458bf41
+index 0000000..26e08a0
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1480 @@
+@@ -0,0 +1,1485 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -4029,13 +4029,17 @@ index 0000000..458bf41
 +        _clusterContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
 +        _topUtilityContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
 +
-+        var scale = Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f);
-+        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
-+
 +        // Side frame: rounded screen corners and a camera cutout eat the edges,
 +        // so nothing on the pad sits closer than this to a border. The host
 +        // reports the real cutout in physical pixels; percentages are the floor.
 +        var uiScale = Math.Clamp(_cfg.GetCVar(CVars.DisplayUIScale), 0.5f, 4f);
++
++        // The pad is tuned in physical pixels: a phone at display.uiScale 1.5
++        // gets twice the logical room, and a pad that ignored that would shrink
++        // under the thumb. Sizes below are logical, so fold uiScale back in.
++        var scale = Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f) *
++                    MathF.Min(2f / uiScale, 2f);
++        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
 +        var cutLeft = _cfg.GetCVar(CVars.MobileSafeAreaLeft) / uiScale;
 +        var cutRight = _cfg.GetCVar(CVars.MobileSafeAreaRight) / uiScale;
 +        var cutTop = _cfg.GetCVar(CVars.MobileSafeAreaTop) / uiScale;
@@ -4047,9 +4051,10 @@ index 0000000..458bf41
 +        var margin = MathF.Max(24f * scale, finalSize.X * 0.02f);
 +        var gap = 8f * scale;
 +
-+        // The logical UI size shrinks a lot with display.uiScale on phones, so the
-+        // whole pad is scaled to the shorter viewport side to stay reachable.
-+        var fit = Math.Clamp(MathF.Min(finalSize.X, finalSize.Y) / 720f, 0.5f, 1.3f);
++        // Scale to the shorter physical side: on a phone in landscape that is the
++        // height, and it is what decides how much room the thumbs really get.
++        var physical = finalSize * uiScale;
++        var fit = Math.Clamp(MathF.Min(physical.X, physical.Y) / 1440f, 0.5f, 1.3f);
 +
 +        var topBtnH = 50f * scale;
 +        var topY = MathF.Max(safeTop, 6f * scale);
