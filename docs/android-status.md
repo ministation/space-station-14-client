@@ -11,7 +11,7 @@ APK из этого репозитория, сервер ss14.ministation.ru:121
 
 | Шаг | Результат |
 |---|---|
-| Установка и запуск | работает, экран лаунчера на скриншоте `launcher-new.png` |
+| Установка и запуск | работает, см. `images/android-launcher.png` |
 | Список серверов | 193 сервера из хаба, фильтры и поиск реагируют |
 | Диалог аккаунта | открывается, поля на всю ширину, диалог прокручивается, клавиатура не перекрывает ввод |
 | Прямое подключение | `--es connect_addr "host:port"` сразу запускает сервер, без ручных кликов |
@@ -39,7 +39,7 @@ APK из этого репозитория, сервер ss14.ministation.ru:121
 | Сеть | `net: Handshake completed, connection established`, Runlevel Connected |
 | Вход гостем | сервер с `auth.mode Optional` пускает без токена |
 
-Скриншоты: `launcher-ui.png`, `client-lobby.png`, `account-dialog.png` в `artifacts/`.
+Скриншоты: `images/android-launcher.png`, `images/android-lobby.png`, `images/android-account.png`.
 
 ## Осталось
 
