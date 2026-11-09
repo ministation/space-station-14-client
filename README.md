@@ -22,15 +22,15 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.7.1](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.1).
+APK: [Release android-v0.7.3](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.3).
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.7.1: c10ef2080e59560f34b94ee1707d5e7728b1310e3b7dc8fa58b98d4cb8798007
+sha256 версии 0.7.3: ec23487bbaf35f8b065db0e8297faa53f4af648d4f134d286232615a52606047
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/robust-cdn/android/<версия>).
-arm64-v8a, Android 8.0 и новее. AOT-компиляция в 0.6.2 на устройстве оказалась медленнее JIT, поэтому Release снова идёт через JIT. Начальный масштаб интерфейса 200%. Первый запуск скачивает контент сервера (около 1.27 ГБ),
+arm64-v8a, Android 8.0 и новее. AOT-компиляция в 0.6.2 на устройстве оказалась медленнее JIT, поэтому Release снова идёт через JIT. Начальный масштаб интерфейса 150%. Первый запуск скачивает контент сервера (около 1.27 ГБ),
 дальше обновления сервера докачивают только изменённые файлы.
 
 ## Как это работает
