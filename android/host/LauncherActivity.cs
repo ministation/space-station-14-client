@@ -45,8 +45,34 @@ public class LauncherActivity : Activity
     {
         base.OnCreate(savedInstanceState);
         Window?.AddFlags(WindowManagerFlags.KeepScreenOn);
+        ConfigureServerInfoUrl();
         BuildUi();
         StartProvisioning();
+    }
+
+    /// <summary>
+    /// Points the provisioner at the server the user actually connects to:
+    /// udp://host:port → http://host:port/info (overridable via info_url extra).
+    /// </summary>
+    private void ConfigureServerInfoUrl()
+    {
+        var infoUrl = Intent?.GetStringExtra("info_url");
+        if (string.IsNullOrWhiteSpace(infoUrl))
+        {
+            var connectAddr = Intent?.GetStringExtra("connect_addr");
+            if (!string.IsNullOrWhiteSpace(connectAddr)
+                && Uri.TryCreate(connectAddr.Replace("udp://", "http://", StringComparison.OrdinalIgnoreCase)
+                    .Replace("ss14s://", "https://", StringComparison.OrdinalIgnoreCase)
+                    .Replace("ss14://", "http://", StringComparison.OrdinalIgnoreCase),
+                    UriKind.Absolute, out var uri))
+            {
+                infoUrl = $"{uri.Scheme}://{uri.Authority}/info";
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(infoUrl))
+            ContentProvisioner.ServerInfoUrl = infoUrl;
+        Log.Info("MiniStation", $"Provisioner info URL: {ContentProvisioner.ServerInfoUrl}");
     }
 
     protected override void OnDestroy()
@@ -196,16 +222,26 @@ public class LauncherActivity : Activity
                 _bar.Indeterminate = false;
                 _bar.Progress = 0;
                 _running = false;
-                _root.Clickable = true;
-                _root.Click += (_, _) =>
-                {
-                    _root.Clickable = false;
-                    _detail.Text = string.Empty;
-                    _bar.Indeterminate = true;
-                    StartProvisioning();
-                };
+                WireRetry();
             });
         }
+    }
+
+    private bool _retryWired;
+
+    private void WireRetry()
+    {
+        if (_retryWired)
+            return;
+        _retryWired = true;
+        _root.Click += (_, _) =>
+        {
+            if (_running)
+                return;
+            _detail.Text = string.Empty;
+            _bar.Indeterminate = true;
+            StartProvisioning();
+        };
     }
 
     private void ShowProgress(ProvisionProgress p)
