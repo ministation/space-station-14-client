@@ -584,6 +584,11 @@ namespace Content.Android
                 LaunchBuildCVars["parallax.enabled"] = "false";
                 LaunchBuildCVars["parallax.low_quality"] = "true";
                 LaunchBuildCVars["opt.sprite_quality"] = "0";
+                LaunchBuildCVars["light.resolution_scale"] = "0.5";
+                LaunchBuildCVars["light.max_light_count"] = "96";
+                LaunchBuildCVars["light.max_occluder_count"] = "256";
+                LaunchBuildCVars["light.max_shadowcasting_lights"] = "4";
+                LaunchBuildCVars["light.ambient_occlusion"] = "false";
 
                 if (Intent?.Extras != null)
                 {
@@ -1047,6 +1052,13 @@ namespace Content.Android
                 var args = new List<string>
                 {
                     "--cvar", "thread.parallel_count=4",
+                    "--cvar", "light.blur=false",
+                    "--cvar", "light.soft_shadows=false",
+                    "--cvar", "light.ambient_occlusion=false",
+                    "--cvar", "light.resolution_scale=0.5",
+                    "--cvar", "light.max_light_count=96",
+                    "--cvar", "light.max_occluder_count=256",
+                    "--cvar", "light.max_shadowcasting_lights=4",
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
                     "--cvar", "display.vsync=false",

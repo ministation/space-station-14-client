@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>ru.ministation.client</ApplicationId>
-    <ApplicationVersion>18</ApplicationVersion>
-    <ApplicationDisplayVersion>0.6.2</ApplicationDisplayVersion>
+    <ApplicationVersion>19</ApplicationVersion>
+    <ApplicationDisplayVersion>0.6.3</ApplicationDisplayVersion>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>NU1701;CA1416</NoWarn>
@@ -17,10 +17,9 @@
     <PublishTrimmed>false</PublishTrimmed>
     <TrimMode>None</TrimMode>
     <AndroidUseAssemblyStore>false</AndroidUseAssemblyStore>
-    <!-- Native AOT for the client assemblies: the interpreter/JIT on ARM was the
-         main CPU cost. Release builds only; debug stays JIT for fast iteration. -->
-    <RunAOTCompilation Condition="'$(Configuration)' == 'Release'">true</RunAOTCompilation>
-    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <!-- AOT was tried in 0.6.2 and measured slower than tiered JIT on device
+         (no LLVM cross toolchain, debug-info AOT), so Release stays JIT. -->
+    <RunAOTCompilation>false</RunAOTCompilation>
     <UseInterpreter>false</UseInterpreter>
     <RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
     <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>

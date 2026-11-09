@@ -1184,7 +1184,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..1d49e1b 100644
+index 73cadae..376dc17 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -40,7 +40,7 @@ namespace Robust.Client.Graphics.Clyde
@@ -1192,7 +1192,7 @@ index 73cadae..1d49e1b 100644
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
          // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
 -        private const int FovMapSize = 2048;
-+        private static int FovMapSize => OperatingSystem.IsAndroid() ? 512 : 2048;
++        private static int FovMapSize => 2048;
  
          private ClydeShaderInstance _fovDebugShaderInstance = default!;
  
@@ -2651,10 +2651,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..1b7c179
+index 0000000..32acfa5
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1193 @@
+@@ -0,0 +1,1245 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2662,6 +2662,7 @@ index 0000000..1b7c179
 +using System.Numerics;
 +using Robust.Client.Graphics;
 +using Robust.Client.Input;
++using Robust.Client.State;
 +using Robust.Client.UserInterface;
 +using Robust.Client.UserInterface.Controls;
 +using Robust.Client.UserInterface.CustomControls;
@@ -2680,6 +2681,7 @@ index 0000000..1b7c179
 +    [Dependency] private readonly IConfigurationManager _cfg = default!;
 +    [Dependency] private readonly IUserInterfaceManagerInternal _uiMgr = default!;
 +    [Dependency] private readonly IClyde _clyde = default!;
++    [Dependency] private readonly IStateManager _stateManager = default!;
 +
 +
 +    public static bool IsEditMode { get; private set; }
@@ -2794,6 +2796,7 @@ index 0000000..1b7c179
 +    private string _lastSelectedQuickKey = "";
 +
 +    private bool _controlsHidden;
++    private bool _inGameplay = true;
 +    private readonly List<PojavActionButton> _allButtons = new();
 +    private readonly List<PojavActionButton> _defaultButtons = new();
 +    private readonly HashSet<string> _deletedButtonIds = new();
@@ -3291,13 +3294,68 @@ index 0000000..1b7c179
 +        }
 +    }
 +
++    protected override void EnteredTree()
++    {
++        base.EnteredTree();
++        _stateManager.OnStateChanged += OnClientStateChanged;
++        UpdateGameplayVisibility();
++    }
++
++    protected override void ExitedTree()
++    {
++        _stateManager.OnStateChanged -= OnClientStateChanged;
++        base.ExitedTree();
++    }
++
++    private void OnClientStateChanged(StateChangedEventArgs args)
++    {
++        UpdateGameplayVisibility();
++    }
++
++    /// <summary>
++    /// Touch controls only make sense in a round. Menus, the lobby and the
++    /// connection screen keep their normal UI without a stick or button ring.
++    /// </summary>
++    private void UpdateGameplayVisibility()
++    {
++        // Only a real round gets touch controls. Menus, connecting screens and
++        // the lobby all use a different client state; any unknown state keeps
++        // the pad so a renamed gameplay state can never leave the player stuck.
++        var stateName = _stateManager.CurrentState?.GetType().Name;
++        _inGameplay = stateName != null
++                      && !stateName.Contains("Lobby")
++                      && !stateName.Contains("Menu")
++                      && !stateName.Contains("Connect")
++                      && stateName != "State";
++
++        if (!_inGameplay)
++        {
++            _thumbstick.ReleaseStick();
++            _aimStick.ReleaseStick();
++            foreach (var btn in _allButtons)
++            {
++                btn.Release();
++            }
++        }
++
++        ApplyVisibility();
++    }
++
++    private void ApplyVisibility()
++    {
++        _clusterContainer.Visible = _inGameplay && !_controlsHidden;
++        _topUtilityContainer.Visible = _inGameplay;
++        _editorBarContainer.Visible = _inGameplay && IsEditMode;
++        _editButton.Visible = !_controlsHidden;
++    }
++
 +    private void ToggleEditMode()
 +    {
 +        IsEditMode = !IsEditMode;
 +        System.Console.WriteLine($"[MobileEdit] ToggleEditMode now={IsEditMode} buttons={_allButtons.Count}");
 +        MouseFilter = IsEditMode ? MouseFilterMode.Stop : MouseFilterMode.Ignore;
-+        _editorBarContainer.Visible = IsEditMode;
 +        _editButton.Text = IsEditMode ? "DONE" : "EDIT";
++        ApplyVisibility();
 +
 +        _thumbstick.IsEditMode = IsEditMode;
 +        foreach (var btn in _allButtons)
@@ -3362,9 +3420,8 @@ index 0000000..1b7c179
 +    private void ToggleControlsVisibility()
 +    {
 +        _controlsHidden = !_controlsHidden;
-+        _clusterContainer.Visible = !_controlsHidden;
-+        _editButton.Visible = !_controlsHidden;
 +        _hideButton.Text = _controlsHidden ? "SHOW" : "HIDE";
++        ApplyVisibility();
 +
 +        if (_controlsHidden)
 +        {
@@ -3786,31 +3843,26 @@ index 0000000..1b7c179
 +        var interSize = 52f * scale * fit;
 +        var utilSize = 46f * scale * fit;
 +
++        // Right stick: aim, so the right thumb gets the combat ring around it.
 +        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - margin - stickRadius);
-+        var innerRing = stickRadius + 48f * scale * fit;
-+        var outerRing = stickRadius + 108f * scale * fit;
++        var aimInner = stickRadius + 48f * scale * fit;
++        var aimOuter = stickRadius + 108f * scale * fit;
 +
-+        ArrangeOnArc(_useButton, aimCenter, 80f, innerRing, new Vector2(useSize, useSize), finalSize);
-+        ArrangeOnArc(_interactButton, aimCenter, 128f, innerRing, new Vector2(interSize, interSize), finalSize);
++        ArrangeOnArc(_useButton, aimCenter, 80f, aimInner, new Vector2(useSize, useSize), finalSize);
++        ArrangeOnArc(_interactButton, aimCenter, 128f, aimInner, new Vector2(interSize, interSize), finalSize);
++        ArrangeOnArc(_secButton, aimCenter, 72f, aimOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_altButton, aimCenter, 94f, aimOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_dropButton, aimCenter, 116f, aimOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_throwButton, aimCenter, 138f, aimOuter, new Vector2(utilSize, utilSize), finalSize);
 +
-+        ArrangeOnArc(_secButton, aimCenter, 72f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_handButton, aimCenter, 94f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_altButton, aimCenter, 116f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_dropButton, aimCenter, 138f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_bagButton, aimCenter, 160f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_throwButton, aimCenter, 182f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_examButton, aimCenter, 204f, outerRing, new Vector2(utilSize, utilSize), finalSize);
-+        ArrangeOnArc(_pullButton, aimCenter, 226f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        // Left stick: movement, so the inventory and hand controls sit around it.
++        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - margin - stickRadius);
++        var moveOuter = stickRadius + 96f * scale * fit;
 +
-+        foreach (var btn in _allButtons)
-+        {
-+            if (btn.IsCustom)
-+            {
-+                var defSize = new Vector2(50f * scale, 50f * scale);
-+                var defPos = new Vector2(finalSize.X / 2f - 25f, finalSize.Y / 2f - 25f);
-+                ArrangeChild(btn, defPos, defSize, finalSize);
-+            }
-+        }
++        ArrangeOnArc(_handButton, moveCenter, 24f, moveOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_bagButton, moveCenter, 50f, moveOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_examButton, moveCenter, 76f, moveOuter, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_pullButton, moveCenter, 102f, moveOuter, new Vector2(utilSize, utilSize), finalSize);
 +
 +        var topBtnW = 46f * scale;
 +        var topBtnH = 34f * scale;
@@ -3850,10 +3902,10 @@ index 0000000..1b7c179
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..01f3ad3
+index 0000000..73c9200
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,403 @@
+@@ -0,0 +1,580 @@
 +using System;
 +using System.Numerics;
 +using System.Collections.Generic;
@@ -3954,7 +4006,7 @@ index 0000000..01f3ad3
 +        return font;
 +    }
 +
-+    private void DrawLabel(DrawingHandleScreen handle, Vector2 center, float radius, bool active)
++    private void DrawFontLabel(DrawingHandleScreen handle, Vector2 center, float radius, bool active)
 +    {
 +        if (_text.Length == 0)
 +            return;
@@ -4219,35 +4271,51 @@ index 0000000..01f3ad3
 +        base.Draw(handle);
 +
 +        var center = Size / 2f;
-+        var radius = MathF.Min(Size.X, Size.Y) / 2f;
++        var radius = MathF.Min(Size.X, Size.Y) / 2f - 1f;
++        if (radius <= 2f)
++            return;
++
 +        var active = _isPressed || IsToggled;
-+        var accent = AccentColor;
++        var accent = IsEditMode ? new Color(255, 215, 0) : AccentColor;
++        var unit = MathF.Max(2f, MathF.Round(radius / 8f));
 +
-+        // Terraria style: dark round button, colored rim, big key symbol on top.
-+        var shadow = new Color(0, 0, 0, 90);
-+        handle.DrawCircle(center + new Vector2(0, radius * 0.1f), radius, shadow, true);
++        var face = active
++            ? Color.InterpolateBetween(new Color(58, 62, 70), accent, 0.5f)
++            : Color.InterpolateBetween(new Color(74, 78, 86), accent, 0.28f);
++        var light = Color.InterpolateBetween(face, new Color(255, 255, 255), 0.55f);
++        var dark = Color.InterpolateBetween(face, new Color(0, 0, 0), 0.55f);
++        var border = new Color(8, 10, 14, 235);
 +
-+        var bg = active
-+            ? Color.InterpolateBetween(new Color(14, 16, 22, 235), accent, 0.55f)
-+            : new Color(14, 16, 22, 205);
-+        var rim = IsEditMode
-+            ? new Color(255, 215, 0, 255)
-+            : active
-+                ? new Color(255, 255, 255, 250)
-+                : accent;
++        PixelKit.DrawDisc(handle, center, radius, face, light, dark, border, unit, _isPressed);
 +
-+        handle.DrawCircle(center, radius - 1f, bg, true);
-+        handle.DrawCircle(center, radius - 1f, rim, false);
-+        handle.DrawCircle(center, radius - 2.5f, new Color(0, 0, 0, active ? 60 : 130), false);
-+        handle.DrawCircle(center, radius * 0.8f, new Color(255, 255, 255, active ? 40 : 18), false);
++        if (PixelKit.CanRender(_text))
++        {
++            var labelUnit = MathF.Max(2f, MathF.Floor(unit * 0.75f));
++            var textSize = PixelKit.TextSize(_text, labelUnit);
++            while (labelUnit > 1.5f && (textSize.X > radius * 1.55f || textSize.Y > radius * 1.1f))
++            {
++                labelUnit -= 1f;
++                textSize = PixelKit.TextSize(_text, labelUnit);
++            }
 +
-+        DrawLabel(handle, center, radius, active);
++            var pos = center - textSize / 2f;
++            if (_isPressed)
++                pos += new Vector2(0, labelUnit);
++            PixelKit.DrawText(handle, _text, pos, labelUnit, new Color(248, 250, 255, 245),
++                new Color(0, 0, 0, 200));
++        }
++        else
++        {
++            DrawFontLabel(handle, center, radius, active);
++        }
 +
 +        if (IsToggle && IsToggled)
 +        {
-+            var badgePos = center + new Vector2(radius * 0.62f, -radius * 0.62f);
-+            handle.DrawCircle(badgePos, 5.5f, new Color(0, 0, 0, 160), true);
-+            handle.DrawCircle(badgePos, 4f, new Color(130, 240, 160, 255), true);
++            var badge = unit * 2.5f;
++            var badgePos = center + new Vector2(radius * 0.55f, -radius * 0.55f) - new Vector2(badge / 2f, badge / 2f);
++            handle.DrawRect(UIBox2.FromDimensions(badgePos, new Vector2(badge, badge)), new Color(10, 14, 10, 220));
++            handle.DrawRect(UIBox2.FromDimensions(badgePos + new Vector2(unit, unit), new Vector2(badge - unit * 2f, badge - unit * 2f)),
++                new Color(120, 235, 150, 255));
 +        }
 +
 +        if (IsEditMode)
@@ -4257,12 +4325,173 @@ index 0000000..01f3ad3
 +        }
 +    }
 +}
++
++/// <summary>
++/// Chunky pixel-art primitives shared by the mobile buttons and thumbsticks.
++/// Everything is drawn as axis-aligned blocks so it stays crisp at any dpi.
++/// </summary>
++internal static class PixelKit
++{
++    // 3x5 pixel font, one row per entry, 3 bits per row (bit 2 is the left column).
++    private static readonly Dictionary<char, int[]> Glyphs = new()
++    {
++        ['A'] = new[] { 2, 5, 7, 5, 5 },
++        ['B'] = new[] { 6, 5, 6, 5, 6 },
++        ['C'] = new[] { 3, 4, 4, 4, 3 },
++        ['D'] = new[] { 6, 5, 5, 5, 6 },
++        ['E'] = new[] { 7, 4, 6, 4, 7 },
++        ['F'] = new[] { 7, 4, 6, 4, 4 },
++        ['G'] = new[] { 3, 4, 5, 5, 3 },
++        ['H'] = new[] { 5, 5, 7, 5, 5 },
++        ['I'] = new[] { 7, 2, 2, 2, 7 },
++        ['J'] = new[] { 1, 1, 1, 5, 2 },
++        ['K'] = new[] { 5, 5, 6, 5, 5 },
++        ['L'] = new[] { 4, 4, 4, 4, 7 },
++        ['M'] = new[] { 5, 7, 7, 5, 5 },
++        ['N'] = new[] { 5, 7, 7, 7, 5 },
++        ['O'] = new[] { 2, 5, 5, 5, 2 },
++        ['P'] = new[] { 6, 5, 6, 4, 4 },
++        ['Q'] = new[] { 2, 5, 5, 6, 3 },
++        ['R'] = new[] { 6, 5, 6, 5, 5 },
++        ['S'] = new[] { 3, 4, 2, 1, 6 },
++        ['T'] = new[] { 7, 2, 2, 2, 2 },
++        ['U'] = new[] { 5, 5, 5, 5, 7 },
++        ['V'] = new[] { 5, 5, 5, 5, 2 },
++        ['W'] = new[] { 5, 5, 7, 7, 5 },
++        ['X'] = new[] { 5, 5, 2, 5, 5 },
++        ['Y'] = new[] { 5, 5, 2, 2, 2 },
++        ['Z'] = new[] { 7, 1, 2, 4, 7 },
++        ['0'] = new[] { 7, 5, 5, 5, 7 },
++        ['1'] = new[] { 2, 6, 2, 2, 7 },
++        ['2'] = new[] { 6, 1, 2, 4, 7 },
++        ['3'] = new[] { 6, 1, 2, 1, 6 },
++        ['4'] = new[] { 5, 5, 7, 1, 1 },
++        ['5'] = new[] { 7, 4, 6, 1, 6 },
++        ['6'] = new[] { 3, 4, 7, 5, 7 },
++        ['7'] = new[] { 7, 1, 2, 2, 2 },
++        ['8'] = new[] { 7, 5, 7, 5, 7 },
++        ['9'] = new[] { 7, 5, 7, 1, 6 },
++        ['-'] = new[] { 0, 0, 7, 0, 0 },
++        ['.'] = new[] { 0, 0, 0, 0, 2 },
++    };
++
++    public static bool CanRender(string text)
++    {
++        if (string.IsNullOrEmpty(text))
++            return false;
++
++        foreach (var ch in text)
++        {
++            if (ch == ' ')
++                continue;
++            if (!Glyphs.ContainsKey(char.ToUpperInvariant(ch)))
++                return false;
++        }
++
++        return true;
++    }
++
++    public static Vector2 TextSize(string text, float unit)
++    {
++        var columns = 0f;
++        foreach (var ch in text)
++            columns += ch == ' ' ? 2f : 4f;
++        columns -= 1f;
++        return new Vector2(MathF.Max(0f, columns) * unit, 5f * unit);
++    }
++
++    public static void DrawText(DrawingHandleScreen handle, string text, Vector2 topLeft, float unit, Color color, Color shadow)
++    {
++        var x = topLeft.X;
++        foreach (var ch in text)
++        {
++            var c = char.ToUpperInvariant(ch);
++            if (c == ' ')
++            {
++                x += 2f * unit;
++                continue;
++            }
++
++            if (!Glyphs.TryGetValue(c, out var glyph))
++            {
++                x += 4f * unit;
++                continue;
++            }
++
++            for (var row = 0; row < 5; row++)
++            {
++                for (var col = 0; col < 3; col++)
++                {
++                    if ((glyph[row] & (1 << (2 - col))) == 0)
++                        continue;
++
++                    var at = new Vector2(x + col * unit, topLeft.Y + row * unit);
++                    handle.DrawRect(UIBox2.FromDimensions(at + new Vector2(unit, unit), new Vector2(unit, unit)), shadow);
++                }
++            }
++
++            for (var row = 0; row < 5; row++)
++            {
++                for (var col = 0; col < 3; col++)
++                {
++                    if ((glyph[row] & (1 << (2 - col))) == 0)
++                        continue;
++
++                    var at = new Vector2(x + col * unit, topLeft.Y + row * unit);
++                    handle.DrawRect(UIBox2.FromDimensions(at, new Vector2(unit, unit)), color);
++                }
++            }
++
++            x += 4f * unit;
++        }
++    }
++
++    public static void DrawDisc(DrawingHandleScreen handle, Vector2 center, float radius, Color face, Color light, Color dark, Color border, float unit, bool pressed)
++    {
++        var rows = Math.Max(2, (int)MathF.Ceiling(radius / unit) * 2);
++        var rowHeight = radius * 2f / rows;
++        var topColor = pressed ? dark : light;
++        var bottomColor = pressed ? light : dark;
++
++        for (var i = 0; i < rows; i++)
++        {
++            var y0 = -radius + i * rowHeight;
++            var yMid = y0 + rowHeight * 0.5f;
++            var half = MathF.Sqrt(MathF.Max(0f, radius * radius - yMid * yMid));
++            if (half <= 0.75f)
++                continue;
++
++            var box = UIBox2.FromDimensions(new Vector2(center.X - half, center.Y + y0), new Vector2(half * 2f, rowHeight));
++            handle.DrawRect(box, border);
++
++            var inset = MathF.Min(unit, half * 0.4f);
++            var innerLeft = box.Left + inset;
++            var innerRight = box.Right - inset;
++            if (innerRight - innerLeft <= 0.5f)
++                continue;
++
++            var inner = UIBox2.FromDimensions(new Vector2(innerLeft, box.Top), new Vector2(innerRight - innerLeft, rowHeight));
++            handle.DrawRect(inner, face);
++
++            var strip = MathF.Min(unit, inner.Width * 0.5f);
++            if (yMid < 0)
++            {
++                handle.DrawRect(UIBox2.FromDimensions(new Vector2(inner.Left, inner.Top), new Vector2(strip, rowHeight)), topColor);
++            }
++            else
++            {
++                handle.DrawRect(UIBox2.FromDimensions(new Vector2(inner.Right - strip, inner.Top), new Vector2(strip, rowHeight)), bottomColor);
++            }
++        }
++    }
++}
++
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..98151de
+index 0000000..c2331c5
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,380 @@
+@@ -0,0 +1,407 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4352,6 +4581,9 @@ index 0000000..98151de
 +    protected override void FrameUpdate(FrameEventArgs args)
 +    {
 +        base.FrameUpdate(args);
++
++        if (!VisibleInTree)
++            return;
 +
 +        if (!IsAimStick || !_isPressed)
 +            return;
@@ -4566,80 +4798,104 @@ index 0000000..98151de
 +        var center = Size / 2f;
 +        var pressed = _isPressed;
 +        var activeColor = new Color(255, 222, 120, 255);
-+        var idleColor = new Color(225, 235, 250, 200);
++        var idleColor = new Color(225, 235, 250, 210);
++        var unit = MathF.Max(2f, MathF.Round(Radius / 7f));
 +
-+        // Terraria style base: dark translucent disc, bright ring, no white wash.
-+        handle.DrawCircle(center, Radius, new Color(6, 9, 14, 150), true);
-+        handle.DrawCircle(center, Radius, new Color(225, 235, 250, pressed ? 230 : 170), false);
-+        handle.DrawCircle(center, Radius - 2f, new Color(0, 0, 0, pressed ? 120 : 90), false);
-+        handle.DrawCircle(center, Radius * 0.62f, new Color(0, 0, 0, 55), true);
++        // Terraria style: chunky pixel ring with a dark translucent face.
++        PixelKit.DrawDisc(handle, center, Radius,
++            new Color(8, 12, 18, 150),
++            new Color(255, 255, 255, 46),
++            new Color(0, 0, 0, 120),
++            new Color(225, 235, 250, pressed ? 240 : 180),
++            unit, pressed);
++
++        PixelKit.DrawDisc(handle, center, Radius * 0.6f,
++            new Color(0, 0, 0, 60),
++            new Color(255, 255, 255, 12),
++            new Color(0, 0, 0, 40),
++            new Color(0, 0, 0, 70),
++            MathF.Max(2f, unit * 0.8f), pressed);
++
++        var block = MathF.Max(2f, MathF.Round(Radius * 0.11f));
 +
 +        if (IsAimStick)
 +        {
-+            var tick = Radius * 0.24f;
-+            var offset = Radius * 0.46f;
-+            var crossColor = new Color(225, 235, 250, pressed ? 235 : 160);
-+            handle.DrawLine(center + new Vector2(-offset, 0), center + new Vector2(-offset + tick, 0), crossColor);
-+            handle.DrawLine(center + new Vector2(offset - tick, 0), center + new Vector2(offset, 0), crossColor);
-+            handle.DrawLine(center + new Vector2(0, -offset), center + new Vector2(0, -offset + tick), crossColor);
-+            handle.DrawLine(center + new Vector2(0, offset - tick), center + new Vector2(0, offset), crossColor);
-+            handle.DrawCircle(center, 2.5f, crossColor, true);
++            var arm = Radius * 0.42f;
++            var crossColor = new Color(225, 235, 250, pressed ? 240 : 170);
++            void PixelBlock(Vector2 at, Color color)
++            {
++                handle.DrawRect(UIBox2.FromDimensions(center + at - new Vector2(block / 2f, block / 2f), new Vector2(block, block)), color);
++            }
++
++            PixelBlock(new Vector2(-arm, 0), crossColor);
++            PixelBlock(new Vector2(arm, 0), crossColor);
++            PixelBlock(new Vector2(0, -arm), crossColor);
++            PixelBlock(new Vector2(0, arm), crossColor);
++            PixelBlock(Vector2.Zero, crossColor);
 +        }
 +        else
 +        {
-+            var arrowRadius = Radius * 0.8f;
-+            var arrow = Radius * 0.17f;
-+            DrawChevron(handle, center + new Vector2(0, -arrowRadius), 'U', arrow, _activeKeys.Contains(Keyboard.Key.W));
-+            DrawChevron(handle, center + new Vector2(0, arrowRadius), 'D', arrow, _activeKeys.Contains(Keyboard.Key.S));
-+            DrawChevron(handle, center + new Vector2(-arrowRadius, 0), 'L', arrow, _activeKeys.Contains(Keyboard.Key.A));
-+            DrawChevron(handle, center + new Vector2(arrowRadius, 0), 'R', arrow, _activeKeys.Contains(Keyboard.Key.D));
++            var arrowRadius = Radius * 0.7f;
++            void Chevron(Vector2 at, char dir, bool active)
++            {
++                var color = active ? activeColor : idleColor;
++                var s = block * 1.3f;
++                Vector2 d1, d2, d3;
++                switch (dir)
++                {
++                    case 'U':
++                        d1 = new Vector2(-s, 0);
++                        d2 = new Vector2(0, -s);
++                        d3 = new Vector2(s, 0);
++                        break;
++                    case 'D':
++                        d1 = new Vector2(-s, 0);
++                        d2 = new Vector2(0, s);
++                        d3 = new Vector2(s, 0);
++                        break;
++                    case 'L':
++                        d1 = new Vector2(0, -s);
++                        d2 = new Vector2(-s, 0);
++                        d3 = new Vector2(0, s);
++                        break;
++                    default:
++                        d1 = new Vector2(0, -s);
++                        d2 = new Vector2(s, 0);
++                        d3 = new Vector2(0, s);
++                        break;
++                }
++
++                foreach (var d in new[] { d1, d2, d3 })
++                {
++                    var pos = center + at + d - new Vector2(s / 2f, s / 2f);
++                    handle.DrawRect(UIBox2.FromDimensions(pos, new Vector2(s, s)), color);
++                }
++            }
++
++            Chevron(new Vector2(0, -arrowRadius), 'U', _activeKeys.Contains(Keyboard.Key.W));
++            Chevron(new Vector2(0, arrowRadius), 'D', _activeKeys.Contains(Keyboard.Key.S));
++            Chevron(new Vector2(-arrowRadius, 0), 'L', _activeKeys.Contains(Keyboard.Key.A));
++            Chevron(new Vector2(arrowRadius, 0), 'R', _activeKeys.Contains(Keyboard.Key.D));
 +        }
 +
-+        // Knob: light blue thumb with a dark outline so it reads on any background.
++        // Knob: pixel disc with a light bevel, reads on any background.
 +        var knobCenter = center + _knobOffset;
-+        handle.DrawCircle(knobCenter + new Vector2(0, 2f), KnobRadius, new Color(0, 0, 0, 110), true);
-+        handle.DrawCircle(knobCenter, KnobRadius, new Color(190, 210, 235, pressed ? 235 : 205), true);
-+        handle.DrawCircle(knobCenter, KnobRadius, new Color(35, 45, 60, 235), false);
-+        handle.DrawCircle(knobCenter - new Vector2(KnobRadius * 0.25f, KnobRadius * 0.25f), KnobRadius * 0.45f,
-+            new Color(255, 255, 255, 110), true);
++        var knobUnit = MathF.Max(2f, MathF.Round(KnobRadius / 5f));
++        PixelKit.DrawDisc(handle, knobCenter, KnobRadius,
++            new Color(150, 172, 200, 235),
++            new Color(245, 250, 255, 225),
++            new Color(55, 70, 90, 235),
++            new Color(15, 20, 28, 240),
++            knobUnit, pressed);
++
++        handle.DrawRect(UIBox2.FromDimensions(
++            knobCenter + new Vector2(-KnobRadius * 0.38f, -KnobRadius * 0.38f),
++            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(255, 255, 255, 90));
 +
 +        if (IsEditMode)
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
 +            handle.DrawRect(box, new Color(255, 215, 0, 170), false);
-+        }
-+
-+        void DrawChevron(DrawingHandleScreen h, Vector2 at, char dir, float size, bool active)
-+        {
-+            var color = active ? activeColor : idleColor;
-+            var half = size * 0.55f;
-+            Vector2 a, b, c;
-+            switch (dir)
-+            {
-+                case 'U':
-+                    a = at + new Vector2(-half, half * 0.55f);
-+                    b = at + new Vector2(0, -half);
-+                    c = at + new Vector2(half, half * 0.55f);
-+                    break;
-+                case 'D':
-+                    a = at + new Vector2(-half, -half * 0.55f);
-+                    b = at + new Vector2(0, half);
-+                    c = at + new Vector2(half, -half * 0.55f);
-+                    break;
-+                case 'L':
-+                    a = at + new Vector2(half * 0.55f, -half);
-+                    b = at + new Vector2(-half, 0);
-+                    c = at + new Vector2(half * 0.55f, half);
-+                    break;
-+                default:
-+                    a = at + new Vector2(-half * 0.55f, -half);
-+                    b = at + new Vector2(half, 0);
-+                    c = at + new Vector2(-half * 0.55f, half);
-+                    break;
-+            }
-+
-+            h.DrawLine(a, b, color);
-+            h.DrawLine(b, c, color);
 +        }
 +    }
 +}
@@ -4975,37 +5231,31 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..e674637 100644
+index 5267fc7..2f3191c 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
-@@ -992,38 +992,44 @@ namespace Robust.Shared
+@@ -992,13 +992,13 @@ namespace Robust.Shared
          /// Maximum number of lights that the client will draw.
          /// </summary>
          public static readonly CVarDef<int> MaxLightCount =
 -            CVarDef.Create("light.max_light_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 96 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum number of occluders that the client will draw. Values below 1024 have no effect.
          /// </summary>
          public static readonly CVarDef<int> MaxOccluderCount =
 -            CVarDef.Create("light.max_occluder_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 512 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Scale used to modify the horizontal and vertical resolution of lighting framebuffers,
-         /// relative to the viewport framebuffer size.
-         /// </summary>
-         public static readonly CVarDef<float> LightResolutionScale =
--            CVarDef.Create("light.resolution_scale", 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.35f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
- 
-         /// <summary>
+@@ -1011,19 +1011,25 @@ namespace Robust.Shared
          /// Maximum amount of shadow-casting lights that can be rendered in a single viewport at once.
          /// </summary>
          public static readonly CVarDef<int> MaxShadowcastingLights =
 -            CVarDef.Create("light.max_shadowcasting_lights", 128, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 16 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 4 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).
