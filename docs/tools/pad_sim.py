@@ -11,9 +11,9 @@ import sys
 # Engine side of the layout: must match MobileControlsOverlay.ArrangeOverride.
 BASE_SCALE = 1.5       # mobile.controls_scale default
 STICK_SCALE = 1.1      # mobile.thumbstick_scale default
-TOP_ANGLES_R = [88.0, 126.0, 164.0, 202.0]   # USE INTER SEC THROW
-TOP_ANGLES_L = [90.0, 124.0, 56.0]           # HAND DROP BAG
-RIM_ALLOW = 0.22       # buttons may graze the stick by a fifth of their size
+TOP_ANGLES_R = [68.0, 114.0, 160.0, 204.0]  # USE INTER SEC THROW
+TOP_ANGLES_L = [43.0, 110.0, -24.0]          # HAND DROP BAG
+RIM_ALLOW = 0.32       # buttons may bite a third into the stick rim
 
 
 def geometry(width, height, ui_scale):
@@ -32,7 +32,7 @@ def geometry(width, height, ui_scale):
     use = 130 * ctl * fit
     inter = 118 * ctl * fit
     util = 102 * ctl * fit
-    stick_gap = 3 * ctl * fit
+    stick_gap = -12 * ctl * fit
     radius = 127 * ctl * STICK_SCALE * fit
     radius = min(radius, max(40.0, (wl - 2 * margin - 20) / 4.0))
     radius = min(radius, max(40.0, (hl - safe_bottom - top_y - top_h - util - 3 * gap) / 2.15))
@@ -60,6 +60,12 @@ def top_row(g):
     return cells
 
 
+def to_disc(rect):
+    """Buttons draw as pixel discs, so occupancy is a circle, not a box."""
+    return ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2,
+            min(rect[2] - rect[0], rect[3] - rect[1]) / 2)
+
+
 def find_slot(g, center, angle, size, occupied, max_ring, grow_first=True):
     half = size / 2
     min_x, min_y = g["safe_x"], g["safe_top"]
@@ -71,17 +77,16 @@ def find_slot(g, center, angle, size, occupied, max_ring, grow_first=True):
         for ring in rings:
             radius = g["radius"] + half + g["stick_gap"] + ring * g["radius"] * 0.12
             rad = math.radians(angle + off)
-            x = center[0] + math.cos(rad) * radius - half
-            y = center[1] - math.sin(rad) * radius - half
-            rect = (x, y, x + size, y + size)
-            if x < min_x or y < min_y or x + size > max_x or y + size > max_y:
+            cx = center[0] + math.cos(rad) * radius
+            cy = center[1] - math.sin(rad) * radius
+            rect = (cx - half, cy - half, cx + half, cy + half)
+            if cx - half < min_x or cy - half < min_y or cx + half > max_x or cy + half > max_y:
                 continue
-            if any(rect[0] < o[2] + 2 and o[0] < rect[2] + 2 and rect[1] < o[3] + 2 and o[1] < rect[3] + 2 for o in occupied):
+            if any((cx - o[0]) ** 2 + (cy - o[1]) ** 2 < (half + o[2] + 2) ** 2 for o in occupied):
                 continue
             inside = False
-            for cx, cy in discs:
-                px, py = min(max(cx, rect[0]), rect[2]), min(max(cy, rect[1]), rect[3])
-                if (px - cx) ** 2 + (py - cy) ** 2 < (g["radius"] - size * RIM_ALLOW) ** 2:
+            for scx, scy in discs:
+                if (cx - scx) ** 2 + (cy - scy) ** 2 < (half + g["radius"] - size * RIM_ALLOW) ** 2:
                     inside = True
                     break
             if inside:
@@ -91,16 +96,16 @@ def find_slot(g, center, angle, size, occupied, max_ring, grow_first=True):
 
 
 def place_cluster(g, items, center, reserved):
-    """Size first, distance second: same order of attempts as PlaceCluster."""
-    for k in [x / 100 for x in range(100, 59, -5)]:
-        for max_ring in (3, 6):
+    """Distance first: same order of attempts as PlaceCluster."""
+    for max_ring in (0, 1, 2, 3, 6):
+        for k in [x / 100 for x in range(100, 59, -5)]:
             occupied = list(reserved)
             placed = []
             for name, size, angle in items:
                 rect, ring = find_slot(g, center, angle, size * k, occupied, max_ring)
                 if rect is None:
                     break
-                occupied.append(rect)
+                occupied.append(to_disc(rect))
                 placed.append((name, rect, size * k, ring))
             if len(placed) == len(items):
                 return k, placed
@@ -114,10 +119,12 @@ def layout(width, height, ui_scale):
              ("SEC", g["util"], TOP_ANGLES_R[2]), ("THROW", g["util"], TOP_ANGLES_R[3])]
     left = [("HAND", g["util"], TOP_ANGLES_L[0]), ("DROP", g["util"], TOP_ANGLES_L[1]),
             ("BAG", g["util"], TOP_ANGLES_L[2])]
-    k_r, placed_r = place_cluster(g, right, g["aim"], cells)
+    reserved_r = [to_disc(rect) for rect in cells]
+    k_r, placed_r = place_cluster(g, right, g["aim"], reserved_r)
     if placed_r is None:
         return g, None, None
-    k_l, placed_l = place_cluster(g, left, g["move"], cells + [p[1] for p in placed_r])
+    reserved_l = reserved_r + [to_disc(p[1]) for p in placed_r]
+    k_l, placed_l = place_cluster(g, left, g["move"], reserved_l)
     return g, placed_r, placed_l
 
 

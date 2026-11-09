@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..55257e0
+index 0000000..07d0fe3
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1486 @@
+@@ -0,0 +1,1484 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3852,39 +3852,35 @@ index 0000000..55257e0
 +        control.Arrange(new UIBox2(pos, pos + size));
 +    }
 +
-+    private readonly List<UIBox2> _occupiedRects = new();
++    // On-screen buttons are drawn as discs (see PojavActionButton.Draw), so
++    // occupancy is a disc too: box collision kept diagonal neighbours apart and
++    // pushed them off the ring.
++    private readonly List<(Vector2 Center, float Radius)> _occupiedDiscs = new();
 +    private readonly List<(Vector2 Center, float Radius)> _stickDiscs = new();
 +
 +    private void ReserveControl(Control control)
 +    {
-+        _occupiedRects.Add(new UIBox2(control.Position, control.Position + control.Size));
++        _occupiedDiscs.Add((control.Position + control.Size / 2f, MathF.Min(control.Size.X, control.Size.Y) / 2f));
 +    }
 +
-+    private static bool RectsOverlap(UIBox2 a, UIBox2 b)
++    private bool OverlapsOccupied(Vector2 center, float radius, float padding)
 +    {
-+        return a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom;
-+    }
-+
-+    private bool OverlapsOccupied(UIBox2 rect, float padding)
-+    {
-+        var grown = new UIBox2(rect.Left - padding, rect.Top - padding, rect.Right + padding, rect.Bottom + padding);
-+        foreach (var other in _occupiedRects)
++        foreach (var (otherCenter, otherRadius) in _occupiedDiscs)
 +        {
-+            if (RectsOverlap(grown, other))
++            var minDist = radius + otherRadius + padding;
++            if ((center - otherCenter).LengthSquared() < minDist * minDist)
 +                return true;
 +        }
 +
 +        return false;
 +    }
 +
-+    private bool OverlapsStick(UIBox2 rect, float allow)
++    private bool OverlapsStick(Vector2 center, float radius, float allow)
 +    {
-+        foreach (var (center, radius) in _stickDiscs)
++        foreach (var (stickCenter, stickRadius) in _stickDiscs)
 +        {
-+            var closest = new Vector2(
-+                Math.Clamp(center.X, rect.Left, rect.Right),
-+                Math.Clamp(center.Y, rect.Top, rect.Bottom));
-+            if ((closest - center).LengthSquared() < (radius - allow) * (radius - allow))
++            var minDist = radius + stickRadius - allow;
++            if ((center - stickCenter).LengthSquared() < minDist * minDist)
 +                return true;
 +        }
 +
@@ -3899,8 +3895,8 @@ index 0000000..55257e0
 +        Vector2 min, Vector2 max, int maxRing, out Vector2 pos)
 +    {
 +        var half = size * 0.5f;
-+        // Hugging the rim is the point, so a button may bite a little into it.
-+        var rimAllow = size * 0.22f;
++        // Hugging the rim is the point, so a button may bite a third into it.
++        var rimAllow = size * 0.32f;
 +        // Push outward before turning: a button keeps its place in the fan and
 +        // only rotates when even the outer ring is blocked.
 +        for (var step = 0; step < 25; step++)
@@ -3910,16 +3906,17 @@ index 0000000..55257e0
 +            {
 +                var radius = stickRadius + half + gap + ring * stickRadius * 0.12f;
 +                var rad = (preferAngle + offset) * MathF.PI / 180f;
-+                pos = new Vector2(
++                var center = new Vector2(
 +                    stickCenter.X + MathF.Cos(rad) * radius,
-+                    stickCenter.Y - MathF.Sin(rad) * radius) - new Vector2(half, half);
++                    stickCenter.Y - MathF.Sin(rad) * radius);
 +
-+                var rect = new UIBox2(pos, pos + new Vector2(size, size));
-+                if (rect.Left < min.X || rect.Top < min.Y || rect.Right > max.X || rect.Bottom > max.Y)
++                if (center.X - half < min.X || center.Y - half < min.Y ||
++                    center.X + half > max.X || center.Y + half > max.Y)
 +                    continue;
-+                if (OverlapsOccupied(rect, 2f) || OverlapsStick(rect, rimAllow))
++                if (OverlapsOccupied(center, half, 2f) || OverlapsStick(center, half, rimAllow))
 +                    continue;
 +
++                pos = center - new Vector2(half, half);
 +                return true;
 +            }
 +        }
@@ -3930,7 +3927,7 @@ index 0000000..55257e0
 +
 +    /// <summary>
 +    /// One try at a whole cluster at one scale. A dry run (apply false) only
-+    /// claims rects, so the caller can search for the biggest scale that fits.
++    /// claims discs, so the caller can search for the closest ring that fits.
 +    /// </summary>
 +    private bool TryLayoutCluster(PojavActionButton[] buttons, float[] sizes, float[] preferAngles, Vector2 stickCenter,
 +        float stickRadius, float gap, Vector2 viewport, Vector2 min, Vector2 max, float scale, int maxRing, bool apply)
@@ -3947,7 +3944,7 @@ index 0000000..55257e0
 +
 +            if (apply)
 +                ArrangeChild(button, pos, new Vector2(size, size), viewport);
-+            _occupiedRects.Add(new UIBox2(pos, pos + new Vector2(size, size)));
++            _occupiedDiscs.Add((pos + new Vector2(size, size) / 2f, size / 2f));
 +        }
 +
 +        return true;
@@ -3961,7 +3958,7 @@ index 0000000..55257e0
 +    private void PlaceCluster(PojavActionButton[] buttons, float[] sizes, float[] preferAngles, Vector2 stickCenter,
 +        float stickRadius, float gap, Vector2 viewport, Vector2 min, Vector2 max)
 +    {
-+        var reserved = new List<UIBox2>(_occupiedRects);
++        var reserved = new List<(Vector2 Center, float Radius)>(_occupiedDiscs);
 +        for (var i = 0; i < buttons.Length; i++)
 +        {
 +            if (!buttons[i].CustomPosition.HasValue)
@@ -3970,32 +3967,32 @@ index 0000000..55257e0
 +            var size = buttons[i].CustomSize ?? sizes[i];
 +            var pos = buttons[i].CustomPosition!.Value;
 +            ArrangeChild(buttons[i], pos, new Vector2(size, size), viewport);
-+            var rect = new UIBox2(pos, pos + new Vector2(size, size));
-+            _occupiedRects.Add(rect);
-+            reserved.Add(rect);
++            var disc = (pos + new Vector2(size, size) / 2f, size / 2f);
++            _occupiedDiscs.Add(disc);
++            reserved.Add(disc);
 +        }
 +
-+        // Size first, distance second: an approved button size is worth more than
-+        // one ring of extra closeness.
-+        for (var k100 = 100; k100 >= 60; k100 -= 5)
++        // Distance first: the buttons must hug the stick, so a few percent of
++        // their size is the cheaper sacrifice to keep them all on one ring.
++        foreach (var maxRing in new[] { 0, 1, 2, 3, 6 })
 +        {
-+            foreach (var maxRing in new[] { 3, 6 })
++            for (var k100 = 100; k100 >= 60; k100 -= 5)
 +            {
-+                _occupiedRects.Clear();
-+                _occupiedRects.AddRange(reserved);
++                _occupiedDiscs.Clear();
++                _occupiedDiscs.AddRange(reserved);
 +                if (!TryLayoutCluster(buttons, sizes, preferAngles, stickCenter, stickRadius, gap, viewport, min, max, k100 / 100f, maxRing, false))
 +                    continue;
 +
-+                _occupiedRects.Clear();
-+                _occupiedRects.AddRange(reserved);
++                _occupiedDiscs.Clear();
++                _occupiedDiscs.AddRange(reserved);
 +                TryLayoutCluster(buttons, sizes, preferAngles, stickCenter, stickRadius, gap, viewport, min, max, k100 / 100f, maxRing, true);
 +                return;
 +            }
 +        }
 +
 +        // Last resort, tiny screens: sit on the rim and clamp into the frame.
-+        _occupiedRects.Clear();
-+        _occupiedRects.AddRange(reserved);
++        _occupiedDiscs.Clear();
++        _occupiedDiscs.AddRange(reserved);
 +        for (var i = 0; i < buttons.Length; i++)
 +        {
 +            var button = buttons[i];
@@ -4010,7 +4007,7 @@ index 0000000..55257e0
 +                stickCenter.Y - MathF.Sin(rad) * (stickRadius + half + gap)) - new Vector2(half, half);
 +            pos = Vector2.Clamp(pos, min, Vector2.Max(min, max - new Vector2(size, size)));
 +            ArrangeChild(button, pos, new Vector2(size, size), viewport);
-+            _occupiedRects.Add(new UIBox2(pos, pos + new Vector2(size, size)));
++            _occupiedDiscs.Add((pos + new Vector2(size, size) / 2f, size / 2f));
 +        }
 +    }
 +
@@ -4068,7 +4065,8 @@ index 0000000..55257e0
 +        var useSize = 130f * scale * fit;
 +        var interSize = 118f * scale * fit;
 +        var utilSize = 102f * scale * fit;
-+        var stickGap = 3f * scale * fit;
++        // Negative gap: buttons bite into the stick rim instead of sitting off it.
++        var stickGap = -12f * scale * fit;
 +
 +        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
 +        var stickRadius = 127f * scale * stickScale * fit;
@@ -4097,7 +4095,7 @@ index 0000000..55257e0
 +
 +        // Playfield: top bar first, then every ring button claims the first free
 +        // slot around its stick. This is what keeps the pad off the content HUD.
-+        _occupiedRects.Clear();
++        _occupiedDiscs.Clear();
 +        _stickDiscs.Clear();
 +        _stickDiscs.Add((moveCenter, stickRadius));
 +        _stickDiscs.Add((aimCenter, stickRadius));
@@ -4122,19 +4120,19 @@ index 0000000..55257e0
 +        var frameMin = new Vector2(safeX, safeTop);
 +        var frameMax = finalSize - new Vector2(safeX, safeBottom);
 +
-+        // Aim side fan: up, up toward the middle, then left, staying in order so
-+        // the labels never swap places between resolutions.
++        // Buttons ring the stick on every side that fits: the fan spans the
++        // widest arc the screen edge leaves, instead of hugging one side.
 +        PlaceCluster(
 +            new[] { _useButton, _interactButton, _secButton, _throwButton },
 +            new[] { useSize, interSize, utilSize, utilSize },
-+            new[] { 88f, 126f, 164f, 202f },
++            new[] { 68f, 114f, 160f, 204f },
 +            aimCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
 +
 +        // Move side fan: the three keys a moving thumb still needs.
 +        PlaceCluster(
 +            new[] { _handButton, _dropButton, _bagButton },
 +            new[] { utilSize, utilSize, utilSize },
-+            new[] { 90f, 124f, 56f },
++            new[] { 43f, 110f, -24f },
 +            moveCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
 +
 +        if (!_dumpedLayout && finalSize.X > 0f)
@@ -4805,7 +4803,7 @@ index 0000000..c15a109
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..c2f98d3
+index 0000000..1eac166
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 @@ -0,0 +1,431 @@
@@ -5138,23 +5136,23 @@ index 0000000..c2f98d3
 +
 +        var center = Size / 2f;
 +        var pressed = _isPressed;
-+        var activeColor = new Color(255, 222, 120, 255);
-+        var idleColor = new Color(215, 220, 228, 103);
++        var activeColor = new Color(226, 199, 118, 200);
++        var idleColor = new Color(168, 174, 184, 74);
 +        var unit = MathF.Max(2f, MathF.Round(Radius / 7f));
 +
 +        // Terraria style: chunky pixel ring with a dark translucent face.
 +        PixelKit.DrawDisc(handle, center, Radius,
-+            new Color(7, 8, 10, 54),
-+            new Color(255, 255, 255, 13),
-+            new Color(0, 0, 0, 39),
-+            new Color(182, 188, 198, pressed ? 83 : 54),
++            new Color(9, 11, 14, 44),
++            new Color(190, 195, 202, 8),
++            new Color(0, 0, 0, 30),
++            new Color(132, 139, 150, pressed ? 64 : 40),
 +            unit, pressed);
 +
 +        PixelKit.DrawDisc(handle, center, Radius * 0.6f,
++            new Color(0, 0, 0, 16),
++            new Color(200, 205, 212, 3),
++            new Color(0, 0, 0, 12),
 +            new Color(0, 0, 0, 20),
-+            new Color(255, 255, 255, 4),
-+            new Color(0, 0, 0, 15),
-+            new Color(0, 0, 0, 24),
 +            MathF.Max(2f, unit * 0.8f), pressed);
 +
 +        var block = MathF.Max(2f, MathF.Round(Radius * 0.11f));
@@ -5162,7 +5160,7 @@ index 0000000..c2f98d3
 +        if (IsAimStick)
 +        {
 +            var arm = Radius * 0.42f;
-+            var crossColor = new Color(215, 220, 228, pressed ? 118 : 83);
++            var crossColor = new Color(168, 174, 184, pressed ? 92 : 62);
 +            void PixelBlock(Vector2 at, Color color)
 +            {
 +                handle.DrawRect(UIBox2.FromDimensions(center + at - new Vector2(block / 2f, block / 2f), new Vector2(block, block)), color);
@@ -5223,15 +5221,15 @@ index 0000000..c2f98d3
 +        var knobCenter = center + _knobOffset;
 +        var knobUnit = MathF.Max(2f, MathF.Round(KnobRadius / 5f));
 +        PixelKit.DrawDisc(handle, knobCenter, KnobRadius,
-+            new Color(118, 126, 140, 133),
-+            new Color(224, 229, 236, 105),
-+            new Color(44, 48, 56, 133),
-+            new Color(18, 20, 24, 140),
++            new Color(96, 102, 114, 104),
++            new Color(172, 178, 187, 62),
++            new Color(38, 42, 50, 104),
++            new Color(14, 16, 20, 110),
 +            knobUnit, pressed);
 +
 +        handle.DrawRect(UIBox2.FromDimensions(
 +            knobCenter + new Vector2(-KnobRadius * 0.38f, -KnobRadius * 0.38f),
-+            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(255, 255, 255, 38));
++            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(212, 216, 222, 24));
 +
 +        if (IsEditMode)
 +        {
