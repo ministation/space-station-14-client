@@ -68,7 +68,6 @@ public sealed class LauncherActivity : Activity
     private Button _tabFavsBtn = default!;
     private Button _tabDirectBtn = default!;
     private EditText _searchInput = default!;
-    private TextView _statusCountText = default!;
     private LinearLayout _listLayout = default!;
     private ScrollView _scroll = default!;
 
@@ -267,16 +266,17 @@ public sealed class LauncherActivity : Activity
         var links = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         links.SetGravity(GravityFlags.End);
         var discord = CreateHeaderLinkButton("Discord", () => OpenUrl("https://discord.gg/ss14"));
-        links.AddView(discord, new LinearLayout.LayoutParams(Dp(86), Dp(26)) { RightMargin = Dp(2) });
+        links.AddView(discord, new LinearLayout.LayoutParams(Dp(100), Dp(26)) { RightMargin = Dp(2) });
         var website = CreateHeaderLinkButton("Website", () => OpenUrl("https://spacestation14.com/"));
-        links.AddView(website, new LinearLayout.LayoutParams(Dp(86), Dp(26)));
+        links.AddView(website, new LinearLayout.LayoutParams(Dp(100), Dp(26)));
         right.AddView(links);
 
         _accountBtn = new Button(this) { TextSize = 10f };
         _accountBtn.SetTextColor(LauncherTheme.Foreground);
         _accountBtn.SetPadding(Dp(10), 0, Dp(10), 0);
+        _accountBtn.Gravity = GravityFlags.Left | GravityFlags.CenterVertical;
         _accountBtn.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
-        _accountBtn.LayoutParameters = new LinearLayout.LayoutParams(Dp(176), Dp(26)) { TopMargin = Dp(2) };
+        _accountBtn.LayoutParameters = new LinearLayout.LayoutParams(Dp(202), Dp(26)) { TopMargin = Dp(2) };
         _accountBtn.Click += (_, _) => OnAccountButtonClicked();
         right.AddView(_accountBtn);
 
@@ -297,7 +297,7 @@ public sealed class LauncherActivity : Activity
 
         _bottomBar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         _bottomBar.SetPadding(Dp(4), 0, Dp(4), 0);
-        root.AddView(_bottomBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(38)));
+        root.AddView(_bottomBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(44)));
 
         SetContentView(root);
         root.SetOnApplyWindowInsetsListener(new SafeInsetsListener((view, insets) =>
@@ -517,9 +517,9 @@ public sealed class LauncherActivity : Activity
         var tabs = new[] { (Tab.Home, "Home"), (Tab.Servers, "Servers"), (Tab.Options, "Options") };
         foreach (var (tab, label) in tabs)
         {
-            var tabView = new TextView(this) { Text = label, TextSize = 12f };
+            var tabView = new TextView(this) { Text = label, TextSize = 13f };
             tabView.Gravity = GravityFlags.Center;
-            tabView.SetPadding(Dp(14), 0, Dp(14), 0);
+            tabView.SetPadding(Dp(18), 0, Dp(18), 0);
             tabView.SetTextColor(_activeTab == tab ? LauncherTheme.Foreground : LauncherTheme.SubText);
             if (_activeTab == tab)
                 tabView.Background = new ColorDrawable(Color.Argb(204, 0x3E, 0x6C, 0x45));
@@ -925,15 +925,16 @@ public sealed class LauncherActivity : Activity
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         header.SetGravity(GravityFlags.CenterVertical);
         var headerChevron = new Space(this);
-        header.AddView(headerChevron, new LinearLayout.LayoutParams(Dp(16), ViewGroup.LayoutParams.MatchParent));
-        header.AddView(CreateTableCell("SERVER NAME", 1f, GravityFlags.Left, 9f, false));
+        header.AddView(headerChevron, new LinearLayout.LayoutParams(Dp(24), ViewGroup.LayoutParams.MatchParent));
+        header.AddView(CreateTableCell("Server Name", 1f, GravityFlags.Left, 10f, false));
         header.AddView(CreateTableHeaderSeparator());
-        header.AddView(CreateTableCell("TIME", 0f, GravityFlags.Center, 9f, false, Dp(62)));
+        header.AddView(CreateTableCell("Time", 0f, GravityFlags.Center, 10f, false, Dp(108)));
         header.AddView(CreateTableHeaderSeparator());
-        header.AddView(CreateTableCell("PLAYERS", 0f, GravityFlags.Center, 9f, false, Dp(64)));
+        header.AddView(CreateTableCell("Players", 0f, GravityFlags.Center, 10f, false, Dp(128)));
         header.AddView(CreateTableHeaderSeparator());
-        header.AddView(CreateTableCell("", 0f, GravityFlags.Center, 9f, false, Dp(84)));
-        page.AddView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(20)));
+        header.AddView(CreateTableCell("", 0f, GravityFlags.Center, 10f, false, Dp(84)));
+        header.SetPadding(0, 0, Dp(30), 0);
+        page.AddView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(24)));
         var headerLine = new View(this);
         headerLine.SetBackgroundColor(Color.Argb(170, 0x57, 0x5B, 0x7F));
         page.AddView(headerLine, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(2)));
@@ -960,7 +961,7 @@ public sealed class LauncherActivity : Activity
         toolbar.SetGravity(GravityFlags.CenterVertical);
         toolbar.SetPadding(Dp(4), 0, Dp(4), Dp(4));
 
-        _searchInput = new EditText(this) { Hint = "Search servers" };
+        _searchInput = new EditText(this) { Hint = "Search For Servers..." };
         _searchInput.SetSingleLine(true);
         _searchInput.TextSize = 11f;
         _searchInput.SetTextColor(LauncherTheme.Foreground);
@@ -974,16 +975,10 @@ public sealed class LauncherActivity : Activity
         };
         toolbar.AddView(_searchInput, new LinearLayout.LayoutParams(0, Dp(30), 1f) { RightMargin = Dp(8) });
 
-        _statusCountText = new TextView(this) { TextSize = 10f };
-        _statusCountText.SetTextColor(LauncherTheme.SubText);
-        _statusCountText.Gravity = GravityFlags.CenterVertical;
-        _statusCountText.SetPadding(Dp(4), 0, Dp(8), 0);
-        toolbar.AddView(_statusCountText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.MatchParent));
-
-        _filterBtn = new Button(this) { TextSize = 11f };
+        _filterBtn = new Button(this) { TextSize = 12f };
         _filterBtn.SetTextColor(LauncherTheme.Foreground);
-        _filterBtn.SetPadding(Dp(10), 0, Dp(10), 0);
-        _filterBtn.Background = CreateAngleButtonBackground(Dp(10), AngleSide.OpenRight);
+        _filterBtn.SetPadding(Dp(12), 0, Dp(12), 0);
+        _filterBtn.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
         _filterBtn.Click += (_, _) =>
         {
             _filtersVisible = !_filtersVisible;
@@ -992,17 +987,16 @@ public sealed class LauncherActivity : Activity
         };
         toolbar.AddView(_filterBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(30)));
 
-        var refresh = new Button(this) { Text = "Refresh", TextSize = 11f };
+        var refresh = new Button(this) { Text = "↻", TextSize = 20f };
         refresh.SetTextColor(LauncherTheme.Foreground);
-        refresh.SetPadding(Dp(10), 0, Dp(10), 0);
-        refresh.Background = CreateAngleButtonBackground(Dp(10), AngleSide.OpenLeft);
+        refresh.SetPadding(0, 0, 0, 0);
+        refresh.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
         refresh.Click += async (_, _) => await RefreshHubServersAsync();
-        toolbar.AddView(refresh, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, Dp(30)) { LeftMargin = Dp(2) });
+        toolbar.AddView(refresh, new LinearLayout.LayoutParams(Dp(48), Dp(30)) { LeftMargin = Dp(2) });
 
         page.AddView(toolbar);
 
         UpdateFilterButtonState();
-        _statusCountText.Text = _servers.Count > 0 ? $"{_servers.Count} servers" : "Loading servers...";
         RenderServerList();
         return page;
     }
@@ -1130,8 +1124,6 @@ public sealed class LauncherActivity : Activity
 
     private async Task RefreshHubServersAsync()
     {
-        if (_statusCountText != null)
-            _statusCountText.Text = "Querying servers...";
         try
         {
             var list = await _hubClient.FetchAllServersAsync(_storage.Data.HubUrls);
@@ -1143,11 +1135,7 @@ public sealed class LauncherActivity : Activity
         }
         catch (Exception ex)
         {
-            RunOnUiThread(() =>
-            {
-                if (_statusCountText != null)
-                    _statusCountText.Text = "Failed to load servers: " + ex.Message;
-            });
+            RunOnUiThread(() => Toast.MakeText(this, "Failed to load servers: " + ex.Message, ToastLength.Short)?.Show());
         }
     }
     private void ShowKeyboard(View view)
@@ -1233,15 +1221,6 @@ public sealed class LauncherActivity : Activity
         }
 
         var sorted = items.OrderByDescending(s => s.StatusData?.Players ?? 0).ToList();
-        var totalPlayers = sorted.Sum(s => s.StatusData?.Players ?? 0);
-
-        if (_statusCountText != null)
-        {
-            _statusCountText.Text = _activeTab == Tab.Home
-                ? $"{sorted.Count} favorites"
-                : $"{sorted.Count} online, {totalPlayers} players";
-        }
-
         if (_filterBtn != null && _activeTab == Tab.Servers)
             _filterBtn.Text = $"Filters ({sorted.Count} / {_servers.Count})";
 
@@ -1299,15 +1278,15 @@ public sealed class LauncherActivity : Activity
 
         var header = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         header.SetGravity(GravityFlags.CenterVertical);
-        header.SetPadding(0, 0, Dp(4), 0);
-        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(32));
+        header.SetPadding(0, 0, Dp(30), 0);
+        header.LayoutParameters = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(30));
 
         var chevron = new TextView(this) { Text = isExpanded ? "▾" : "▸", TextSize = 9f };
         chevron.SetTextColor(isExpanded ? LauncherTheme.Foreground : LauncherTheme.ForegroundMuted);
         chevron.Gravity = GravityFlags.Center;
         chevron.Clickable = true;
         chevron.Click += (_, _) => ToggleExpandServer(server.Address);
-        header.AddView(chevron, new LinearLayout.LayoutParams(Dp(16), ViewGroup.LayoutParams.MatchParent));
+        header.AddView(chevron, new LinearLayout.LayoutParams(Dp(24), ViewGroup.LayoutParams.MatchParent));
 
         var name = new TextView(this) { Text = server.StatusData?.Name ?? server.Address, TextSize = 11f };
         name.SetTextColor(LauncherTheme.Foreground);
@@ -1321,31 +1300,31 @@ public sealed class LauncherActivity : Activity
 
         header.AddView(CreateListSeparator());
 
-        var time = new TextView(this) { Text = FormatRoundTime(server.StatusData), TextSize = 10f };
-        time.SetTextColor(LauncherTheme.SubText);
-        time.Gravity = GravityFlags.Center;
+        var time = new TextView(this) { Text = FormatRoundTime(server.StatusData), TextSize = 11f };
+        time.SetTextColor(LauncherTheme.Foreground);
+        time.SetTypeface(Typeface.Default, TypefaceStyle.Bold);
+        time.Gravity = GravityFlags.Right | GravityFlags.CenterVertical;
+        time.SetPadding(0, 0, Dp(8), 0);
         time.SetSingleLine(true);
-        header.AddView(time, new LinearLayout.LayoutParams(Dp(62), ViewGroup.LayoutParams.MatchParent));
+        header.AddView(time, new LinearLayout.LayoutParams(Dp(108), ViewGroup.LayoutParams.MatchParent));
 
         header.AddView(CreateListSeparator());
 
         var players = server.StatusData?.Players ?? 0;
         var maxPlayers = server.StatusData?.SoftMaxPlayers ?? 0;
-        var playersText = new TextView(this) { Text = players + "/" + maxPlayers, TextSize = 9f };
+        var playersText = new TextView(this) { Text = players + " / " + maxPlayers, TextSize = 10.5f };
         playersText.SetTextColor(LauncherTheme.Foreground);
         playersText.Typeface = Typeface.Monospace;
-        playersText.Gravity = GravityFlags.Right | GravityFlags.CenterVertical;
+        playersText.Gravity = GravityFlags.Center;
         playersText.SetSingleLine(true);
-        playersText.SetPadding(0, 0, Dp(8), 0);
-        header.AddView(playersText, new LinearLayout.LayoutParams(Dp(64), ViewGroup.LayoutParams.MatchParent));
+        header.AddView(playersText, new LinearLayout.LayoutParams(Dp(128), ViewGroup.LayoutParams.MatchParent));
 
         header.AddView(CreateListSeparator());
 
-        var connect = new Button(this) { Text = "Connect", TextSize = 9.5f };
+        var connect = new Button(this) { Text = "Connect", TextSize = 10.5f };
         connect.SetTextColor(LauncherTheme.Foreground);
         connect.SetPadding(Dp(6), 0, Dp(6), 0);
-        // Straight rectangle: the angled cut on a 26dp row button read as a crooked shape.
-        connect.Background = CreateAngleButtonBackground(0, AngleSide.Both);
+        connect.Background = CreateAngleButtonBackground(Dp(8), AngleSide.Both);
         connect.Click += async (_, _) => await StartConnectingAsync(server.Address);
         header.AddView(connect, new LinearLayout.LayoutParams(Dp(84), Dp(26)));
 
@@ -1553,10 +1532,10 @@ public sealed class LauncherActivity : Activity
             DateTime.TryParse(status.RoundStartTime, null, System.Globalization.DateTimeStyles.RoundtripKind, out var startTime))
         {
             var elapsed = DateTime.UtcNow - startTime.ToUniversalTime();
-            if (elapsed.TotalMinutes < 0) return "0m";
+            if (elapsed.TotalMinutes < 0) return "0M";
             if (elapsed.TotalHours < 1)
-                return $"{Math.Max(0, (int)elapsed.TotalMinutes)}m";
-            return $"{(int)elapsed.TotalHours}h {elapsed.Minutes:D2}m";
+                return $"{Math.Max(0, (int)elapsed.TotalMinutes)}M";
+            return $"{(int)elapsed.TotalHours}H {elapsed.Minutes:D2}M";
         }
 
         return status.RunLevel == 1 ? "In-Round" : "Online";

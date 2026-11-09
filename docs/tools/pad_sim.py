@@ -11,8 +11,8 @@ import sys
 # Engine side of the layout: must match MobileControlsOverlay.ArrangeOverride.
 BASE_SCALE = 1.5       # mobile.controls_scale default
 STICK_SCALE = 1.1      # mobile.thumbstick_scale default
-TOP_ANGLES_R = [68.0, 114.0, 160.0, 204.0]  # USE INTER SEC THROW
-TOP_ANGLES_L = [43.0, 110.0, -24.0]          # HAND DROP BAG
+TOP_ANGLES_R = [0.0, 50.0, 100.0, 150.0]    # USE INTER SEC THROW
+TOP_ANGLES_L = [180.0, 140.0, 100.0]         # HAND DROP BAG
 RIM_ALLOW = 0.32       # buttons may bite a third into the stick rim
 
 
@@ -24,14 +24,14 @@ def geometry(width, height, ui_scale):
     safe_x = max(max(10 * ctl, wl * 0.02), 0.0)
     safe_top = max(6 * ctl, hl * 0.006)
     safe_bottom = max(6 * ctl, hl * 0.008)
-    margin = max(24 * ctl, wl * 0.02)
+    margin = max(12 * ctl, wl * 0.01)
     gap = 8 * ctl
     top_h = 50 * ctl
     top_y = max(safe_top, 6 * ctl)
     top_gap = 8 * ctl
-    use = 130 * ctl * fit
-    inter = 118 * ctl * fit
-    util = 102 * ctl * fit
+    use = 117 * ctl * fit
+    inter = 106 * ctl * fit
+    util = 92 * ctl * fit
     stick_gap = -12 * ctl * fit
     radius = 127 * ctl * STICK_SCALE * fit
     radius = min(radius, max(40.0, (wl - 2 * margin - 20) / 4.0))
@@ -40,8 +40,8 @@ def geometry(width, height, ui_scale):
         wl=wl, hl=hl, ui=ui, ctl=ctl, fit=fit, gap=gap,
         safe_x=safe_x, safe_top=safe_top, safe_bottom=safe_bottom,
         use=use, inter=inter, util=util, stick_gap=stick_gap, radius=radius,
-        move=(margin + radius, hl - safe_bottom - radius),
-        aim=(wl - margin - radius, hl - safe_bottom - radius),
+        move=(margin + radius, hl - safe_bottom - radius - 2 / ui),
+        aim=(wl - margin - radius, hl - safe_bottom - radius - 2 / ui),
         top_y=top_y, top_h=top_h, top_gap=top_gap,
     )
 
