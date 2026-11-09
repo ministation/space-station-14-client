@@ -51,6 +51,17 @@ adb install -r android/host/bin/Release/net10.0-android/ru.ministation.client-Si
 adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivity
 ```
 
+Подключение к серверу сразу при старте, в том числе с аккаунтом SS14 (сервер требует авторизацию):
+
+```bash
+adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivity \\
+  --es connect_addr "ss14.ministation.ru:1214" \\
+  --es username "<ник>" --es userid "<uuid>" --es token "<токен SS14>"
+```
+
+Без token клиент проходит DNS и шифрованный канал, но сервер отбивает хендшейк сообщением
+"Connecting to this server requires authentication".
+
 ## Что уже проверено
 
 | Что | Статус |
@@ -62,7 +73,7 @@ adb shell am start -n ru.ministation.client/ru.ministation.client.LauncherActivi
 | Инициализация сериализации и прототипов | работает |
 | Рендер EGL/GLES, шейдеры Clyde | работает |
 | Штатное главное меню Content.Client | работает, см. [docs/android-status.md](../docs/android-status.md) |
-| Вход на живой сервер | не проверен, нужен аккаунт SS14 |
+| Вход на живой сервер | сеть и хендшейк работают, сервер требует токен SS14; заход в игру упирается в отдельный блокер состояния |
 | Звук (OpenAL Soft) | инициализируется, на эмуляторе не слушали |
 
 ## Ограничения
