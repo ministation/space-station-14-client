@@ -74,7 +74,8 @@ public sealed class LauncherActivity : Activity
 
     private LinearLayout _overlayBox = default!;
     private TextView _overlayText = default!;
-    private ProgressBar _overlayProgress = default!;
+    private LinearLayout? _overlayBar;
+    private View? _overlayFill;
 
     private ServerInfo? _pendingServerInfo;
     private string? _pendingServerAddress;
@@ -165,12 +166,7 @@ public sealed class LauncherActivity : Activity
             _overlayBox.Visibility = ViewStates.Visible;
             var tot = ContentDownloadService.TotalProgress;
             var cur = ContentDownloadService.CurrentProgress;
-            _overlayProgress.Indeterminate = tot <= 0;
-            if (tot > 0)
-            {
-                _overlayProgress.Max = tot;
-                _overlayProgress.Progress = cur;
-            }
+            SetOverlayProgress(tot > 0 ? (int)(cur * 100L / tot) : -1);
             _overlayText.Text = ContentDownloadService.CurrentStatus ?? "Downloading content...";
         }
     }
@@ -428,6 +424,31 @@ public sealed class LauncherActivity : Activity
         return view;
     }
 
+    private void SetOverlayProgress(int percent)
+    {
+        if (_overlayFill == null)
+            return;
+
+        void Apply()
+        {
+            var width = _overlayBar?.Width ?? 0;
+            if (width <= 0)
+                return;
+
+            var lp = _overlayFill.LayoutParameters;
+            if (lp == null)
+                return;
+
+            lp.Width = percent < 0 ? 0 : Math.Max(0, (int)(width * (percent / 100.0)));
+            _overlayFill.LayoutParameters = lp;
+        }
+
+        if (_overlayBar?.Width > 0)
+            Apply();
+        else
+            _overlayBar?.Post(Apply);
+    }
+
     private void BuildLoadingOverlay()
     {
         _overlayBox = new LinearLayout(this)
@@ -457,13 +478,20 @@ public sealed class LauncherActivity : Activity
         _overlayText.SetPadding(0, Dp(10), 0, 0);
         modal.AddView(_overlayText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
-        _overlayProgress = new ProgressBar(this, null, global::Android.Resource.Attribute.ProgressBarStyleHorizontal)
-        {
-            Indeterminate = true,
-            Max = 100
-        };
-        _overlayProgress.IndeterminateTintList = global::Android.Content.Res.ColorStateList.ValueOf(LauncherTheme.NanoGold);
-        modal.AddView(_overlayProgress, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(8))
+        _overlayBar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        var barBackground = new global::Android.Graphics.Drawables.GradientDrawable();
+        barBackground.SetColor(Color.ParseColor("#3A3A40"));
+        barBackground.SetCornerRadius(Dp(3));
+        _overlayBar.Background = barBackground;
+
+        _overlayFill = new View(this);
+        var fillDrawable = new global::Android.Graphics.Drawables.GradientDrawable();
+        fillDrawable.SetColor(Color.ParseColor("#2E9E5B"));
+        fillDrawable.SetCornerRadius(Dp(3));
+        _overlayFill.Background = fillDrawable;
+        _overlayBar.AddView(_overlayFill, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MatchParent));
+
+        modal.AddView(_overlayBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, Dp(16))
         {
             TopMargin = Dp(12)
         });
@@ -2509,7 +2537,7 @@ public sealed class LauncherActivity : Activity
 
         _storage.SetLastServer(address);
         _overlayBox.Visibility = ViewStates.Visible;
-        _overlayProgress.Indeterminate = true;
+        SetOverlayProgress(-1);
         _overlayText.Text = "Resolving server build info...";
         Window?.AddFlags(WindowManagerFlags.KeepScreenOn);
 
@@ -2587,7 +2615,7 @@ public sealed class LauncherActivity : Activity
             _pendingServerInfo = serverInfo;
             _pendingServerAddress = parsedAddress.ToString();
 
-            _overlayProgress.Indeterminate = true;
+            SetOverlayProgress(-1);
             _overlayText.Text = "Downloading server content (check notification)...";
 
             ContentDownloadService.Start(this, build, address, cacheDir);
@@ -2614,12 +2642,7 @@ public sealed class LauncherActivity : Activity
                 Window?.AddFlags(WindowManagerFlags.KeepScreenOn);
             }
 
-            _overlayProgress.Indeterminate = tot <= 0;
-            if (tot > 0)
-            {
-                _overlayProgress.Max = tot;
-                _overlayProgress.Progress = cur;
-            }
+            SetOverlayProgress(tot > 0 ? (int)(cur * 100L / tot) : -1);
             _overlayText.Text = status;
         });
     }
@@ -2916,7 +2939,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.5.5";
+    public const string CurrentAppVersion = "v0.5.6";
 
 
     public string GetCurrentAppVersion()

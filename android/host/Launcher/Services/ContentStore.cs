@@ -38,7 +38,7 @@ public readonly struct ContentLocation
 public static class ContentStore
 {
     private const string ManifestFileName = ".manifest";
-    private const int ChunkSize = 128;
+    private const int ChunkSize = 2048;
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
@@ -143,19 +143,23 @@ public static class ContentStore
 
         if (local == null && entries.Count > 0)
         {
-            local = await MigrateLegacyZipAsync(build, cacheRoot, dir, entries, progress, cancel);
+            var hasLocalFiles = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any();
+            if (!hasLocalFiles)
+                local = await MigrateLegacyZipAsync(build, cacheRoot, dir, entries, progress, cancel);
+
             if (local == null)
             {
                 // Обрыв загрузки не должен терять уже скачанные файлы: пересчитываем манифест по диску,
                 // чтобы на следующей попытке качались только недостающие файлы.
                 progress?.Invoke(0, entries.Count, "Checking downloaded files...");
                 local = await HashLocalFilesAsync(dir, entries, progress, cancel);
-                if (local != null && local.Count > 0)
-                {
-                    var recovered = local.Select(kv => (kv.Value, kv.Key)).ToList();
-                    await File.WriteAllTextAsync(manifestPath, BuildManifestText(recovered), cancel);
-                    global::Android.Util.Log.Info("SS14Store", $"Recovered manifest from disk: {local.Count} files");
-                }
+            }
+
+            if (local != null && local.Count > 0)
+            {
+                var recovered = local.Select(kv => (kv.Value, kv.Key)).ToList();
+                await File.WriteAllTextAsync(manifestPath, BuildManifestText(recovered), cancel);
+                global::Android.Util.Log.Info("SS14Store", $"Recovered manifest from disk: {local.Count} files");
             }
         }
 
@@ -188,7 +192,27 @@ public static class ContentStore
         global::Android.Util.Log.Info("SS14Store", $"Content delta: {changed.Count} changed, {removed.Count} removed of {entries.Count}");
 
         if (changed.Count > 0)
-            await DownloadChangedAsync(build, serverAddress, dir, entries, changed, progress, cancel);
+        {
+            var donePaths = new HashSet<string>(
+                local?.Keys ?? Enumerable.Empty<string>(), StringComparer.Ordinal);
+            var savedSinceManifest = 0;
+            Action<int> fileSaved = index =>
+            {
+                donePaths.Add(entries[index].Path);
+                if (++savedSinceManifest % 256 != 0)
+                    return;
+
+                try
+                {
+                    var present = entries.Where(e => donePaths.Contains(e.Path))
+                        .Select(e => (e.Hash, e.Path)).ToList();
+                    File.WriteAllText(manifestPath, BuildManifestText(present));
+                }
+                catch { }
+            };
+
+            await DownloadChangedAsync(build, serverAddress, dir, entries, changed, progress, cancel, fileSaved);
+        }
 
         foreach (var rel in removed)
         {
@@ -409,7 +433,8 @@ public static class ContentStore
         List<(string Hash, string Path)> entries,
         List<int> changed,
         Action<int, int, string>? progress,
-        CancellationToken cancel)
+        CancellationToken cancel,
+        Action<int>? fileSaved = null)
     {
         var downloadUrls = GetDownloadUrls(build, serverAddress).ToList();
         if (downloadUrls.Count == 0)
@@ -465,8 +490,7 @@ public static class ContentStore
                 using var buffered = new BufferedStream(stream, 1048576);
                 var streamHeader = new byte[4];
                 await buffered.ReadExactlyAsync(streamHeader, cancel);
-                var flags = BinaryPrimitives.ReadInt32LittleEndian(streamHeader);
-                var preCompressed = (flags & 1) != 0;
+                var flags = BinaryPrimitives.ReadInt32LittleEndian(streamHeader);                var preCompressed = (flags & 1) != 0;
 
                 var headerBuf = new byte[preCompressed ? 8 : 4];
                 byte[] compressed = new byte[65536];
@@ -528,6 +552,7 @@ public static class ContentStore
                     var tmp = full + ".part";
                     await File.WriteAllBytesAsync(tmp, data.ToArray(), cancel);
                     File.Move(tmp, full, true);
+                    fileSaved?.Invoke(index);
 
                     written++;
                     if (written % 32 == 0 || written == total)
