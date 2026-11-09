@@ -28,6 +28,11 @@ namespace Content.Android;
         ConfigChanges.ScreenLayout | ConfigChanges.SmallestScreenSize | ConfigChanges.Density)]
 public class LauncherActivity : Activity
 {
+    private static readonly string[] LaunchExtras =
+    {
+        "connect_addr", "ss14_addr", "username", "token", "userid", "pubkey",
+    };
+
     private TextView _status = default!;
     private TextView _detail = default!;
     private ProgressBar _bar = default!;
@@ -160,6 +165,14 @@ public class LauncherActivity : Activity
     {
         var intent = new Intent(this, typeof(MainActivity));
         intent.PutExtra("mount_zip", zip);
+        // Пробрасываем параметры запуска (подключение, аккаунт), чтобы можно было стартовать
+        // сразу в игру: adb shell am start ... --es connect_addr host:port.
+        foreach (var key in LaunchExtras)
+        {
+            var value = Intent?.GetStringExtra(key);
+            if (!string.IsNullOrEmpty(value))
+                intent.PutExtra(key, value);
+        }
         StartActivity(intent);
         Finish();
     }
