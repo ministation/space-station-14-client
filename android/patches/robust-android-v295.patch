@@ -1098,16 +1098,29 @@ index c3ca7a2..dd1e34d 100644
  
      /// <summary>
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Events.cs b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
-index 029d12c..3ff4be2 100644
+index 029d12c..efa1e5c 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
-@@ -1,4 +1,4 @@
+@@ -1,14 +1,17 @@
 -﻿// Makes switching easier.
 +// Makes switching easier.
  #if EXCEPTION_TOLERANCE
  #define EXCEPTION_TOLERANCE_LOCAL
  using System;
-@@ -87,6 +87,9 @@ namespace Robust.Client.Graphics.Clyde
++using System.Numerics;
+ using Robust.Shared.Log;
+ #endif
+ 
+ using System.Collections.Generic;
+ using OpenToolkit.Graphics.OpenGL4;
++using System.Numerics;
+ using Robust.Client.Input;
+ using Robust.Shared.Maths;
++using Robust.Shared.Map;
+ 
+ namespace Robust.Client.Graphics.Clyde
+ {
+@@ -87,6 +90,9 @@ namespace Robust.Client.Graphics.Clyde
                  case DEventInputModeChanged:
                      RaiseInputModeChanged();
                      break;
@@ -1117,7 +1130,28 @@ index 029d12c..3ff4be2 100644
              }
          }
  
-@@ -163,9 +166,16 @@ namespace Robust.Client.Graphics.Clyde
+@@ -148,6 +154,20 @@ namespace Robust.Client.Graphics.Clyde
+             _eventDispatchQueue.Enqueue(new DEventTextEditing(ev));
+         }
+ 
++        public void InjectMouseMove(Vector2 delta)
++        {
++            var window = _currentHoveredWindow ?? _mainWindow;
++            if (window == null || window.IsDisposed || window.FramebufferSize.X <= 0 || window.FramebufferSize.Y <= 0)
++                return;
++
++            var newPos = window.LastMousePos + delta;
++            newPos.X = Math.Clamp(newPos.X, 0f, window.FramebufferSize.X);
++            newPos.Y = Math.Clamp(newPos.Y, 0f, window.FramebufferSize.Y);
++            window.LastMousePos = newPos;
++
++            SendMouseMove(new MouseMoveEventArgs(delta, new ScreenCoordinates(newPos, window.Id)));
++        }
++
+         private void SendMouseMove(MouseMoveEventArgs ev)
+         {
+             _eventDispatchQueue.Enqueue(new DEventMouseMove(ev));
+@@ -163,9 +183,16 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventInputModeChanged());
          }
  
@@ -1408,10 +1442,21 @@ index c77add4..221d034 100644
          public event Action<WindowDestroyedEventArgs>? DestroyWindow;
          public event Action<WindowContentScaleEventArgs>? OnWindowScaleChanged;
 diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-index c0e01b4..53eb09c 100644
+index c0e01b4..454b48b 100644
 --- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 +++ b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-@@ -64,6 +64,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -32,6 +32,10 @@ namespace Robust.Client.Graphics.Clyde
+         public Vector2i ScreenSize => (1280, 720);
+         public IEnumerable<IClydeWindow> AllWindows => _windows;
+         public Vector2 DefaultWindowScale => new Vector2(1, 1);
++
++        public void InjectMouseMove(Vector2 delta)
++        {
++        }
+         public bool IsFocused => true;
+         private readonly List<IClydeWindow> _windows = new();
+         private int _nextWindowId = 2;
+@@ -64,6 +68,7 @@ namespace Robust.Client.Graphics.Clyde
          public event Action<KeyEventArgs>? KeyUp { add { } remove { } }
          public event Action<KeyEventArgs>? KeyDown { add { } remove { } }
          public event Action<MouseWheelEventArgs>? MouseWheel { add { } remove { } }
@@ -1922,6 +1967,22 @@ index a829bb9..1d752b5 100644
          public Vector2 DrawString(Font font, Vector2 pos, ReadOnlySpan<char> str, float scale, Color color, TextOutline? outline = null)
          {
              var advanceTotal = Vector2.Zero;
+diff --git a/Robust.Client/Graphics/IClyde.cs b/Robust.Client/Graphics/IClyde.cs
+index 329a9ca..138e156 100644
+--- a/Robust.Client/Graphics/IClyde.cs
++++ b/Robust.Client/Graphics/IClyde.cs
+@@ -35,6 +35,11 @@ namespace Robust.Client.Graphics
+         /// </summary>
+         Vector2 DefaultWindowScale { get; }
+ 
++        /// <summary>
++        /// Inject a relative mouse movement, used by the mobile aim stick.
++        /// </summary>
++        void InjectMouseMove(Vector2 delta);
++
+         void SetWindowTitle(string title);
+         void SetWindowMonitor(IClydeMonitor monitor);
+ 
 diff --git a/Robust.Client/Graphics/IClydeInternal.cs b/Robust.Client/Graphics/IClydeInternal.cs
 index 388522f..6d889cf 100644
 --- a/Robust.Client/Graphics/IClydeInternal.cs
@@ -2590,10 +2651,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..82865f4
+index 0000000..0cb4f4a
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1170 @@
+@@ -0,0 +1,1211 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2624,6 +2685,7 @@ index 0000000..82865f4
 +    public static bool IsEditMode { get; private set; }
 +
 +    private readonly VirtualThumbstick _thumbstick;
++    private readonly VirtualThumbstick _aimStick;
 +    public static bool IsSecondaryActive { get; set; }
 +    private static PojavActionButton? _staticSecButton;
 +
@@ -2769,6 +2831,10 @@ index 0000000..82865f4
 +            }
 +        };
 +        _clusterContainer.AddChild(_thumbstick);
++
++        _aimStick = new VirtualThumbstick { IsAimStick = true };
++        _aimStick.OnPositionChanged += SaveLayout;
++        _clusterContainer.AddChild(_aimStick);
 +
 +        _pullButton = CreateButton("PULL", Keyboard.Key.Control, id: "pull", accent: new Color(155, 89, 182), isToggle: true);
 +        _pullButton.OnPressed = () =>
@@ -3264,6 +3330,7 @@ index 0000000..82865f4
 +        }
 +
 +        _thumbstick.CustomPosition = null;
++        _aimStick.CustomPosition = null;
 +        InvalidateArrange();
 +    }
 +
@@ -3277,6 +3344,7 @@ index 0000000..82865f4
 +        if (_controlsHidden)
 +        {
 +            _thumbstick.ReleaseStick();
++            _aimStick.ReleaseStick();
 +            foreach (var btn in _allButtons)
 +            {
 +                btn.Release();
@@ -3301,6 +3369,14 @@ index 0000000..82865f4
 +                {
 +                    _claimedTouches[args.FingerId] = _thumbstick;
 +                    _thumbstick.OnTouchDown(args.FingerId, stickPos);
++                    return true;
++                }
++
++                var aimPos = args.Coordinates.Position / _aimStick.UIScale - _aimStick.GlobalPosition;
++                if (_aimStick.VisibleInTree && _aimStick.HasPoint(aimPos))
++                {
++                    _claimedTouches[args.FingerId] = _aimStick;
++                    _aimStick.OnTouchDown(args.FingerId, aimPos);
 +                    return true;
 +                }
 +
@@ -3399,6 +3475,18 @@ index 0000000..82865f4
 +                    float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var sy))
 +                {
 +                    _thumbstick.CustomPosition = new Vector2(sx, sy);
++                }
++                continue;
++            }
++
++            if (parts[0] == "aim" && parts.Length >= 2)
++            {
++                var coords = parts[1].Split(',');
++                if (coords.Length == 2 &&
++                    float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var ax) &&
++                    float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var ay))
++                {
++                    _aimStick.CustomPosition = new Vector2(ax, ay);
 +                }
 +                continue;
 +            }
@@ -3509,6 +3597,12 @@ index 0000000..82865f4
 +        {
 +            var p = _thumbstick.CustomPosition.Value;
 +            parts.Add($"stick:{p.X.ToString("F1", CultureInfo.InvariantCulture)},{p.Y.ToString("F1", CultureInfo.InvariantCulture)}");
++        }
++
++        if (_aimStick.CustomPosition.HasValue)
++        {
++            var p = _aimStick.CustomPosition.Value;
++            parts.Add($"aim:{p.X.ToString("F1", CultureInfo.InvariantCulture)},{p.Y.ToString("F1", CultureInfo.InvariantCulture)}");
 +        }
 +
 +        foreach (var delId in _deletedButtonIds)
@@ -3663,13 +3757,21 @@ index 0000000..82865f4
 +        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
 +        ArrangeChild(_thumbstick, stickPos, stickSize, finalSize);
 +
-+        // Action cluster: two compact rows in the bottom right corner. The centre of the
++        // Right stick aims, Terraria style. It sits in the bottom right corner and the
++        // action cluster is lifted above it so both thumbs rest naturally.
++        _aimStick.Radius = stickRadius;
++        _aimStick.KnobRadius = 30f * scale * stickScale;
++        _aimStick.Deadzone = 9f * scale * stickScale;
++        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - margin - stickRadius * 2f - 10f);
++        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
++
++        // Action cluster: two compact rows above the aim stick. The centre of the
 +        // screen stays free so a drag there rotates the camera instead of hitting a button.
 +        var useSize = 58f * scale;
 +        var interSize = 52f * scale;
 +        var utilSize = 46f * scale;
 +        var bottomRight = finalSize.X - margin;
-+        var bottomY = finalSize.Y - margin;
++        var bottomY = finalSize.Y - margin - stickRadius * 2f - 10f - gap;
 +
 +        ArrangeChild(_useButton,
 +            new Vector2(bottomRight - useSize, bottomY - useSize),
@@ -4147,10 +4249,10 @@ index 0000000..bc6b7cf
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..4e31f1e
+index 0000000..454e157
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,379 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4160,12 +4262,22 @@ index 0000000..4e31f1e
 +using Robust.Shared.Input;
 +using Robust.Shared.IoC;
 +using Robust.Shared.Maths;
++using Robust.Shared.Timing;
 +
 +namespace Robust.Client.UserInterface.Mobile;
 +
 +public sealed partial class VirtualThumbstick : Control
 +{
 +    [Dependency] private readonly IInputManager _inputManager = default!;
++    [Dependency] private readonly IClyde _clyde = default!;
++
++    /// <summary>
++    /// Aim stick: instead of WASD keys it keeps moving the mouse cursor while held,
++    /// which is how the Terraria style right stick aims in this client.
++    /// </summary>
++    public bool IsAimStick { get; set; }
++
++    public float AimSpeed { get; set; } = 700f;
 +
 +    public float Radius { get; set; } = 75f;
 +    public float KnobRadius { get; set; } = 32f;
@@ -4192,6 +4304,8 @@ index 0000000..4e31f1e
 +    }
 +
 +    private long? _activeFingerId;
++    private float _pressElapsed;
++    private bool _pressMoved;
 +
 +    public void OnTouchDown(long fingerId, Vector2 localPos)
 +    {
@@ -4200,7 +4314,11 @@ index 0000000..4e31f1e
 +
 +        _activeFingerId = fingerId;
 +        _isPressed = true;
++        _pressElapsed = 0f;
++        _pressMoved = false;
 +        var offset = localPos - (Size / 2f);
++        if (offset.LengthSquared() > Deadzone * Deadzone)
++            _pressMoved = true;
 +        UpdateStickOffset(offset);
 +    }
 +
@@ -4221,10 +4339,36 @@ index 0000000..4e31f1e
 +        }
 +    }
 +
++    protected override void FrameUpdate(FrameEventArgs args)
++    {
++        base.FrameUpdate(args);
++
++        if (!IsAimStick || !_isPressed)
++            return;
++
++        _pressElapsed += args.DeltaSeconds;
++
++        var length = _knobOffset.Length();
++        if (length < Deadzone)
++            return;
++
++        var strength = MathF.Min(length / Radius, 1f);
++        var dir = _knobOffset / length;
++        _clyde.InjectMouseMove(dir * (AimSpeed * strength * args.DeltaSeconds));
++    }
++
 +    public void ReleaseStick()
 +    {
 +        if (!_isPressed)
 +            return;
++
++        // Terraria style: a quick tap of the aim stick works as a normal click.
++        if (IsAimStick && !_pressMoved && _pressElapsed < 0.25f)
++        {
++            var click = new KeyEventArgs(Keyboard.Key.MouseLeft, false, false, false, false, false, 0);
++            _inputManager.KeyDown(click);
++            _inputManager.KeyUp(click);
++        }
 +
 +        _activeFingerId = null;
 +        _isPressed = false;
@@ -4361,7 +4505,7 @@ index 0000000..4e31f1e
 +    {
 +        var newKeys = new HashSet<Keyboard.Key>();
 +
-+        if (dist >= Deadzone)
++        if (!IsAimStick && dist >= Deadzone)
 +        {
 +            const float threshold = 0.35f;
 +
@@ -4422,11 +4566,25 @@ index 0000000..4e31f1e
 +        // Four direction chevrons on the rim instead of tiny dots.
 +        var arrowRadius = Radius * 0.78f;
 +        var arrow = Radius * 0.16f;
++        if (IsAimStick)
++        {
++            var tick = Radius * 0.22f;
++            var tickOffset = Radius * 0.5f;
++            var crossColor = new Color(255, 255, 255, pressed ? 190 : 110);
++            handle.DrawLine(center + new Vector2(-tickOffset, 0), center + new Vector2(-tickOffset + tick, 0), crossColor);
++            handle.DrawLine(center + new Vector2(tickOffset - tick, 0), center + new Vector2(tickOffset, 0), crossColor);
++            handle.DrawLine(center + new Vector2(0, -tickOffset), center + new Vector2(0, -tickOffset + tick), crossColor);
++            handle.DrawLine(center + new Vector2(0, tickOffset - tick), center + new Vector2(0, tickOffset), crossColor);
++            handle.DrawCircle(center, 2.5f, crossColor, true);
++            goto Knob;
++        }
++
 +        DrawChevron(handle, center + new Vector2(0, -arrowRadius), 'U', arrow, _activeKeys.Contains(Keyboard.Key.W));
 +        DrawChevron(handle, center + new Vector2(0, arrowRadius), 'D', arrow, _activeKeys.Contains(Keyboard.Key.S));
 +        DrawChevron(handle, center + new Vector2(-arrowRadius, 0), 'L', arrow, _activeKeys.Contains(Keyboard.Key.A));
 +        DrawChevron(handle, center + new Vector2(arrowRadius, 0), 'R', arrow, _activeKeys.Contains(Keyboard.Key.D));
 +
++        Knob:
 +        // Thumb knob, the only bright element, sized for a thumb not a mouse pointer.
 +        var knobCenter = center + _knobOffset;
 +        handle.DrawCircle(knobCenter, KnobRadius, new Color(255, 255, 255, pressed ? 110 : 70), true);

@@ -574,6 +574,20 @@ namespace Content.Android
                 LaunchPubKey = Intent?.GetStringExtra("pubkey") ?? LaunchPubKey;
 
                 LaunchBuildCVars.Clear();
+
+                // Mobile first defaults: low graphics, particles and parallax off, capped fps.
+                // Extras from the launcher below can override any of these.
+                LaunchBuildCVars["display.vsync"] = "false";
+                LaunchBuildCVars["display.max_fps"] = "60";
+                LaunchBuildCVars["light.resolution_scale"] = "0.25";
+                LaunchBuildCVars["light.ambient_occlusion"] = "false";
+                LaunchBuildCVars["light.ambient_occlusion_resolution_scale"] = "0.25";
+                LaunchBuildCVars["particles.quality"] = "0";
+                LaunchBuildCVars["particles.global_budget"] = "512";
+                LaunchBuildCVars["parallax.enabled"] = "false";
+                LaunchBuildCVars["parallax.low_quality"] = "true";
+                LaunchBuildCVars["opt.sprite_quality"] = "0";
+
                 if (Intent?.Extras != null)
                 {
                     var extras = Intent.Extras;
@@ -1089,9 +1103,14 @@ namespace Content.Android
 
                     foreach (var (cvarName, val) in LaunchBuildCVars)
                     {
+                        // Launcher metadata lives under the build.* namespace, while user settings
+                        // and graphics defaults are ordinary engine/content CVars and must keep their name.
+                        var isBuildMeta = cvarName is "engine_version" or "fork_id" or "version" or "download_url"
+                            or "manifest_url" or "manifest_download_url" or "manifest_hash" or "hash" or "source_url" or "source_commit_id";
+                        var cvarKey = isBuildMeta ? $"build.{cvarName}" : cvarName;
                         args.Add("--cvar");
-                        args.Add($"build.{cvarName}={val}");
-                        global::Android.Util.Log.Info("SS14Launch", $"[Main] Build CVar: build.{cvarName}={val}");
+                        args.Add($"{cvarKey}={val}");
+                        global::Android.Util.Log.Info("SS14Launch", $"[Main] CVar: {cvarKey}={val}");
                     }
                 }
 
