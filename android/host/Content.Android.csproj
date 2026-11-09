@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationId>ru.ministation.client</ApplicationId>
-    <ApplicationVersion>17</ApplicationVersion>
-    <ApplicationDisplayVersion>0.6.1</ApplicationDisplayVersion>
+    <ApplicationVersion>18</ApplicationVersion>
+    <ApplicationDisplayVersion>0.6.2</ApplicationDisplayVersion>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>NU1701;CA1416</NoWarn>
@@ -17,13 +17,22 @@
     <PublishTrimmed>false</PublishTrimmed>
     <TrimMode>None</TrimMode>
     <AndroidUseAssemblyStore>false</AndroidUseAssemblyStore>
-    <!-- AOT is slow and not needed for the first runnable APK; turn on later if perf demands it. -->
-    <RunAOTCompilation>false</RunAOTCompilation>
+    <!-- Native AOT for the client assemblies: the interpreter/JIT on ARM was the
+         main CPU cost. Release builds only; debug stays JIT for fast iteration. -->
+    <RunAOTCompilation Condition="'$(Configuration)' == 'Release'">true</RunAOTCompilation>
+    <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
     <UseInterpreter>false</UseInterpreter>
-    <RuntimeIdentifiers>android-x64;android-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>android-arm64</RuntimeIdentifiers>
     <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
     <ExcludeSatelliteAssemblies>true</ExcludeSatelliteAssemblies>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Runtime knobs: keep GC off the game thread as much as possible. -->
+    <RuntimeHostConfigurationOption Include="System.GC.Concurrent" Value="true" />
+    <RuntimeHostConfigurationOption Include="System.GC.Server" Value="false" />
+    <RuntimeHostConfigurationOption Include="System.GC.RetainVM" Value="true" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- TargetOS must be forced: otherwise the net10.0 engine projects compile the FREEDESKTOP branches. -->
@@ -109,4 +118,13 @@
   <PropertyGroup>
     <_AndroidXA1030>false</_AndroidXA1030>
   </PropertyGroup>
+
+  <!-- TerraFX.Interop.Windows is a Windows-only interop assembly that ends up in
+       the publish output through a dependency. It is never loaded on Android and
+       the Mono AOT compiler crashes on it for x64, so keep it JIT-only. -->
+  <Target Name="SkipUnusedInteropInAot" BeforeTargets="_AndroidAotCompilation">
+    <ItemGroup>
+      <_AndroidAotInputs Remove="@(_AndroidAotInputs)" Condition="'%(Filename)' == 'TerraFX.Interop.Windows'" />
+    </ItemGroup>
+  </Target>
 </Project>

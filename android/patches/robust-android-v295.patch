@@ -1184,7 +1184,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..6ac0a1a 100644
+index 73cadae..1d49e1b 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -40,7 +40,7 @@ namespace Robust.Client.Graphics.Clyde
@@ -1192,7 +1192,7 @@ index 73cadae..6ac0a1a 100644
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
          // I figured this was more accuracy sensitive than lights so resolution is significantly higher.
 -        private const int FovMapSize = 2048;
-+        private static int FovMapSize => OperatingSystem.IsAndroid() ? 256 : 2048;
++        private static int FovMapSize => OperatingSystem.IsAndroid() ? 512 : 2048;
  
          private ClydeShaderInstance _fovDebugShaderInstance = default!;
  
@@ -2651,10 +2651,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..0cb4f4a
+index 0000000..1b7c179
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1211 @@
+@@ -0,0 +1,1193 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3074,7 +3074,8 @@ index 0000000..0cb4f4a
 +        Color? accent = null,
 +        bool isToggle = false)
 +    {
-+        var btn = new PojavActionButton(text, actionKey, special, id, isCustom)
++        var display = isCustom ? text : KeySymbol(actionKey, special, text);
++        var btn = new PojavActionButton(display, actionKey, special, id, isCustom)
 +        {
 +            AccentColor = accent ?? new Color(210, 210, 210),
 +            IsToggle = isToggle
@@ -3084,6 +3085,30 @@ index 0000000..0cb4f4a
 +        _allButtons.Add(btn);
 +        _clusterContainer.AddChild(btn);
 +        return btn;
++    }
++
++    private static string KeySymbol(Keyboard.Key? key, PojavSpecialAction special, string fallback)
++    {
++        switch (special)
++        {
++            case PojavSpecialAction.Secondary:
++                return "RMB";
++            case PojavSpecialAction.Throw:
++                return "T";
++            case PojavSpecialAction.Custom:
++            case PojavSpecialAction.KeyboardToggle:
++                return fallback;
++        }
++
++        return key switch
++        {
++            Keyboard.Key.Control => "Ctrl",
++            Keyboard.Key.Shift => "Shift",
++            Keyboard.Key.Alt => "Alt",
++            Keyboard.Key.Escape => fallback,
++            null => fallback,
++            var k => k.ToString() ?? string.Empty
++        };
 +    }
 +
 +    private PojavActionButton CreateUtilityButton(string text, Keyboard.Key? actionKey = null, PojavSpecialAction special = PojavSpecialAction.None, string id = "")
@@ -3538,7 +3563,6 @@ index 0000000..0cb4f4a
 +                var existing = _allButtons.Find(b => b.Id == id);
 +                if (existing != null)
 +                {
-+                    if (!string.IsNullOrWhiteSpace(text)) existing.Text = text;
 +                    if (key.HasValue) existing.ActionKey = key.Value;
 +                    if (coords.Length == 2 &&
 +                        float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var bx) &&
@@ -3635,27 +3659,6 @@ index 0000000..0cb4f4a
 +
 +        var serialized = string.Join(";", parts);
 +        _cfg.SetCVar(CVars.MobileControlsLayout, serialized);
-+        DumpMobileDebugInfo();
-+    }
-+
-+    private void DumpArrangeDebugInfo(Vector2 viewport, float scale)
-+    {
-+        try
-+        {
-+            var dir = ProgramShared.PathOffset;
-+            if (string.IsNullOrEmpty(dir))
-+                return;
-+            var sb = new System.Text.StringBuilder();
-+            sb.AppendLine($"utc={DateTime.UtcNow:O}");
-+            sb.AppendLine($"viewport={viewport} controls_scale={scale.ToString(CultureInfo.InvariantCulture)}");
-+            sb.AppendLine($"stick pos={_thumbstick.GlobalPosition} size={_thumbstick.Size} custom={_thumbstick.CustomPosition?.ToString() ?? "<none>"}");
-+            foreach (var b in _allButtons)
-+            {
-+                sb.AppendLine($"btn {b.Id} pos={b.GlobalPosition} size={b.Size} custom={b.CustomPosition?.ToString() ?? "<none>"} label=\"{b.Text}\" edit={b.IsEditMode}");
-+            }
-+            File.WriteAllText(Path.Combine(dir, "mobile-arrange-debug.txt"), sb.ToString());
-+        }
-+        catch { }
 +    }
 +
 +    /// <summary>
@@ -3736,6 +3739,15 @@ index 0000000..0cb4f4a
 +        control.Arrange(new UIBox2(pos, pos + size));
 +    }
 +
++    private void ArrangeOnArc(Control control, Vector2 center, float angleDeg, float radius, Vector2 size, Vector2 viewport)
++    {
++        var rad = angleDeg * MathF.PI / 180f;
++        var pos = new Vector2(
++            center.X + MathF.Cos(rad) * radius,
++            center.Y - MathF.Sin(rad) * radius) - size / 2f;
++        ArrangeChild(control, pos, size, viewport);
++    }
++
 +    protected override Vector2 ArrangeOverride(Vector2 finalSize)
 +    {
 +        _clusterContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
@@ -3747,76 +3759,48 @@ index 0000000..0cb4f4a
 +        var margin = 18f * scale;
 +        var gap = 8f * scale;
 +
++        // The logical UI size shrinks a lot with display.uiScale on phones, so the
++        // whole pad is scaled to the shorter viewport side to stay reachable and
++        // to keep the Terraria ring from being clamped against the top edge.
++        var fit = Math.Clamp(MathF.Min(finalSize.X, finalSize.Y) / 720f, 0.5f, 1.3f);
++
 +        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
-+        var stickRadius = 82f * scale * stickScale;
++        var stickRadius = 82f * scale * stickScale * fit;
 +        _thumbstick.Radius = stickRadius;
-+        _thumbstick.KnobRadius = 30f * scale * stickScale;
-+        _thumbstick.Deadzone = 9f * scale * stickScale;
++        _thumbstick.KnobRadius = 30f * scale * stickScale * fit;
++        _thumbstick.Deadzone = 9f * scale * stickScale * fit;
 +
 +        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
 +        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
 +        ArrangeChild(_thumbstick, stickPos, stickSize, finalSize);
 +
 +        // Right stick aims, Terraria style. It sits in the bottom right corner and the
-+        // action cluster is lifted above it so both thumbs rest naturally.
++        // action buttons sit in arcs around it.
 +        _aimStick.Radius = stickRadius;
-+        _aimStick.KnobRadius = 30f * scale * stickScale;
-+        _aimStick.Deadzone = 9f * scale * stickScale;
++        _aimStick.KnobRadius = 30f * scale * stickScale * fit;
++        _aimStick.Deadzone = 9f * scale * stickScale * fit;
 +        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - margin - stickRadius * 2f - 10f);
 +        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
 +
-+        // Action cluster: two compact rows above the aim stick. The centre of the
-+        // screen stays free so a drag there rotates the camera instead of hitting a button.
-+        var useSize = 58f * scale;
-+        var interSize = 52f * scale;
-+        var utilSize = 46f * scale;
-+        var bottomRight = finalSize.X - margin;
-+        var bottomY = finalSize.Y - margin - stickRadius * 2f - 10f - gap;
++        var useSize = 58f * scale * fit;
++        var interSize = 52f * scale * fit;
++        var utilSize = 46f * scale * fit;
 +
-+        ArrangeChild(_useButton,
-+            new Vector2(bottomRight - useSize, bottomY - useSize),
-+            new Vector2(useSize, useSize), finalSize);
++        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - margin - stickRadius);
++        var innerRing = stickRadius + 48f * scale * fit;
++        var outerRing = stickRadius + 108f * scale * fit;
 +
-+        var interX = bottomRight - useSize - gap - interSize;
-+        ArrangeChild(_interactButton,
-+            new Vector2(interX, bottomY - interSize),
-+            new Vector2(interSize, interSize), finalSize);
++        ArrangeOnArc(_useButton, aimCenter, 80f, innerRing, new Vector2(useSize, useSize), finalSize);
++        ArrangeOnArc(_interactButton, aimCenter, 128f, innerRing, new Vector2(interSize, interSize), finalSize);
 +
-+        var handX = interX - gap - utilSize;
-+        ArrangeChild(_handButton,
-+            new Vector2(handX, bottomY - utilSize),
-+            new Vector2(utilSize, utilSize), finalSize);
-+
-+        var dropX = handX - gap - utilSize;
-+        ArrangeChild(_dropButton,
-+            new Vector2(dropX, bottomY - utilSize),
-+            new Vector2(utilSize, utilSize), finalSize);
-+
-+        var topRowY = bottomY - useSize - gap - utilSize;
-+        var col = 0;
-+        ArrangeChild(_secButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
-+        col++;
-+        ArrangeChild(_altButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
-+        col++;
-+        ArrangeChild(_bagButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
-+        col++;
-+        ArrangeChild(_throwButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
-+        col++;
-+        ArrangeChild(_examButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
-+        col++;
-+        ArrangeChild(_pullButton,
-+            new Vector2(bottomRight - utilSize * (col + 1) - gap * col, topRowY),
-+            new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_secButton, aimCenter, 72f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_handButton, aimCenter, 94f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_altButton, aimCenter, 116f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_dropButton, aimCenter, 138f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_bagButton, aimCenter, 160f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_throwButton, aimCenter, 182f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_examButton, aimCenter, 204f, outerRing, new Vector2(utilSize, utilSize), finalSize);
++        ArrangeOnArc(_pullButton, aimCenter, 226f, outerRing, new Vector2(utilSize, utilSize), finalSize);
 +
 +        foreach (var btn in _allButtons)
 +        {
@@ -3861,21 +3845,22 @@ index 0000000..0cb4f4a
 +            _dialogPanel.Arrange(new UIBox2(dialogX, dialogY, dialogX + dialogW, dialogY + dialogH));
 +        }
 +
-+        DumpArrangeDebugInfo(finalSize, Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f));
-+
 +        return finalSize;
 +    }
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..bc6b7cf
+index 0000000..01f3ad3
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,375 @@
+@@ -0,0 +1,403 @@
 +using System;
 +using System.Numerics;
++using System.Collections.Generic;
++using System.Text;
 +using Robust.Client.Graphics;
 +using Robust.Client.Input;
++using Robust.Client.ResourceManagement;
 +using Robust.Client.UserInterface;
 +using Robust.Client.UserInterface.Controls;
 +using Robust.Shared.Input;
@@ -3898,6 +3883,7 @@ index 0000000..bc6b7cf
 +{
 +    [Dependency] private readonly IInputManager _inputManager = default!;
 +    [Dependency] private readonly IClyde _clyde = default!;
++    [Dependency] private readonly IResourceCache _resourceCache = default!;
 +
 +    public string Id { get; set; } = string.Empty;
 +    public Vector2 DefaultPosition { get; set; }
@@ -3908,10 +3894,14 @@ index 0000000..bc6b7cf
 +    public event Action? OnPositionChanged;
 +    public event Action<PojavActionButton>? OnConfigureRequested;
 +
++    private string _text = string.Empty;
++    private readonly Dictionary<int, VectorFont> _fonts = new();
++    private readonly Dictionary<(int Size, string Text), float> _textWidths = new();
++
 +    public string Text
 +    {
-+        get => _label.Text ?? string.Empty;
-+        set => _label.Text = value;
++        get => _text;
++        set => _text = value ?? string.Empty;
 +    }
 +
 +    public Color AccentColor { get; set; } = new Color(210, 210, 210);
@@ -3934,7 +3924,6 @@ index 0000000..bc6b7cf
 +        }
 +    }
 +
-+    private readonly Label _label;
 +    private bool _isPressed;
 +    private Vector2? _dragTouchOffset;
 +    private Vector2 _pressStartGlobal;
@@ -3951,21 +3940,44 @@ index 0000000..bc6b7cf
 +        IsCustom = isCustom;
 +        MouseFilter = MouseFilterMode.Stop;
 +
-+        _label = new Label
-+        {
-+            Text = text,
-+            HorizontalAlignment = HAlignment.Center,
-+            VerticalAlignment = VAlignment.Center,
-+            FontColorOverride = Color.White,
-+            MouseFilter = MouseFilterMode.Ignore
-+        };
-+        AddChild(_label);
++        _text = text;
 +    }
 +
-+    protected override Vector2 ArrangeOverride(Vector2 finalSize)
++    private VectorFont GetFont(int size)
 +    {
-+        _label.Arrange(new UIBox2(Vector2.Zero, finalSize));
-+        return finalSize;
++        if (_fonts.TryGetValue(size, out var font))
++            return font;
++
++        font = new VectorFont(
++            _resourceCache.GetResource<FontResource>("/EngineFonts/NotoSans/NotoSans-Regular.ttf"), size);
++        _fonts[size] = font;
++        return font;
++    }
++
++    private void DrawLabel(DrawingHandleScreen handle, Vector2 center, float radius, bool active)
++    {
++        if (_text.Length == 0)
++            return;
++
++        var size = Math.Clamp((int)(radius * 0.9f), 10, 26);
++        var font = GetFont(size);
++
++        var cacheKey = (size, _text);
++        if (!_textWidths.TryGetValue(cacheKey, out var width))
++        {
++            width = 0f;
++            foreach (var rune in _text.EnumerateRunes())
++            {
++                var metrics = font.GetCharMetrics(rune, 1f);
++                width += metrics?.Advance ?? size * 0.6f;
++            }
++            _textWidths[cacheKey] = width;
++        }
++
++        var height = font.GetHeight(1f);
++        var pos = center - new Vector2(width / 2f, height / 2f);
++        var color = active ? new Color(255, 255, 255, 255) : new Color(238, 242, 248, 235);
++        handle.DrawString(font, pos, _text, 1f, color, new TextOutline(1.5f, new Color(0, 0, 0, 220)));
 +    }
 +
 +    private long? _activeFingerId;
@@ -4207,52 +4219,50 @@ index 0000000..bc6b7cf
 +        base.Draw(handle);
 +
 +        var center = Size / 2f;
-+        var radius = MathF.Min(Size.X, Size.Y) / 2f - 1.5f;
++        var radius = MathF.Min(Size.X, Size.Y) / 2f;
 +        var active = _isPressed || IsToggled;
++        var accent = AccentColor;
 +
-+        // Terraria-like buttons: translucent round disc, thin bright rim, no heavy accent fill.
++        // Terraria style: dark round button, colored rim, big key symbol on top.
++        var shadow = new Color(0, 0, 0, 90);
++        handle.DrawCircle(center + new Vector2(0, radius * 0.1f), radius, shadow, true);
++
 +        var bg = active
-+            ? new Color(255, 255, 255, 46)
-+            : new Color(16, 18, 24, 140);
++            ? Color.InterpolateBetween(new Color(14, 16, 22, 235), accent, 0.55f)
++            : new Color(14, 16, 22, 205);
 +        var rim = IsEditMode
-+            ? new Color(255, 215, 0, 245)
++            ? new Color(255, 215, 0, 255)
 +            : active
-+                ? new Color(255, 255, 255, 255)
-+                : new Color(255, 255, 255, 120);
++                ? new Color(255, 255, 255, 250)
++                : accent;
 +
-+        var drawRadius = active ? radius - 1f : radius;
-+        handle.DrawCircle(center, drawRadius, bg, true);
-+        handle.DrawCircle(center, drawRadius, rim, false);
++        handle.DrawCircle(center, radius - 1f, bg, true);
++        handle.DrawCircle(center, radius - 1f, rim, false);
++        handle.DrawCircle(center, radius - 2.5f, new Color(0, 0, 0, active ? 60 : 130), false);
++        handle.DrawCircle(center, radius * 0.8f, new Color(255, 255, 255, active ? 40 : 18), false);
 +
-+        if (active)
-+        {
-+            handle.DrawCircle(center, drawRadius * 0.78f, new Color(255, 255, 255, 34), false);
-+        }
-+        else
-+        {
-+            handle.DrawCircle(center, drawRadius * 0.86f, new Color(255, 255, 255, 16), false);
-+        }
++        DrawLabel(handle, center, radius, active);
 +
 +        if (IsToggle && IsToggled)
 +        {
 +            var badgePos = center + new Vector2(radius * 0.62f, -radius * 0.62f);
-+            handle.DrawCircle(badgePos, 5f, new Color(0, 0, 0, 120), true);
-+            handle.DrawCircle(badgePos, 4f, new Color(120, 230, 150, 255), true);
++            handle.DrawCircle(badgePos, 5.5f, new Color(0, 0, 0, 160), true);
++            handle.DrawCircle(badgePos, 4f, new Color(130, 240, 160, 255), true);
 +        }
 +
 +        if (IsEditMode)
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
-+            handle.DrawRect(box, new Color(255, 215, 0, 140), false);
++            handle.DrawRect(box, new Color(255, 215, 0, 160), false);
 +        }
 +    }
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..454e157
+index 0000000..98151de
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,380 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4555,52 +4565,53 @@ index 0000000..454e157
 +
 +        var center = Size / 2f;
 +        var pressed = _isPressed;
-+        var accent = new Color(255, 222, 120, 255);
-+        var idleLine = new Color(255, 255, 255, 130);
++        var activeColor = new Color(255, 222, 120, 255);
++        var idleColor = new Color(225, 235, 250, 200);
 +
-+        // Terraria-like base: a soft translucent disc with a visible outer ring.
-+        handle.DrawCircle(center, Radius, new Color(255, 255, 255, pressed ? 26 : 16), true);
-+        handle.DrawCircle(center, Radius, new Color(255, 255, 255, pressed ? 150 : 95), false);
-+        handle.DrawCircle(center, Radius - 6f, new Color(0, 0, 0, 40), false);
++        // Terraria style base: dark translucent disc, bright ring, no white wash.
++        handle.DrawCircle(center, Radius, new Color(6, 9, 14, 150), true);
++        handle.DrawCircle(center, Radius, new Color(225, 235, 250, pressed ? 230 : 170), false);
++        handle.DrawCircle(center, Radius - 2f, new Color(0, 0, 0, pressed ? 120 : 90), false);
++        handle.DrawCircle(center, Radius * 0.62f, new Color(0, 0, 0, 55), true);
 +
-+        // Four direction chevrons on the rim instead of tiny dots.
-+        var arrowRadius = Radius * 0.78f;
-+        var arrow = Radius * 0.16f;
 +        if (IsAimStick)
 +        {
-+            var tick = Radius * 0.22f;
-+            var tickOffset = Radius * 0.5f;
-+            var crossColor = new Color(255, 255, 255, pressed ? 190 : 110);
-+            handle.DrawLine(center + new Vector2(-tickOffset, 0), center + new Vector2(-tickOffset + tick, 0), crossColor);
-+            handle.DrawLine(center + new Vector2(tickOffset - tick, 0), center + new Vector2(tickOffset, 0), crossColor);
-+            handle.DrawLine(center + new Vector2(0, -tickOffset), center + new Vector2(0, -tickOffset + tick), crossColor);
-+            handle.DrawLine(center + new Vector2(0, tickOffset - tick), center + new Vector2(0, tickOffset), crossColor);
++            var tick = Radius * 0.24f;
++            var offset = Radius * 0.46f;
++            var crossColor = new Color(225, 235, 250, pressed ? 235 : 160);
++            handle.DrawLine(center + new Vector2(-offset, 0), center + new Vector2(-offset + tick, 0), crossColor);
++            handle.DrawLine(center + new Vector2(offset - tick, 0), center + new Vector2(offset, 0), crossColor);
++            handle.DrawLine(center + new Vector2(0, -offset), center + new Vector2(0, -offset + tick), crossColor);
++            handle.DrawLine(center + new Vector2(0, offset - tick), center + new Vector2(0, offset), crossColor);
 +            handle.DrawCircle(center, 2.5f, crossColor, true);
-+            goto Knob;
++        }
++        else
++        {
++            var arrowRadius = Radius * 0.8f;
++            var arrow = Radius * 0.17f;
++            DrawChevron(handle, center + new Vector2(0, -arrowRadius), 'U', arrow, _activeKeys.Contains(Keyboard.Key.W));
++            DrawChevron(handle, center + new Vector2(0, arrowRadius), 'D', arrow, _activeKeys.Contains(Keyboard.Key.S));
++            DrawChevron(handle, center + new Vector2(-arrowRadius, 0), 'L', arrow, _activeKeys.Contains(Keyboard.Key.A));
++            DrawChevron(handle, center + new Vector2(arrowRadius, 0), 'R', arrow, _activeKeys.Contains(Keyboard.Key.D));
 +        }
 +
-+        DrawChevron(handle, center + new Vector2(0, -arrowRadius), 'U', arrow, _activeKeys.Contains(Keyboard.Key.W));
-+        DrawChevron(handle, center + new Vector2(0, arrowRadius), 'D', arrow, _activeKeys.Contains(Keyboard.Key.S));
-+        DrawChevron(handle, center + new Vector2(-arrowRadius, 0), 'L', arrow, _activeKeys.Contains(Keyboard.Key.A));
-+        DrawChevron(handle, center + new Vector2(arrowRadius, 0), 'R', arrow, _activeKeys.Contains(Keyboard.Key.D));
-+
-+        Knob:
-+        // Thumb knob, the only bright element, sized for a thumb not a mouse pointer.
++        // Knob: light blue thumb with a dark outline so it reads on any background.
 +        var knobCenter = center + _knobOffset;
-+        handle.DrawCircle(knobCenter, KnobRadius, new Color(255, 255, 255, pressed ? 110 : 70), true);
-+        handle.DrawCircle(knobCenter, KnobRadius, new Color(255, 255, 255, pressed ? 235 : 185), false);
-+        handle.DrawCircle(knobCenter, KnobRadius * 0.45f, new Color(255, 255, 255, pressed ? 60 : 35), false);
-+        handle.DrawCircle(knobCenter, 3f, new Color(255, 255, 255, 210), true);
++        handle.DrawCircle(knobCenter + new Vector2(0, 2f), KnobRadius, new Color(0, 0, 0, 110), true);
++        handle.DrawCircle(knobCenter, KnobRadius, new Color(190, 210, 235, pressed ? 235 : 205), true);
++        handle.DrawCircle(knobCenter, KnobRadius, new Color(35, 45, 60, 235), false);
++        handle.DrawCircle(knobCenter - new Vector2(KnobRadius * 0.25f, KnobRadius * 0.25f), KnobRadius * 0.45f,
++            new Color(255, 255, 255, 110), true);
 +
 +        if (IsEditMode)
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
-+            handle.DrawRect(box, new Color(255, 215, 0, 150), false);
++            handle.DrawRect(box, new Color(255, 215, 0, 170), false);
 +        }
 +
 +        void DrawChevron(DrawingHandleScreen h, Vector2 at, char dir, float size, bool active)
 +        {
-+            var color = active ? accent : idleLine;
++            var color = active ? activeColor : idleColor;
 +            var half = size * 0.55f;
 +            Vector2 a, b, c;
 +            switch (dir)
@@ -4964,7 +4975,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..ae98424 100644
+index 5267fc7..e674637 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,44 @@ namespace Robust.Shared
@@ -4972,14 +4983,14 @@ index 5267fc7..ae98424 100644
          /// </summary>
          public static readonly CVarDef<int> MaxLightCount =
 -            CVarDef.Create("light.max_light_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 96 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum number of occluders that the client will draw. Values below 1024 have no effect.
          /// </summary>
          public static readonly CVarDef<int> MaxOccluderCount =
 -            CVarDef.Create("light.max_occluder_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 256 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 512 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Scale used to modify the horizontal and vertical resolution of lighting framebuffers,
@@ -4987,14 +4998,14 @@ index 5267fc7..ae98424 100644
          /// </summary>
          public static readonly CVarDef<float> LightResolutionScale =
 -            CVarDef.Create("light.resolution_scale", 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.2f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.35f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum amount of shadow-casting lights that can be rendered in a single viewport at once.
          /// </summary>
          public static readonly CVarDef<int> MaxShadowcastingLights =
 -            CVarDef.Create("light.max_shadowcasting_lights", 128, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 4 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 16 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).
