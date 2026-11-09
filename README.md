@@ -22,11 +22,11 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.7.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.0).
+APK: [Release android-v0.7.1](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.1).
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.7.0: 9568b88e7795c290f10c8820946ddc383d70f8f5291314c05cdc7518227b748f
+sha256 версии 0.7.1: c10ef2080e59560f34b94ee1707d5e7728b1310e3b7dc8fa58b98d4cb8798007
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/robust-cdn/android/<версия>).
@@ -67,6 +67,23 @@ android/scripts/build-apk.sh Release
 ```
 
 APK: `android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk`.
+
+## Если Android не устанавливает APK и пишет про сертификат
+
+Так бывает, когда на телефоне уже стоит сборка Mini Station, подписанная другим ключом (ранняя тестовая
+или собранная вручную). Android не даёт обновить приложение, у которого сменилась подпись. Лечится так:
+удалить старую Mini Station (данные приложения при этом пропадут, настройки клиента сбросятся) и
+установить APK заново с этой страницы.
+
+Все официальные сборки начиная с 0.5.0 подписаны одним сертификатом: CN=Mini Station, O=Mini Station,
+C=RU, SHA-256 ```c5c81ad38d37a3dd772e416cb2132f75b52444bb087e038c631ad5767df58d42```.
+Проверить подпись скачанного файла:
+
+```
+apksigner verify --print-certs ru.ministation.client-Signed.apk
+```
+
+Если SHA-256 отличается, файл скачан не с нашего CDN или релиза.
 
 ## Подпись APK
 

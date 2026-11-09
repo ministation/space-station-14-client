@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..26e08a0
+index 0000000..55257e0
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1485 @@
+@@ -0,0 +1,1486 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2895,7 +2895,8 @@ index 0000000..26e08a0
 +        _dropButton = CreateButton("DROP", Keyboard.Key.Q, id: "drop", accent: new Color(231, 76, 60));
 +        _altButton = CreateButton("ALT", Keyboard.Key.Alt, id: "alt", accent: new Color(241, 196, 15), isToggle: true);
 +        _bagButton = CreateButton("BAG", Keyboard.Key.V, id: "bag", accent: new Color(26, 188, 156));
-+        _inventoryButton = CreateButton("INV", Keyboard.Key.V, id: "inv", accent: new Color(26, 188, 156));
++        // I opens the inventory menu; V only opens the backpack and stayed on BAG.
++        _inventoryButton = CreateButton("INV", Keyboard.Key.I, id: "inv", accent: new Color(26, 188, 156));
 +        _inventoryButton.Icon = PojavButtonIcon.Backpack;
 +        _throwButton = CreateButton("THROW", null, PojavSpecialAction.Throw, id: "throw", accent: new Color(230, 81, 0));
 +
