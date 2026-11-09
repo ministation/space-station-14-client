@@ -587,8 +587,8 @@ namespace Content.Android
                 LaunchBuildCVars["opt.sprite_quality"] = "0";
                 LaunchBuildCVars["light.resolution_scale"] = "0.15";
                 LaunchBuildCVars["light.max_light_count"] = "72";
-                LaunchBuildCVars["light.max_occluder_count"] = "160";
-                LaunchBuildCVars["light.max_shadowcasting_lights"] = "2";
+                LaunchBuildCVars["light.max_occluder_count"] = "96";
+                LaunchBuildCVars["light.max_shadowcasting_lights"] = "0";
                 LaunchBuildCVars["light.ambient_occlusion"] = "false";
 
                 if (Intent?.Extras != null)
@@ -1065,8 +1065,8 @@ namespace Content.Android
                     "--cvar", "light.ambient_occlusion=false",
                     "--cvar", "light.resolution_scale=0.15",
                     "--cvar", "light.max_light_count=72",
-                    "--cvar", "light.max_occluder_count=160",
-                    "--cvar", "light.max_shadowcasting_lights=2",
+                    "--cvar", "light.max_occluder_count=96",
+                    "--cvar", "light.max_shadowcasting_lights=0",
                     "--cvar", "light.wall_bleed=true",
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
