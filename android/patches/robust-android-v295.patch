@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..e40edd6
+index 0000000..458bf41
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1476 @@
+@@ -0,0 +1,1480 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3900,12 +3900,14 @@ index 0000000..e40edd6
 +        var half = size * 0.5f;
 +        // Hugging the rim is the point, so a button may bite a little into it.
 +        var rimAllow = size * 0.22f;
-+        for (var ring = 0; ring <= maxRing; ring++)
++        // Push outward before turning: a button keeps its place in the fan and
++        // only rotates when even the outer ring is blocked.
++        for (var step = 0; step < 25; step++)
 +        {
-+            var radius = stickRadius + half + gap + ring * stickRadius * 0.1f;
-+            for (var step = 0; step < 25; step++)
++            var offset = step == 0 ? 0f : (step % 2 == 0 ? 1f : -1f) * ((step + 1) / 2) * 15f;
++            for (var ring = 0; ring <= maxRing; ring++)
 +            {
-+                var offset = step == 0 ? 0f : (step % 2 == 0 ? 1f : -1f) * ((step + 1) / 2) * 15f;
++                var radius = stickRadius + half + gap + ring * stickRadius * 0.12f;
 +                var rad = (preferAngle + offset) * MathF.PI / 180f;
 +                pos = new Vector2(
 +                    stickCenter.X + MathF.Cos(rad) * radius,
@@ -4052,8 +4054,10 @@ index 0000000..e40edd6
 +        var topBtnH = 50f * scale;
 +        var topY = MathF.Max(safeTop, 6f * scale);
 +        var topGap = 8f * scale;
++        // Seven utility cells share the top bar: four engine keys plus the two
++        // rare inventory keys that used to crowd the move stick.
 +        var topBtnW = MathF.Min(70f * scale,
-+            MathF.Max(26f * scale, (finalSize.X - 2f * safeX - 10f * scale - 4f * topGap) / 5f));
++            MathF.Max(24f * scale, (finalSize.X - 2f * safeX - 10f * scale - 6f * topGap) / 7f));
 +
 +        var useSize = 130f * scale * fit;
 +        var interSize = 118f * scale * fit;
@@ -4092,39 +4096,39 @@ index 0000000..e40edd6
 +        _stickDiscs.Add((moveCenter, stickRadius));
 +        _stickDiscs.Add((aimCenter, stickRadius));
 +
-+        ArrangeChild(_escButton, new Vector2(safeX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        ArrangeChild(_editButton, new Vector2(safeX + topBtnW + topGap, topY), new Vector2(topBtnW + 10f * scale, topBtnH), finalSize);
-+        var keybX = finalSize.X - safeX - topBtnW;
-+        ArrangeChild(_keybButton, new Vector2(keybX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        var altX = keybX - topGap - topBtnW;
-+        ArrangeChild(_altButton, new Vector2(altX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        var examX = altX - topGap - topBtnW;
-+        ArrangeChild(_examButton, new Vector2(examX, topY), new Vector2(topBtnW, topBtnH), finalSize);
++        var topCell = new Vector2(topBtnW, topBtnH);
++        var topPitch = topBtnW + topGap;
++        var topRow = new[]
++        {
++            _escButton, _editButton, _keybButton, _altButton, _examButton, _inventoryButton, _pullButton,
++        };
++        for (var i = 0; i < topRow.Length; i++)
++        {
++            ArrangeChild(topRow[i], new Vector2(safeX + i * topPitch, topY), topCell, finalSize);
++            ReserveControl(topRow[i]);
++        }
++
 +        var hideW = 72f * scale;
 +        var hideH = 40f * scale;
 +        ArrangeChild(_hideButton, new Vector2((finalSize.X - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
-+        ReserveControl(_escButton);
-+        ReserveControl(_editButton);
-+        ReserveControl(_keybButton);
-+        ReserveControl(_altButton);
-+        ReserveControl(_examButton);
 +        ReserveControl(_hideButton);
 +
 +        var frameMin = new Vector2(safeX, safeTop);
 +        var frameMax = finalSize - new Vector2(safeX, safeBottom);
 +
-+        // Aim side: combat buttons in a fan up and toward the middle.
++        // Aim side fan: up, up toward the middle, then left, staying in order so
++        // the labels never swap places between resolutions.
 +        PlaceCluster(
 +            new[] { _useButton, _interactButton, _secButton, _throwButton },
 +            new[] { useSize, interSize, utilSize, utilSize },
-+            new[] { 100f, 145f, 190f, 235f },
++            new[] { 88f, 126f, 164f, 202f },
 +            aimCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
 +
-+        // Move side: the rest in a fan up and toward the middle.
++        // Move side fan: the three keys a moving thumb still needs.
 +        PlaceCluster(
-+            new[] { _handButton, _dropButton, _bagButton, _inventoryButton, _pullButton },
-+            new[] { utilSize, utilSize, utilSize, utilSize, utilSize },
-+            new[] { 80f, 35f, 125f, 170f, 300f },
++            new[] { _handButton, _dropButton, _bagButton },
++            new[] { utilSize, utilSize, utilSize },
++            new[] { 90f, 124f, 56f },
 +            moveCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
 +
 +        if (!_dumpedLayout && finalSize.X > 0f)
