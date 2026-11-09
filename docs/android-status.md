@@ -18,6 +18,8 @@ swiftshader_indirect, APK собран из этого репозитория ч
 | Штатный UI SS14 | `root: Switching to state Content.Client.MainMenu.MainScreen` |
 | Стили и шейдеры | 425 style rules, шейдеры Clyde загружены |
 | Главное меню на экране | да, распознаётся OCR (см. ниже) |
+| Релизный APK из assets (`android-v0.1.0`) | установлен заново и запущен: доходит до того же штатного меню, без FATAL/ANR, скриншот `android-release-mainmenu.png` |
+| Повторный connect-прогон | сервер теперь требует авторизацию SS14 и отбивает хендшейк без токена, см. раздел про вход |
 
 ## Главное меню (скриншот `mainmenu-verified.png`)
 
