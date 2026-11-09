@@ -1344,9 +1344,10 @@ public sealed class LauncherActivity : Activity
         var connect = new Button(this) { Text = "Connect", TextSize = 9.5f };
         connect.SetTextColor(LauncherTheme.Foreground);
         connect.SetPadding(Dp(6), 0, Dp(6), 0);
-        connect.Background = CreateAngleButtonBackground(Dp(8), AngleSide.Both);
+        // Straight rectangle: the angled cut on a 26dp row button read as a crooked shape.
+        connect.Background = CreateAngleButtonBackground(0, AngleSide.Both);
         connect.Click += async (_, _) => await StartConnectingAsync(server.Address);
-        header.AddView(connect, new LinearLayout.LayoutParams(Dp(84), Dp(26)) { TopMargin = Dp(4) });
+        header.AddView(connect, new LinearLayout.LayoutParams(Dp(84), Dp(26)));
 
         container.AddView(header);
         _renderedServerRows[server.Address] = (container, chevron, server);
@@ -2941,7 +2942,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.4";
+    public const string CurrentAppVersion = "v0.7.5";
 
 
     public string GetCurrentAppVersion()
@@ -3210,7 +3211,14 @@ public sealed class LauncherActivity : Activity
         downloadBtn.LayoutParameters = downloadLp;
 
         var apkAsset = release.Assets?.FirstOrDefault(a => a.Name.EndsWith(".apk", StringComparison.OrdinalIgnoreCase));
-        var downloadUrl = apkAsset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/ministation/space-station-14-client/releases/latest";
+        // Updates download from the CDN mirror, not from GitHub: the mirror keeps every released version
+        // under /android/<version>/ and is reachable in Russia without the GitHub release page.
+        var version = release.TagName?.Trim() ?? "";
+        if (version.StartsWith("android-v", StringComparison.OrdinalIgnoreCase))
+            version = version["android-v".Length..];
+        var downloadUrl = !string.IsNullOrWhiteSpace(version)
+            ? $"https://cdn.ministation.ru/android/{version}/ru.ministation.client-Signed.apk"
+            : apkAsset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/ministation/space-station-14-client/releases/latest";
 
         downloadBtn.Click += (_, _) =>
         {

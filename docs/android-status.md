@@ -199,6 +199,15 @@ android-v0.7.1 и на CDN в путях latest и 0.7.1. В README добавл
 панель, при этом физический размер кнопок не меняется. Именно это сделано в собранном, но не выпущенном
 кандидате 0.7.2.
 
+### 0.7.5: обновление с CDN, прямая кнопка Connect
+
+Выпущено 10 ноября 2026: тег android-v0.7.5, APK на GitHub и на CDN в путях android/latest и android/0.7.5, sha256 72a0e22f10e0f581c400d2e9d421b633b15012ae4d87c6dcedd7fc77035fe762, versionCode 31.
+
+- Диалог обновления скачивает APK с CDN: https://cdn.ministation.ru/android/<версия>/ru.ministation.client-Signed.apk вместо ссылки на ассет GitHub. Проверка новых версий по-прежнему идёт через GitHub API, оттуда же берётся changelog.
+- Кнопка Connect в списке серверов стала прямоугольной: скошенные углы на высоте 26dp читались как кривая фигура. Кнопка теперь и центрируется по вертикали без TopMargin.
+
+versionCode 31.
+
 ### 0.7.4: без теней, меньше окклюдеров
 
 Выпущено 10 ноября 2026: тег android-v0.7.4, APK на GitHub и на CDN в путях android/latest и android/0.7.4, sha256 8a4bb0619e7287b3cdd3e8763baa40f33a636bdc984194f169c678fd1533e96c, versionCode 30.
