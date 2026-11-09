@@ -1027,7 +1027,7 @@ public sealed class LauncherActivity : Activity
 
         AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 1.5f, new[] { 1.0f, 1.3f, 1.5f, 1.7f }, "%");
         AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
-        AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.85f, new[] { 0.6f, 0.75f, 0.85f, 1.0f }, "%");
+        AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddCycleRow(list, "UI scale", prefs, "gui_scale", 2.0f, new[] { 1.0f, 1.2f, 1.4f, 1.6f, 1.75f, 2.0f }, "x");
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
@@ -1958,7 +1958,7 @@ public sealed class LauncherActivity : Activity
         opacityLabel.SetTextColor(LauncherTheme.Foreground);
         view.AddView(opacityLabel);
 
-        var currentOpacity = prefs?.GetFloat("mobile_opacity", 0.85f) ?? 0.85f;
+        var currentOpacity = prefs?.GetFloat("mobile_opacity", 0.6f) ?? 0.6f;
         var opacityBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var opacities = new (string text, float val)[]
         {
@@ -2941,7 +2941,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.6.9";
+    public const string CurrentAppVersion = "v0.7.0";
 
 
     public string GetCurrentAppVersion()

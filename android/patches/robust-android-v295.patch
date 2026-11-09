@@ -2674,10 +2674,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..e59edfd
+index 0000000..94db0fc
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1277 @@
+@@ -0,0 +1,1396 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -3838,12 +3838,118 @@ index 0000000..e59edfd
 +        control.Arrange(new UIBox2(pos, pos + size));
 +    }
 +
-+    private void ArrangeAroundStick(Control control, Vector2 center, float angleDeg, float size, float stickRadius, float gap, Vector2 viewport)
++    private readonly List<UIBox2> _occupiedRects = new();
++    private readonly List<(Vector2 Center, float Radius)> _stickDiscs = new();
++
++    private void ReserveControl(Control control)
 +    {
-+        // Buttons ride on the stick edge, not on a fixed ring: a bigger button
-+        // stays as close to the thumb as a small one.
-+        var radius = stickRadius + size * 0.5f + gap;
-+        ArrangeOnArc(control, center, angleDeg, radius, new Vector2(size, size), viewport);
++        _occupiedRects.Add(new UIBox2(control.Position, control.Position + control.Size));
++    }
++
++    private static bool RectsOverlap(UIBox2 a, UIBox2 b)
++    {
++        return a.Left < b.Right && b.Left < a.Right && a.Top < b.Bottom && b.Top < a.Bottom;
++    }
++
++    private bool OverlapsOccupied(UIBox2 rect, float padding)
++    {
++        var grown = new UIBox2(rect.Left - padding, rect.Top - padding, rect.Right + padding, rect.Bottom + padding);
++        foreach (var other in _occupiedRects)
++        {
++            if (RectsOverlap(grown, other))
++                return true;
++        }
++
++        return false;
++    }
++
++    private bool OverlapsStick(UIBox2 rect, float allow)
++    {
++        foreach (var (center, radius) in _stickDiscs)
++        {
++            var closest = new Vector2(
++                Math.Clamp(center.X, rect.Left, rect.Right),
++                Math.Clamp(center.Y, rect.Top, rect.Bottom));
++            if ((closest - center).LengthSquared() < (radius - allow) * (radius - allow))
++                return true;
++        }
++
++        return false;
++    }
++
++    /// <summary>
++    /// Places a button around a stick: it starts at the requested angle, then
++    /// rotates in 15 degree steps, then moves outward, then shrinks a little.
++    /// Buttons never overlap each other or leave the safe frame; only the very
++    /// last resort lets a button bite deeper into its own stick rim.
++    /// </summary>
++    private void PlaceClusterButton(PojavActionButton button, Vector2 stickCenter, float preferAngle, float size,
++        float stickRadius, float gap, Vector2 viewport, float safeX, float safeTop, float safeBottom)
++    {
++        var min = new Vector2(safeX, safeTop);
++        var max = viewport - new Vector2(safeX, safeBottom);
++
++        if (button.CustomPosition.HasValue)
++        {
++            var customSize = button.CustomSize.HasValue ? new Vector2(button.CustomSize.Value, button.CustomSize.Value) : new Vector2(size, size);
++            ArrangeChild(button, button.CustomPosition.Value, customSize, viewport);
++            return;
++        }
++
++        bool TryPlace(float trySize, float rimAllow)
++        {
++            var half = trySize * 0.5f;
++            for (var ring = 0; ring < 10; ring++)
++            {
++                var radius = stickRadius + half + gap + ring * stickRadius * 0.1f;
++                for (var step = 0; step < 25; step++)
++                {
++                    var offset = step == 0 ? 0f : (step % 2 == 0 ? 1f : -1f) * ((step + 1) / 2) * 15f;
++                    var rad = (preferAngle + offset) * MathF.PI / 180f;
++                    var pos = new Vector2(
++                        stickCenter.X + MathF.Cos(rad) * radius,
++                        stickCenter.Y - MathF.Sin(rad) * radius) - new Vector2(half, half);
++
++                    var rect = new UIBox2(pos, pos + new Vector2(trySize, trySize));
++                    if (rect.Left < min.X || rect.Top < min.Y || rect.Right > max.X || rect.Bottom > max.Y)
++                        continue;
++                    if (OverlapsOccupied(rect, 2f) || OverlapsStick(rect, rimAllow))
++                        continue;
++
++                    ArrangeChild(button, pos, new Vector2(trySize, trySize), viewport);
++                    _occupiedRects.Add(rect);
++                    return true;
++                }
++            }
++
++            return false;
++        }
++
++        // Rim counts as part of the button: hugging the stick is the point.
++        if (TryPlace(size, size * 0.22f))
++            return;
++
++        for (var shrink = 0; shrink < 8; shrink++)
++        {
++            size *= 0.9f;
++            if (TryPlace(size, size * 0.22f))
++                return;
++        }
++
++        // Nowhere to hide: keep the button off the other controls, even if it
++        // covers part of its own stick. Overlapping the stick is usable, a pile
++        // of overlapping buttons is not.
++        if (TryPlace(size, -size))
++            return;
++
++        var fallbackRad = preferAngle * MathF.PI / 180f;
++        var fallbackRadius = stickRadius + size * 0.5f + gap;
++        var fallback = new Vector2(
++            stickCenter.X + MathF.Cos(fallbackRad) * fallbackRadius,
++            stickCenter.Y - MathF.Sin(fallbackRad) * fallbackRadius) - new Vector2(size * 0.5f, size * 0.5f);
++        fallback = Vector2.Clamp(fallback, min, Vector2.Max(min, max - new Vector2(size, size)));
++        ArrangeChild(button, fallback, new Vector2(size, size), viewport);
++        _occupiedRects.Add(new UIBox2(fallback, fallback + new Vector2(size, size)));
 +    }
 +
 +    private void ArrangeOnArc(Control control, Vector2 center, float angleDeg, float radius, Vector2 size, Vector2 viewport)
@@ -3863,19 +3969,36 @@ index 0000000..e59edfd
 +        var scale = Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f);
 +        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
 +
-+        var margin = 30f * scale;
++        // Side frame: rounded screen corners and a camera cutout eat the edges,
++        // so nothing on the pad sits closer than this to a border.
++        var safeX = MathF.Max(10f * scale, finalSize.X * 0.02f);
++        var safeTop = MathF.Max(6f * scale, finalSize.Y * 0.006f);
++        var safeBottom = MathF.Max(6f * scale, finalSize.Y * 0.008f);
++        // Sticks ride lower than the frame: thumbs rest on the bottom of the phone.
++        var margin = MathF.Max(24f * scale, finalSize.X * 0.02f);
 +        var gap = 8f * scale;
 +
 +        // The logical UI size shrinks a lot with display.uiScale on phones, so the
-+        // whole pad is scaled to the shorter viewport side to stay reachable and
-+        // to keep the Terraria ring from being clamped against the top edge.
++        // whole pad is scaled to the shorter viewport side to stay reachable.
 +        var fit = Math.Clamp(MathF.Min(finalSize.X, finalSize.Y) / 720f, 0.5f, 1.3f);
++
++        var topBtnH = 50f * scale;
++        var topY = MathF.Max(safeTop, 6f * scale);
++        var topGap = 8f * scale;
++        var topBtnW = MathF.Min(70f * scale,
++            MathF.Max(26f * scale, (finalSize.X - 2f * safeX - 10f * scale - 4f * topGap) / 5f));
++
++        var useSize = 130f * scale * fit;
++        var interSize = 118f * scale * fit;
++        var utilSize = 102f * scale * fit;
++        var stickGap = 3f * scale * fit;
 +
 +        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
 +        var stickRadius = 127f * scale * stickScale * fit;
-+        // Both sticks must always fit side by side, otherwise a small logical
-+        // screen (high uiScale) would overlap them.
 +        var maxStickRadius = MathF.Max(40f, (finalSize.X - 2f * margin - 20f) / 4f);
++        // Keep room above the sticks for the button ring and the top bar.
++        maxStickRadius = MathF.Min(maxStickRadius,
++            MathF.Max(40f, (finalSize.Y - safeBottom - topY - topBtnH - utilSize - 3f * gap) / 2.15f));
 +        if (stickRadius > maxStickRadius)
 +            stickRadius = maxStickRadius;
 +        _thumbstick.Radius = stickRadius;
@@ -3883,56 +4006,52 @@ index 0000000..e59edfd
 +        _thumbstick.Deadzone = stickRadius * 0.11f;
 +
 +        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
-+        var stickPos = new Vector2(margin, finalSize.Y - margin - stickRadius * 2f - 10f);
++        var stickPos = new Vector2(margin, finalSize.Y - safeBottom - stickRadius * 2f - 10f);
 +        ArrangeChild(_thumbstick, stickPos, stickSize, finalSize);
 +
-+        // Right stick aims, Terraria style. It sits in the bottom right corner and the
-+        // action buttons sit in arcs around it.
 +        _aimStick.Radius = stickRadius;
 +        _aimStick.KnobRadius = stickRadius * 0.30f;
 +        _aimStick.Deadzone = stickRadius * 0.11f;
-+        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - margin - stickRadius * 2f - 10f);
++        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - safeBottom - stickRadius * 2f - 10f);
 +        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
 +
-+        var useSize = 130f * scale * fit;
-+        var interSize = 118f * scale * fit;
-+        var utilSize = 102f * scale * fit;
-+        var stickGap = 6f * scale * fit;
++        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - safeBottom - stickRadius);
++        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - safeBottom - stickRadius);
 +
-+        // Right stick: aim, so the right thumb gets the combat ring around it.
-+        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - margin - stickRadius);
++        // Playfield: top bar first, then every ring button claims the first free
++        // slot around its stick. This is what keeps the pad off the content HUD.
++        _occupiedRects.Clear();
++        _stickDiscs.Clear();
++        _stickDiscs.Add((moveCenter, stickRadius));
++        _stickDiscs.Add((aimCenter, stickRadius));
 +
-+        ArrangeAroundStick(_useButton, aimCenter, 50f, useSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_interactButton, aimCenter, 84f, interSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_secButton, aimCenter, 118f, utilSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_throwButton, aimCenter, 152f, utilSize, stickRadius, stickGap, finalSize);
-+
-+        // Left stick: movement, four buttons around it as well.
-+        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - margin - stickRadius);
-+        ArrangeAroundStick(_handButton, moveCenter, 24f, utilSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_dropButton, moveCenter, 52f, utilSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_bagButton, moveCenter, 80f, utilSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_inventoryButton, moveCenter, 108f, utilSize, stickRadius, stickGap, finalSize);
-+        ArrangeAroundStick(_pullButton, moveCenter, 136f, utilSize, stickRadius, stickGap, finalSize);
-+
-+        var topBtnW = 70f * scale;
-+        var topBtnH = 50f * scale;
-+        var topY = 8f * scale;
-+
-+        ArrangeChild(_escButton, new Vector2(10f * scale, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        ArrangeChild(_editButton, new Vector2(10f * scale + topBtnW + 8f * scale, topY), new Vector2(topBtnW + 10f * scale, topBtnH), finalSize);
-+
-+        var keybX = finalSize.X - topBtnW - (10f * scale);
++        ArrangeChild(_escButton, new Vector2(safeX, topY), new Vector2(topBtnW, topBtnH), finalSize);
++        ArrangeChild(_editButton, new Vector2(safeX + topBtnW + topGap, topY), new Vector2(topBtnW + 10f * scale, topBtnH), finalSize);
++        var keybX = finalSize.X - safeX - topBtnW;
 +        ArrangeChild(_keybButton, new Vector2(keybX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+
-+        var altX = keybX - topBtnW - 8f * scale;
++        var altX = keybX - topGap - topBtnW;
 +        ArrangeChild(_altButton, new Vector2(altX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+        var examX = altX - topBtnW - 8f * scale;
++        var examX = altX - topGap - topBtnW;
 +        ArrangeChild(_examButton, new Vector2(examX, topY), new Vector2(topBtnW, topBtnH), finalSize);
-+
 +        var hideW = 72f * scale;
 +        var hideH = 40f * scale;
 +        ArrangeChild(_hideButton, new Vector2((finalSize.X - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
++        ReserveControl(_escButton);
++        ReserveControl(_editButton);
++        ReserveControl(_keybButton);
++        ReserveControl(_altButton);
++        ReserveControl(_examButton);
++        ReserveControl(_hideButton);
++
++        PlaceClusterButton(_useButton, aimCenter, 105f, useSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_interactButton, aimCenter, 150f, interSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_secButton, aimCenter, 195f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_throwButton, aimCenter, 240f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_handButton, moveCenter, 75f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_dropButton, moveCenter, 30f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_bagButton, moveCenter, 120f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_inventoryButton, moveCenter, 165f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
++        PlaceClusterButton(_pullButton, moveCenter, 345f, utilSize, stickRadius, stickGap, finalSize, safeX, safeTop, safeBottom);
 +
 +        if (_editorBarContainer.Visible)
 +        {
@@ -4596,10 +4715,10 @@ index 0000000..c15a109
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..cd8bb12
+index 0000000..c2f98d3
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,431 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4640,6 +4759,11 @@ index 0000000..cd8bb12
 +
 +    private bool _isPressed;
 +    private Vector2 _knobOffset = Vector2.Zero;
++    private bool _attackHeld;
++
++    // Pushing the aim stick out this far also holds the primary attack, the way
++    // a PC player aims with the mouse and holds the left button.
++    private const float AttackThreshold = 0.55f;
 +    private Vector2? _dragTouchOffset;
 +    private readonly HashSet<Keyboard.Key> _activeKeys = new();
 +
@@ -4700,17 +4824,23 @@ index 0000000..cd8bb12
 +
 +        var length = _knobOffset.Length();
 +        if (length < Deadzone)
++        {
++            SetAttackHeld(false);
 +            return;
++        }
 +
 +        var strength = MathF.Min(length / Radius, 1f);
 +        var dir = _knobOffset / length;
 +        _clyde.InjectMouseMove(dir * (AimSpeed * strength * args.DeltaSeconds));
++        SetAttackHeld(strength >= AttackThreshold);
 +    }
 +
 +    public void ReleaseStick()
 +    {
 +        if (!_isPressed)
 +            return;
++
++        SetAttackHeld(false);
 +
 +        // Terraria style: a quick tap of the aim stick works as a normal click.
 +        if (IsAimStick && !_pressMoved && _pressElapsed < 0.25f)
@@ -4888,6 +5018,19 @@ index 0000000..cd8bb12
 +
 +        _activeKeys.Clear();
 +        _activeKeys.UnionWith(newKeys);
++    }
++
++    private void SetAttackHeld(bool held)
++    {
++        if (_attackHeld == held)
++            return;
++
++        _attackHeld = held;
++        var click = new KeyEventArgs(Keyboard.Key.MouseLeft, false, false, false, false, false, 0);
++        if (held)
++            _inputManager.KeyDown(click);
++        else
++            _inputManager.KeyUp(click);
 +    }
 +
 +    private void ReleaseAllKeys()
@@ -5198,7 +5341,7 @@ index 274aa2a..f8a5fe9 100644
 +    }
  }
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.cs b/Robust.Client/UserInterface/UserInterfaceManager.cs
-index 57c86c3..9726191 100644
+index 57c86c3..ffe3c98 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.cs
 @@ -52,6 +52,7 @@ namespace Robust.Client.UserInterface
@@ -5209,11 +5352,13 @@ index 57c86c3..9726191 100644
  
          private IAudioSource? _clickSource;
          private IAudioSource? _hoverSource;
-@@ -189,6 +190,14 @@ namespace Robust.Client.UserInterface
-             RootControl.AddChild(WindowRoot);
+@@ -181,6 +182,17 @@ namespace Robust.Client.UserInterface
+             };
+             RootControl.AddChild(StateRoot);
  
-             RootControl.CreateRootControls();
-+
++            // Mobile pad sits above the state HUD but under the window roots: a
++            // window opened by the game always paints above it, and the pad still
++            // gets the touches a window does not consume.
 +            if (OperatingSystem.IsAndroid() || _configurationManager.GetCVar(CVars.MobileTouchControls))
 +            {
 +                var mobileOverlay = new Mobile.MobileControlsOverlay();
@@ -5221,9 +5366,10 @@ index 57c86c3..9726191 100644
 +                RootControl.AddChild(mobileOverlay);
 +                LayoutContainer.SetAnchorPreset(mobileOverlay, LayoutContainer.LayoutPreset.Wide);
 +            }
-         }
- 
-         public void InitializeTesting()
++
+             WindowRoot = new LayoutContainer
+             {
+                 Name = "WindowRoot",
 diff --git a/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs b/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs
 index d6a83e8..ed7b1ae 100644
 --- a/Robust.Client/UserInterface/XAML/Proxy/XamlHotReloadManager.cs
@@ -5339,7 +5485,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..8a098ea 100644
+index 5267fc7..a3f26a0 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,44 @@ namespace Robust.Shared
@@ -5416,7 +5562,7 @@ index 5267fc7..8a098ea 100644
 +        /// Opacity for on-screen touch controls.
 +        /// </summary>
 +        public static readonly CVarDef<float> MobileControlsOpacity =
-+            CVarDef.Create("mobile.controls_opacity", 0.85f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("mobile.controls_opacity", 0.6f, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Scale multiplier for on-screen touch controls.
