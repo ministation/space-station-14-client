@@ -1028,7 +1028,7 @@ public sealed class LauncherActivity : Activity
         AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 1.5f, new[] { 1.0f, 1.3f, 1.5f, 1.7f }, "%");
         AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.85f, new[] { 0.6f, 0.75f, 0.85f, 1.0f }, "%");
-        AddCycleRow(list, "UI scale", prefs, "gui_scale", 1.75f, new[] { 1.0f, 1.2f, 1.4f, 1.6f, 1.75f }, "x");
+        AddCycleRow(list, "UI scale", prefs, "gui_scale", 2.0f, new[] { 1.0f, 1.2f, 1.4f, 1.6f, 1.75f, 2.0f }, "x");
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
@@ -2056,7 +2056,7 @@ public sealed class LauncherActivity : Activity
         guiLabel.LayoutParameters = guiLp;
         view.AddView(guiLabel);
 
-        var currentGuiScale = prefs?.GetFloat("gui_scale", 1.75f) ?? 1.75f;
+        var currentGuiScale = prefs?.GetFloat("gui_scale", 2.0f) ?? 2.0f;
         var guiBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         var guiScales = new (string text, float val)[]
         {
@@ -2064,7 +2064,8 @@ public sealed class LauncherActivity : Activity
             ("100%", 1.0f),
             ("120%", 1.2f),
             ("140%", 1.4f),
-            ("175%", 1.75f)
+            ("175%", 1.75f),
+            ("200%", 2.0f)
         };
 
         var guiBtnList = new List<Button>();
@@ -2700,7 +2701,7 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
             intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var guiScale = prefs.GetFloat("gui_scale", 1.75f);
+            var guiScale = prefs.GetFloat("gui_scale", 2.0f);
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
@@ -2922,7 +2923,7 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
             intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var guiScale = prefs.GetFloat("gui_scale", 1.75f);
+            var guiScale = prefs.GetFloat("gui_scale", 2.0f);
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
@@ -2940,7 +2941,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.6.3";
+    public const string CurrentAppVersion = "v0.6.4";
 
 
     public string GetCurrentAppVersion()

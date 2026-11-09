@@ -584,7 +584,7 @@ namespace Content.Android
                 LaunchBuildCVars["parallax.enabled"] = "false";
                 LaunchBuildCVars["parallax.low_quality"] = "true";
                 LaunchBuildCVars["opt.sprite_quality"] = "0";
-                LaunchBuildCVars["light.resolution_scale"] = "0.5";
+                LaunchBuildCVars["light.resolution_scale"] = "0.2";
                 LaunchBuildCVars["light.max_light_count"] = "96";
                 LaunchBuildCVars["light.max_occluder_count"] = "256";
                 LaunchBuildCVars["light.max_shadowcasting_lights"] = "4";
@@ -1055,7 +1055,7 @@ namespace Content.Android
                     "--cvar", "light.blur=false",
                     "--cvar", "light.soft_shadows=false",
                     "--cvar", "light.ambient_occlusion=false",
-                    "--cvar", "light.resolution_scale=0.5",
+                    "--cvar", "light.resolution_scale=0.2",
                     "--cvar", "light.max_light_count=96",
                     "--cvar", "light.max_occluder_count=256",
                     "--cvar", "light.max_shadowcasting_lights=4",
