@@ -1921,12 +1921,8 @@ public sealed class LauncherActivity : Activity
             ("stick", "MOVE", 0.21f, 0.82f, 0.15f),
             ("aim", "AIM", 0.79f, 0.82f, 0.15f),
             ("drop", "DROP", 0.07f, 0.89f, 0.078f),
-            ("bag", "BAG", 0.07f, 0.70f, 0.078f),
             ("use", "USE", 0.92f, 0.87f, 0.097f),
-            ("inter", "INTER", 0.92f, 0.65f, 0.085f),
-            ("sec", "SEC", 0.92f, 0.45f, 0.078f),
             ("esc", "ESC", 0.11f, 0.18f, 0.07f),
-            ("keyb", "KEYB", 0.30f, 0.18f, 0.07f),
             ("exam", "EXAM", 0.49f, 0.18f, 0.07f),
             ("inv", "INV", 0.68f, 0.18f, 0.07f),
             ("pull", "PULL", 0.87f, 0.18f, 0.07f),
@@ -3162,7 +3158,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.8";
+    public const string CurrentAppVersion = "v0.7.9";
 
 
     public string GetCurrentAppVersion()

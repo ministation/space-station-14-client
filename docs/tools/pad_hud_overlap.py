@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, __file__.rsplit('/', 1)[0])
 import pad_sim as ps
 
-BUTTONS = ("USE", "INTER", "SEC", "DROP", "BAG")
+BUTTONS = ("USE", "DROP")
 
 
 def button_boxes(width, height, ui_scale):

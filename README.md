@@ -16,18 +16,18 @@ Android-клиент Space Station 14 на настоящем движке Robus
 |---|---|
 | На части телефонов разъезжались поля в диалогах | диалоги в ScrollView, поля растянуты по ширине, клавиатура не перекрывает ввод |
 | Аккаунт SS14 не входил | вход через auth.spacestation14.com работает, токен уходит в игру (env + auth.json); поддерживается двухфакторный код в отдельном окне; ошибка входа показывается текстом прямо под полями (401, таймаут, HTTP-код), а не пустым Error; гостевой режим убран, без входа подключение не начинается |
-| Неудобное управление | два стика внизу (лево ходит, право целится), слева вдоль края DROP и BAG, справа USE, INTER и SEC, сверху ESC, KEYB, EXAM, INV, PULL; раскладку можно перетащить в лаунчере (Options, Customize controls); вне раунда панель скрыта |
+| Неудобное управление | два стика внизу (лево ходит, право целится), слева DROP, справа USE, сверху ESC, EXAM, INV, PULL; раскладку можно перетащить в лаунчере (Options, Customize controls); вне раунда панель скрыта |
 | Ошибки прототипов и спрайтов | emergency fallback создаёт рабочие прототипы через приватные сеттеры: 0 ошибок proto в логе вместо 25110, лобби и игра рисуются без пропусков |
 | При обновлении сервера качался весь контент (1.27 ГБ) | дельта-обновление по манифесту сервера: качаются только файлы с изменившимся BLAKE2B-хешем |
 | Контент дублировался в приватной папке | контент лежит в отдельном каталоге и монтируется в движок (--mount-dir), а не распаковывается в FilesDir |
 
 ## Скачать
 
-APK: [Release android-v0.7.8](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.8).
+APK: [Release android-v0.7.9](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.7.9).
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.7.8: d57a9fd8777c9730ddcc79dca8c626eb7aae3b1dfa5f1f5d95f2dff6e9af576c
+sha256 версии 0.7.9: 848a42b29695a81713a4809a21be616299fcacfba931786b6ecacb1bd7ec4b0f
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/www/android/<версия>).

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Replica of the mobile pad layout in RobustToolbox MobileControlsOverlay.cs.
 
-Terraria-like pad: sticks low and inboard, action keys in small columns on the
-side edges. Run after touching the pad: it places every button for a grid of
+Terraria-like pad: sticks low and inboard, use on the right edge and drop on
+the left edge. Run after touching the pad: it places every button for a grid of
 phone resolutions and exits non-zero when a button overlaps another button,
 a stick, or the screen frame. Keep this file in sync with ArrangeOverride.
 """
@@ -29,8 +29,8 @@ def geometry(width, height, ui_scale):
     return dict(
         wl=wl, hl=hl, ui=ui_scale, ctl=ctl, fit=fit,
         safe_x=safe_x, safe_top=safe_top, safe_bottom=safe_bottom,
-        use=57 * ctl * fit, inter=53 * ctl * fit, util=50 * ctl * fit,
-        btn_gap=12 * ctl * fit, radius=radius,
+        use=57 * ctl * fit, util=50 * ctl * fit,
+        radius=radius,
         move=(wl * 0.21, hl - safe_bottom - radius - 2),
         aim=(wl * 0.79, hl - safe_bottom - radius - 2),
         top_y=top_y, top_h=top_h, top_gap=top_gap,
@@ -38,12 +38,12 @@ def geometry(width, height, ui_scale):
 
 
 def top_row(g):
-    """Five utility cells share the top bar; edit, hide and alt are gone."""
+    """Four utility cells share the top bar: esc, exam, inv, pull."""
     cells = []
     width = min(70 * g["ctl"], max(24 * g["ctl"],
-        (g["wl"] - 2 * g["safe_x"] - 10 * g["ctl"] - 4 * g["top_gap"]) / 5))
+        (g["wl"] - 2 * g["safe_x"] - 10 * g["ctl"] - 3 * g["top_gap"]) / 4))
     pitch = width + g["top_gap"]
-    for i in range(5):
+    for i in range(4):
         x = g["safe_x"] + i * pitch
         cells.append((x, g["top_y"], x + width, g["top_y"] + g["top_h"]))
     return cells
@@ -51,8 +51,8 @@ def top_row(g):
 
 def layout(width, height, ui_scale):
     g = geometry(width, height, ui_scale)
-    right = [("USE", g["use"], None), ("INTER", g["inter"], None), ("SEC", g["util"], None)]
-    left = [("DROP", g["util"], None), ("BAG", g["util"], None)]
+    right = [("USE", g["use"], None)]
+    left = [("DROP", g["util"], None)]
 
     def place(name, size, cx, cy):
         return (name, (cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2), size, 0)
@@ -62,17 +62,11 @@ def layout(width, height, ui_scale):
     left_x = g["safe_x"] + g["util"] / 2
     placed_l = [
         place("DROP", g["util"], left_x, bottom_left),
-        place("BAG", g["util"], left_x, bottom_left - g["util"] - g["btn_gap"]),
     ]
 
     right_x = g["wl"] - g["safe_x"]
-    use_y = bottom_right
-    inter_y = bottom_right - g["use"] / 2 - g["btn_gap"] - g["inter"] / 2
-    sec_y = inter_y - g["inter"] / 2 - g["btn_gap"] - g["util"] / 2
     placed_r = [
-        place("USE", g["use"], right_x - g["use"] / 2, use_y),
-        place("INTER", g["inter"], right_x - g["inter"] / 2, inter_y),
-        place("SEC", g["util"], right_x - g["util"] / 2, sec_y),
+        place("USE", g["use"], right_x - g["use"] / 2, bottom_right),
     ]
     return g, placed_r, placed_l
 

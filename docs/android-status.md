@@ -199,6 +199,14 @@ android-v0.7.1 и на CDN в путях latest и 0.7.1. В README добавл
 панель, при этом физический размер кнопок не меняется. Именно это сделано в собранном, но не выпущенном
 кандидате 0.7.2.
 
+### 0.7.9: на панели остались только USE и DROP
+
+Выпущено 10 ноября 2026: тег android-v0.7.9, APK на GitHub и на CDN в путях android/latest и android/0.7.9, sha256 848a42b29695a81713a4809a21be616299fcacfba931786b6ecacb1bd7ec4b0f, versionCode 35.
+
+- Убраны кнопки KEYB, INTER, SEC и BAG.
+- Верхний ряд: ESC, EXAM, INV, PULL. На краях DROP слева и USE справа, плюс два стика.
+- Редактор в лаунчере (Options, Customize controls) показывает только оставшиеся кнопки и стики.
+
 ### 0.7.8: управление настраивается в лаунчере, в игре только игра
 
 Выпущено 10 ноября 2026: тег android-v0.7.8, APK на GitHub и на CDN в путях android/latest и android/0.7.8, sha256 d57a9fd8777c9730ddcc79dca8c626eb7aae3b1dfa5f1f5d95f2dff6e9af576c, versionCode 34.
