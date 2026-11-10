@@ -579,16 +579,18 @@ namespace Content.Android
                 // display.max_fps 0 means no cap: the phone's refresh rate is the limit.
                 // Extras from the launcher below can override any of these.
                 LaunchBuildCVars["display.vsync"] = "false";
-                LaunchBuildCVars["display.max_fps"] = "0";
+                LaunchBuildCVars["display.max_fps"] = "60";
                 LaunchBuildCVars["particles.quality"] = "0";
-                LaunchBuildCVars["particles.global_budget"] = "512";
+                LaunchBuildCVars["particles.global_budget"] = "256";
                 LaunchBuildCVars["parallax.enabled"] = "false";
                 LaunchBuildCVars["parallax.low_quality"] = "true";
-                LaunchBuildCVars["opt.sprite_quality"] = "0";
-                LaunchBuildCVars["light.resolution_scale"] = "0.15";
-                LaunchBuildCVars["light.max_light_count"] = "72";
-                LaunchBuildCVars["light.max_occluder_count"] = "96";
-                LaunchBuildCVars["light.max_shadowcasting_lights"] = "0";
+                LaunchBuildCVars["light.resolution_scale"] = "0.12";
+                LaunchBuildCVars["light.max_light_count"] = "48";
+                LaunchBuildCVars["light.max_occluder_count"] = "80";
+                // A few shadow-casting lights keep light from leaking through
+                // walls; wall bleed is the expensive part on mobile GPUs.
+                LaunchBuildCVars["light.max_shadowcasting_lights"] = "8";
+                LaunchBuildCVars["light.wall_bleed"] = "false";
                 LaunchBuildCVars["light.ambient_occlusion"] = "false";
 
                 if (Intent?.Extras != null)

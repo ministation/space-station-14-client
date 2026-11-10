@@ -1024,6 +1024,8 @@ public sealed class LauncherActivity : Activity
         AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddCycleRow(list, "UI scale", prefs, "gui_scale", 1.5f, new[] { 1.0f, 1.2f, 1.4f, 1.5f, 1.6f, 1.75f, 2.0f }, "x");
+        AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "720p", new[] { "720p", "900p", "1080p", "native" });
+        AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
 
@@ -1068,6 +1070,69 @@ public sealed class LauncherActivity : Activity
         };
         row.AddView(button, new LinearLayout.LayoutParams(Dp(76), Dp(30)));
         list.AddView(row);
+    }
+
+    private void AddChoiceRow(LinearLayout list, string label, ISharedPreferences prefs, string key, string fallback, string[] values)
+    {
+        var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        row.SetGravity(GravityFlags.CenterVertical);
+        row.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        var text = new TextView(this) { Text = label, TextSize = 12f };
+        text.SetTextColor(LauncherTheme.Foreground);
+        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(30), 1f));
+
+        var current = prefs.GetString(key, fallback) ?? fallback;
+        if (Array.IndexOf(values, current) < 0)
+            current = fallback;
+        var button = new Button(this) { TextSize = 11f };
+        button.SetTextColor(LauncherTheme.Foreground);
+        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
+        button.SetPadding(Dp(10), 0, Dp(10), 0);
+        void UpdateLabel() => button.Text = current;
+        UpdateLabel();
+        button.Click += (_, _) =>
+        {
+            var index = Array.IndexOf(values, current);
+            index = (index + 1) % values.Length;
+            current = values[index];
+            prefs.Edit()?.PutString(key, current)?.Apply();
+            UpdateLabel();
+        };
+        row.AddView(button, new LinearLayout.LayoutParams(Dp(90), Dp(30)));
+        list.AddView(row);
+    }
+
+    private static void ApplyGraphicsExtras(Intent intent, ISharedPreferences prefs)
+    {
+        var quality = prefs.GetString("graphics_quality", "Medium") ?? "Medium";
+        string shadows, lights, occluders, lightRes, budget, bleed;
+        switch (quality)
+        {
+            case "Low":
+                shadows = "0"; lights = "32"; occluders = "64"; lightRes = "0.10";
+                budget = "128"; bleed = "false";
+                break;
+            case "High":
+                shadows = "24"; lights = "72"; occluders = "96"; lightRes = "0.15";
+                budget = "512"; bleed = "true";
+                break;
+            default:
+                shadows = "8"; lights = "48"; occluders = "80"; lightRes = "0.12";
+                budget = "256"; bleed = "false";
+                break;
+        }
+
+        // 60 fps cap: uncapped rendering on 120 Hz panels halves the frame
+        // budget and throttles the phone, which reads as "low fps".
+        intent.PutExtra("cvar_build_display.max_fps", "60");
+        intent.PutExtra("cvar_build_display.vsync", "false");
+        intent.PutExtra("cvar_build_light.max_shadowcasting_lights", shadows);
+        intent.PutExtra("cvar_build_light.max_light_count", lights);
+        intent.PutExtra("cvar_build_light.max_occluder_count", occluders);
+        intent.PutExtra("cvar_build_light.resolution_scale", lightRes);
+        intent.PutExtra("cvar_build_light.wall_bleed", bleed);
+        intent.PutExtra("cvar_build_particles.quality", "0");
+        intent.PutExtra("cvar_build_particles.global_budget", budget);
     }
 
     private void AddActionRow(LinearLayout list, string label, Action action)
@@ -2919,6 +2984,7 @@ public sealed class LauncherActivity : Activity
             var positions = prefs.GetString("mobile_positions", "");
             if (!string.IsNullOrEmpty(positions))
                 intent.PutExtra("cvar_build_mobile.controls_positions", positions);
+            ApplyGraphicsExtras(intent, prefs);
         }
 
         if (!string.IsNullOrEmpty(serverInfo?.Auth?.PublicKey))
@@ -3144,6 +3210,7 @@ public sealed class LauncherActivity : Activity
             var positions = prefs.GetString("mobile_positions", "");
             if (!string.IsNullOrEmpty(positions))
                 intent.PutExtra("cvar_build_mobile.controls_positions", positions);
+            ApplyGraphicsExtras(intent, prefs);
         }
         StartActivity(intent);
     }
@@ -3158,7 +3225,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.10";
+    public const string CurrentAppVersion = "v0.7.11";
 
 
     public string GetCurrentAppVersion()
