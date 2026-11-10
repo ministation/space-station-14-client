@@ -178,12 +178,15 @@ public sealed class LauncherActivity : Activity
     private void MigratePadLayout()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 3)
+        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 4)
             return;
 
+        // Layout 4: the editor preview is now drawn in the immersive full
+        // screen frame, so older fractions (measured inside a smaller dialog)
+        // would land slightly off. Drop them once.
         prefs.Edit()?
             .Remove("mobile_positions")?
-            .PutInt("mobile_positions_layout", 3)?
+            .PutInt("mobile_positions_layout", 4)?
             .Apply();
     }
 
@@ -1077,7 +1080,7 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private)!;
 
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
-        AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "720p", new[] { "720p", "900p", "1080p", "native" });
+        AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "1080p", new[] { "720p", "900p", "1080p", "native" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
@@ -2051,6 +2054,18 @@ public sealed class LauncherActivity : Activity
             window.SetLayout(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
             window.AddFlags(WindowManagerFlags.Fullscreen);
             window.SetBackgroundDrawable(new ColorDrawable(Color.ParseColor("#101014")));
+            // The preview must use the same full screen frame as the game,
+            // otherwise the status bar inset shifts every control down.
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
+            {
+                window.SetDecorFitsSystemWindows(false);
+                var controller = window.InsetsController;
+                if (controller != null)
+                {
+                    controller.Hide(WindowInsets.Type.StatusBars() | WindowInsets.Type.NavigationBars());
+                    controller.SystemBarsBehavior = (int)WindowInsetsControllerBehavior.ShowTransientBarsBySwipe;
+                }
+            }
             if (window.DecorView is View decor)
                 decor.SystemUiVisibility = (StatusBarVisibility)(SystemUiFlags.LayoutStable |
                     SystemUiFlags.LayoutFullscreen | SystemUiFlags.HideNavigation |
@@ -2074,20 +2089,26 @@ public sealed class LauncherActivity : Activity
         // Shared with BuildPadLayout so the launcher and the game use one table.
         public static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
         {
-            ("stick", "MOVE", 0.21f, 0.81f, 0.15f),
-            ("aim", "AIM", 0.79f, 0.81f, 0.15f),
-            ("drop", "DROP", 0.316f, 0.622f, 0.078f),
-            ("pull", "PULL", 0.21f, 0.544f, 0.078f),
-            ("esc", "ESC", 0.104f, 0.622f, 0.078f),
-            ("use", "USE", 0.896f, 0.622f, 0.09f),
-            ("exam", "EXAM", 0.79f, 0.544f, 0.078f),
-            ("bag", "BAG", 0.684f, 0.622f, 0.078f),
+            // Radii are fractions of screen height, matching the engine's
+            // ArrangeOverride table in MobileControlsOverlay.
+            ("stick", "MOVE", 0.21f, 0.81f, 0.18f),
+            ("aim", "AIM", 0.79f, 0.81f, 0.18f),
+            ("drop", "DROP", 0.316f, 0.622f, 0.095f),
+            ("pull", "PULL", 0.21f, 0.544f, 0.095f),
+            ("esc", "ESC", 0.104f, 0.622f, 0.095f),
+            ("use", "USE", 0.896f, 0.622f, 0.1075f),
+            ("exam", "EXAM", 0.79f, 0.544f, 0.095f),
+            ("bag", "BAG", 0.684f, 0.622f, 0.095f),
         };
 
         private readonly List<PadItem> _items = new();
         private readonly ISharedPreferences? _prefs;
         private readonly float _density;
         private readonly Paint _paint = new(PaintFlags.AntiAlias);
+        private int _screenW;
+        private int _screenH;
+        private int _originX;
+        private int _originY;
         private PadItem? _dragging;
         private PadItem? _selected;
         private float _downX;
@@ -2128,6 +2149,7 @@ public sealed class LauncherActivity : Activity
         {
             _prefs = prefs;
             _density = density;
+            UpdateScreenFrame();
             ResetItems();
             foreach (var entry in saved.Split(';', StringSplitOptions.RemoveEmptyEntries))
             {
@@ -2157,6 +2179,30 @@ public sealed class LauncherActivity : Activity
             FocusableInTouchMode = true;
         }
 
+        /// <summary>
+        /// The editor preview draws in screen fractions, the same frame the game
+        /// overlay uses. The dialog view itself is inset by the status bar, so
+        /// every draw and touch converts through the view's screen origin.
+        /// </summary>
+        private void UpdateScreenFrame()
+        {
+            var metrics = Resources?.DisplayMetrics;
+            if (metrics != null && metrics.WidthPixels > 0 && metrics.HeightPixels > 0)
+            {
+                _screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
+                _screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+            }
+            if (_screenW <= 0)
+            {
+                _screenW = Width;
+                _screenH = Height;
+            }
+            var location = new int[2];
+            GetLocationOnScreen(location);
+            _originX = location[0];
+            _originY = location[1];
+        }
+
         private void ResetItems()
         {
             _items.Clear();
@@ -2168,7 +2214,7 @@ public sealed class LauncherActivity : Activity
         {
             ResetItems();
             _selected = null;
-            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 3)?.Apply();
+            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 4)?.Apply();
             SelectionChanged?.Invoke();
             Invalidate();
         }
@@ -2183,13 +2229,12 @@ public sealed class LauncherActivity : Activity
                 // Save the centre the preview actually draws (after the safe area
                 // clamp), not the raw finger position: the game then reproduces
                 // exactly what the player saw in the editor.
-                var radiusPx = item.Radius * Height;
+                UpdateScreenFrame();
+                var radiusPx = item.Radius * _screenH;
                 var isStick = item.Id == "stick" || item.Id == "aim";
-                Vector2 center = new(item.Fx * Width, item.Fy * Height);
-                if (Width > 0f && Height > 0f)
-                    center = ClampToSafe(center, radiusPx, isStick);
-                var fx = Width > 0f ? center.X / Width : item.Fx;
-                var fy = Height > 0f ? center.Y / Height : item.Fy;
+                var center = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx, isStick);
+                var fx = center.X / _screenW;
+                var fy = center.Y / _screenH;
                 // Third field is the radius as a fraction of screen height; the
                 // engine applies it together with the position.
                 entries.Add($"{item.Id}@{fx.ToString("F4", CultureInfo.InvariantCulture)}," +
@@ -2198,7 +2243,7 @@ public sealed class LauncherActivity : Activity
             }
             _prefs?.Edit()?
                 .PutString("mobile_positions", string.Join(";", entries))?
-                .PutInt("mobile_positions_layout", 3)?
+                .PutInt("mobile_positions_layout", 4)?
                 .Apply();
         }
 
@@ -2206,12 +2251,13 @@ public sealed class LauncherActivity : Activity
         // rounded corners, in the physical pixels the editor draws in.
         private (float Left, float Top, float Right, float Bottom) SafeInsets()
         {
+            UpdateScreenFrame();
             var cutout = RootWindowInsets?.DisplayCutout;
             return (
-                MathF.Max(cutout?.SafeInsetLeft ?? 0, Width * 0.02f),
-                MathF.Max(cutout?.SafeInsetTop ?? 0, Height * 0.006f),
-                MathF.Max(cutout?.SafeInsetRight ?? 0, Width * 0.02f),
-                MathF.Max(cutout?.SafeInsetBottom ?? 0, Height * 0.008f));
+                MathF.Max(cutout?.SafeInsetLeft ?? 0, _screenW * 0.02f),
+                MathF.Max(cutout?.SafeInsetTop ?? 0, _screenH * 0.006f),
+                MathF.Max(cutout?.SafeInsetRight ?? 0, _screenW * 0.02f),
+                MathF.Max(cutout?.SafeInsetBottom ?? 0, _screenH * 0.008f));
         }
 
         private Vector2 ClampToSafe(Vector2 center, float radius, bool stick)
@@ -2220,8 +2266,8 @@ public sealed class LauncherActivity : Activity
             // Sticks carry 20 logical px of padding in game, which is 40 physical
             // at display.uiScale 2.0.
             var pad = stick ? radius + 20f : radius;
-            center.X = Math.Clamp(center.X, safe.Left + pad, MathF.Max(safe.Left + pad, Width - safe.Right - pad));
-            center.Y = Math.Clamp(center.Y, safe.Top + pad, MathF.Max(safe.Top + pad, Height - safe.Bottom - pad));
+            center.X = Math.Clamp(center.X, safe.Left + pad, MathF.Max(safe.Left + pad, _screenW - safe.Right - pad));
+            center.Y = Math.Clamp(center.Y, safe.Top + pad, MathF.Max(safe.Top + pad, _screenH - safe.Bottom - pad));
             return center;
         }
 
@@ -2229,31 +2275,33 @@ public sealed class LauncherActivity : Activity
         {
             base.OnDraw(canvas);
             canvas.DrawColor(Color.Argb(255, 26, 29, 38));
+            UpdateScreenFrame();
 
             foreach (var item in _items)
             {
-                var radiusPx = item.Radius * Height;
+                var radiusPx = item.Radius * _screenH;
                 var isStick = item.Id == "stick" || item.Id == "aim";
-                var clamped = ClampToSafe(new Vector2(item.Fx * Width, item.Fy * Height), radiusPx, isStick);
-                var cx = clamped.X;
-                var cy = clamped.Y;
-                var radius = radiusPx;
-                if (item.Id == "stick" || item.Id == "aim")
-                    DrawStick(canvas, cx, cy, radius, item.Id == "aim");
+                var clamped = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx, isStick);
+                // Screen point to canvas point: the view sits below the status bar.
+                var cx = clamped.X - _originX;
+                var cy = clamped.Y - _originY;
+                if (isStick)
+                    DrawStick(canvas, cx, cy, radiusPx, item.Id == "aim");
                 else
-                    DrawButton(canvas, cx, cy, radius, item.Label, AccentOf(item.Id));
+                    DrawButton(canvas, cx, cy, radiusPx, item.Label, AccentOf(item.Id));
             }
 
             if (_selected != null)
             {
-                var selectedRadius = _selected.Radius * Height;
+                var selectedRadius = _selected.Radius * _screenH;
                 var selectedStick = _selected.Id == "stick" || _selected.Id == "aim";
                 var selectedCenter = ClampToSafe(
-                    new Vector2(_selected.Fx * Width, _selected.Fy * Height), selectedRadius, selectedStick);
+                    new Vector2(_selected.Fx * _screenW, _selected.Fy * _screenH), selectedRadius, selectedStick);
                 _paint.SetStyle(Paint.Style.Stroke);
                 _paint.StrokeWidth = MathF.Max(3f, _density * 2f);
                 _paint.Color = Color.Argb(255, 255, 215, 0);
-                canvas.DrawCircle(selectedCenter.X, selectedCenter.Y, selectedRadius + _density * 4f, _paint);
+                canvas.DrawCircle(selectedCenter.X - _originX, selectedCenter.Y - _originY,
+                    selectedRadius + _density * 4f, _paint);
             }
         }
 
@@ -2473,18 +2521,21 @@ public sealed class LauncherActivity : Activity
             {
                 case MotionEventActions.Down:
                 {
+                    UpdateScreenFrame();
+                    var touchX = e.GetX() + _originX;
+                    var touchY = e.GetY() + _originY;
                     var best = 44f * _density;
                     PadItem? found = null;
                     foreach (var item in _items)
                     {
-                        var itemRadius = item.Radius * Height;
+                        var itemRadius = item.Radius * _screenH;
                         var itemStick = item.Id == "stick" || item.Id == "aim";
                         var itemCenter = ClampToSafe(
-                            new Vector2(item.Fx * Width, item.Fy * Height), itemRadius, itemStick);
-                        var dx = e.GetX() - itemCenter.X;
-                        var dy = e.GetY() - itemCenter.Y;
+                            new Vector2(item.Fx * _screenW, item.Fy * _screenH), itemRadius, itemStick);
+                        var dx = touchX - itemCenter.X;
+                        var dy = touchY - itemCenter.Y;
                         var dist = MathF.Sqrt(dx * dx + dy * dy);
-                        if (dist <= MathF.Max(best, item.Radius * Height))
+                        if (dist <= MathF.Max(best, itemRadius))
                         {
                             best = dist;
                             found = item;
@@ -2506,8 +2557,8 @@ public sealed class LauncherActivity : Activity
                         _moved = true;
                     if (!_moved)
                         return true;
-                    _dragging.Fx = Math.Clamp(e.GetX() / Width, 0.01f, 0.99f);
-                    _dragging.Fy = Math.Clamp(e.GetY() / Height, 0.01f, 0.99f);
+                    _dragging.Fx = Math.Clamp((e.GetX() + _originX) / _screenW, 0.01f, 0.99f);
+                    _dragging.Fy = Math.Clamp((e.GetY() + _originY) / _screenH, 0.01f, 0.99f);
                     Invalidate();
                     return true;
                 }
@@ -3370,7 +3421,7 @@ public sealed class LauncherActivity : Activity
             // UI scale is a client constant now: 200% is the scale the game
             // itself is tuned for, and the launcher no longer changes it.
             intent.PutExtra("cvar_build_display.uiScale", "2.0");
-            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
+            var dispRes = prefs.GetString("display_resolution", "1080p") ?? "1080p";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
@@ -3591,7 +3642,7 @@ public sealed class LauncherActivity : Activity
             // UI scale is a client constant now: 200% is the scale the game
             // itself is tuned for, and the launcher no longer changes it.
             intent.PutExtra("cvar_build_display.uiScale", "2.0");
-            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
+            var dispRes = prefs.GetString("display_resolution", "1080p") ?? "1080p";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
@@ -3609,7 +3660,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.2";
+    public const string CurrentAppVersion = "v0.8.3";
 
 
     public string GetCurrentAppVersion()
