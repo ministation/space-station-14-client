@@ -586,11 +586,11 @@ namespace Content.Android
                 LaunchBuildCVars["parallax.enabled"] = "false";
                 LaunchBuildCVars["parallax.low_quality"] = "true";
                 LaunchBuildCVars["light.resolution_scale"] = "0.12";
-                LaunchBuildCVars["light.max_light_count"] = "48";
+                LaunchBuildCVars["light.max_light_count"] = "32";
                 LaunchBuildCVars["light.max_occluder_count"] = "80";
-                // A few shadow-casting lights keep light from leaking through
-                // walls; wall bleed is the expensive part on mobile GPUs.
-                LaunchBuildCVars["light.max_shadowcasting_lights"] = "8";
+                // Every rendered light casts shadows, otherwise it shines through
+                // walls. The launcher graphics presets override both together.
+                LaunchBuildCVars["light.max_shadowcasting_lights"] = "32";
                 LaunchBuildCVars["light.wall_bleed"] = "false";
                 LaunchBuildCVars["light.ambient_occlusion"] = "false";
 
@@ -1058,18 +1058,14 @@ namespace Content.Android
 
                 var args = new List<string>
                 {
-                    "--cvar", $"mobile.safe_area_left={_safeAreaLeft}",
-                    "--cvar", $"mobile.safe_area_right={_safeAreaRight}",
-                    "--cvar", $"mobile.safe_area_top={_safeAreaTop}",
-                    "--cvar", $"mobile.safe_area_bottom={_safeAreaBottom}",
                     "--cvar", "thread.parallel_count=4",
                     "--cvar", "light.blur=false",
                     "--cvar", "light.soft_shadows=false",
                     "--cvar", "light.ambient_occlusion=false",
                     "--cvar", "light.resolution_scale=0.15",
-                    "--cvar", "light.max_light_count=72",
+                    "--cvar", "light.max_light_count=32",
                     "--cvar", "light.max_occluder_count=96",
-                    "--cvar", "light.max_shadowcasting_lights=0",
+                    "--cvar", "light.max_shadowcasting_lights=32",
                     "--cvar", "light.wall_bleed=true",
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
@@ -1130,6 +1126,17 @@ namespace Content.Android
                     }
                 }
 
+                // The launcher flow never passed the cutout insets, so the pad used
+                // to slide under the camera hole and the rounded corners.
+                args.Add("--cvar");
+                args.Add($"mobile.safe_area_left={SafeInset(_safeAreaLeft)}");
+                args.Add("--cvar");
+                args.Add($"mobile.safe_area_right={SafeInset(_safeAreaRight)}");
+                args.Add("--cvar");
+                args.Add($"mobile.safe_area_top={SafeInset(_safeAreaTop)}");
+                args.Add("--cvar");
+                args.Add($"mobile.safe_area_bottom={SafeInset(_safeAreaBottom)}");
+
                 var gcType = robustClient.GetType("Robust.Client.GameController");
                 if (gcType == null) throw new Exception("Robust.Client.GameController type is null");
                 var startMethod = gcType.GetMethod("Start", BindingFlags.Public | BindingFlags.Static);
@@ -1158,6 +1165,40 @@ namespace Content.Android
     private int _safeAreaRight;
     private int _safeAreaTop;
     private int _safeAreaBottom;
+
+    /// <summary>
+    /// Display cutout insets are measured in physical screen pixels, while the
+    /// engine works in the downscaled render surface. Scale them so the safe area
+    /// is the same fraction of the screen the launcher editor draws on.
+    /// </summary>
+    private float SurfaceScale()
+    {
+        try
+        {
+            var metrics = Resources?.DisplayMetrics;
+            if (metrics == null)
+                return 1f;
+            var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
+            var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+            if (screenH <= 0)
+                return 1f;
+            var res = Intent?.GetStringExtra("display_resolution") ?? "native";
+            var targetH = res switch
+            {
+                "720p" => 720,
+                "900p" => 900,
+                "1080p" => 1080,
+                _ => screenH
+            };
+            return targetH < screenH ? targetH / (float)screenH : 1f;
+        }
+        catch
+        {
+            return 1f;
+        }
+    }
+
+    private int SafeInset(int value) => (int)Math.Round(value * SurfaceScale());
 
     /// <summary>
     /// Reads the display cutout safe area. The pad uses it so buttons never sit

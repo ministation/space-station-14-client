@@ -21,6 +21,7 @@ using Content.Android.Launcher.UI;
 using Content.Android.Launcher.Utility;
 using Path = System.IO.Path;
 using Environment = System.Environment;
+using Vector2 = System.Numerics.Vector2;
 
 namespace Content.Android;
 
@@ -112,6 +113,7 @@ public sealed class LauncherActivity : Activity
         ContentDownloadService.DownloadFailed += OnServiceDownloadFailed;
 
         ApplyImmersiveMode();
+        MigratePadLayout();
         BuildOfficialUi();
         BuildLoadingOverlay();
         _ = RefreshHubServersAsync();
@@ -129,6 +131,23 @@ public sealed class LauncherActivity : Activity
         CheckForCrashAndPrompt();
         _ = Task.Run(() => ContentCacheManager.PruneStaleCache(this, _storage));
         TryAutoConnect(Intent);
+    }
+
+    /// <summary>
+    /// Pad positions saved before the full screen editor were fractions of the
+    /// smaller editor view, so the game drew them in the wrong place. Drop them
+    /// once so the shared fraction table is exactly what the player sees.
+    /// </summary>
+    private void MigratePadLayout()
+    {
+        var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
+        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 2)
+            return;
+
+        prefs.Edit()?
+            .Remove("mobile_positions")?
+            .PutInt("mobile_positions_layout", 2)?
+            .Apply();
     }
 
     protected override void OnNewIntent(Intent? intent)
@@ -1105,16 +1124,18 @@ public sealed class LauncherActivity : Activity
         string shadows, lights, occluders, lightRes, budget, bleed;
         switch (quality)
         {
+            // Lights and shadow-casting lights are kept equal on purpose: a light
+            // without a shadow map shines through walls.
             case "Low":
-                shadows = "0"; lights = "32"; occluders = "64"; lightRes = "0.10";
+                shadows = "16"; lights = "16"; occluders = "64"; lightRes = "0.10";
                 budget = "128"; bleed = "false";
                 break;
             case "High":
-                shadows = "24"; lights = "72"; occluders = "96"; lightRes = "0.15";
-                budget = "512"; bleed = "true";
+                shadows = "48"; lights = "48"; occluders = "96"; lightRes = "0.15";
+                budget = "512"; bleed = "false";
                 break;
             default:
-                shadows = "8"; lights = "48"; occluders = "80"; lightRes = "0.12";
+                shadows = "32"; lights = "32"; occluders = "80"; lightRes = "0.12";
                 budget = "256"; bleed = "false";
                 break;
         }
@@ -2109,7 +2130,7 @@ public sealed class LauncherActivity : Activity
         {
             ResetItems();
             _selected = null;
-            _prefs?.Edit()?.Remove("mobile_positions")?.Apply();
+            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 2)?.Apply();
             SelectionChanged?.Invoke();
             Invalidate();
         }
@@ -2127,7 +2148,33 @@ public sealed class LauncherActivity : Activity
                             $"{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}," +
                             $"{item.Radius.ToString("F4", CultureInfo.InvariantCulture)}");
             }
-            _prefs?.Edit()?.PutString("mobile_positions", string.Join(";", entries))?.Apply();
+            _prefs?.Edit()?
+                .PutString("mobile_positions", string.Join(";", entries))?
+                .PutInt("mobile_positions_layout", 2)?
+                .Apply();
+        }
+
+        // Same safe area as the game overlay: display cutout plus a floor for
+        // rounded corners, in the physical pixels the editor draws in.
+        private (float Left, float Top, float Right, float Bottom) SafeInsets()
+        {
+            var cutout = RootWindowInsets?.DisplayCutout;
+            return (
+                MathF.Max(cutout?.SafeInsetLeft ?? 0, Width * 0.02f),
+                MathF.Max(cutout?.SafeInsetTop ?? 0, Height * 0.006f),
+                MathF.Max(cutout?.SafeInsetRight ?? 0, Width * 0.02f),
+                MathF.Max(cutout?.SafeInsetBottom ?? 0, Height * 0.008f));
+        }
+
+        private Vector2 ClampToSafe(Vector2 center, float radius, bool stick)
+        {
+            var safe = SafeInsets();
+            // Sticks carry 20 logical px of padding in game, which is 40 physical
+            // at display.uiScale 2.0.
+            var pad = stick ? radius + 20f : radius;
+            center.X = Math.Clamp(center.X, safe.Left + pad, MathF.Max(safe.Left + pad, Width - safe.Right - pad));
+            center.Y = Math.Clamp(center.Y, safe.Top + pad, MathF.Max(safe.Top + pad, Height - safe.Bottom - pad));
+            return center;
         }
 
         protected override void OnDraw(Canvas canvas)
@@ -2137,9 +2184,12 @@ public sealed class LauncherActivity : Activity
 
             foreach (var item in _items)
             {
-                var cx = item.Fx * Width;
-                var cy = item.Fy * Height;
-                var radius = item.Radius * Height;
+                var radiusPx = item.Radius * Height;
+                var isStick = item.Id == "stick" || item.Id == "aim";
+                var clamped = ClampToSafe(new Vector2(item.Fx * Width, item.Fy * Height), radiusPx, isStick);
+                var cx = clamped.X;
+                var cy = clamped.Y;
+                var radius = radiusPx;
                 if (item.Id == "stick" || item.Id == "aim")
                     DrawStick(canvas, cx, cy, radius, item.Id == "aim");
                 else
@@ -2148,12 +2198,14 @@ public sealed class LauncherActivity : Activity
 
             if (_selected != null)
             {
-                var cx = _selected.Fx * Width;
-                var cy = _selected.Fy * Height;
+                var selectedRadius = _selected.Radius * Height;
+                var selectedStick = _selected.Id == "stick" || _selected.Id == "aim";
+                var selectedCenter = ClampToSafe(
+                    new Vector2(_selected.Fx * Width, _selected.Fy * Height), selectedRadius, selectedStick);
                 _paint.SetStyle(Paint.Style.Stroke);
                 _paint.StrokeWidth = MathF.Max(3f, _density * 2f);
                 _paint.Color = Color.Argb(255, 255, 215, 0);
-                canvas.DrawCircle(cx, cy, _selected.Radius * Height + _density * 4f, _paint);
+                canvas.DrawCircle(selectedCenter.X, selectedCenter.Y, selectedRadius + _density * 4f, _paint);
             }
         }
 
@@ -2202,12 +2254,16 @@ public sealed class LauncherActivity : Activity
         {
             var unit = MathF.Max(2f, MathF.Round(radius / 7f));
             DrawDisc(canvas, cx, cy, radius,
-                Color.Argb(44, 9, 11, 14), Color.Argb(8, 190, 195, 202),
-                Color.Argb(30, 0, 0, 0), Color.Argb(40, 132, 139, 150), unit, false);
+                Color.Argb(110, 9, 11, 14), Color.Argb(14, 190, 195, 202),
+                Color.Argb(90, 0, 0, 0), Color.Argb(150, 132, 139, 150), unit, false);
             DrawDisc(canvas, cx, cy, radius * 0.6f,
-                Color.Argb(16, 0, 0, 0), Color.Argb(3, 200, 205, 212),
-                Color.Argb(12, 0, 0, 0), Color.Argb(20, 0, 0, 0),
+                Color.Argb(30, 0, 0, 0), Color.Argb(5, 200, 205, 212),
+                Color.Argb(30, 0, 0, 0), Color.Argb(40, 0, 0, 0),
                 MathF.Max(2f, unit * 0.8f), false);
+            DrawDisc(canvas, cx, cy, radius * 0.3f,
+                Color.Argb(40, 0, 0, 0), Color.Argb(8, 200, 205, 212),
+                Color.Argb(30, 0, 0, 0), Color.Argb(70, 14, 16, 20),
+                MathF.Max(2f, MathF.Round(radius * 0.3f / 5f)), false);
 
             var block = MathF.Max(2f, MathF.Round(radius * 0.11f));
             var cross = Color.Argb(110, 186, 192, 202);
@@ -2373,8 +2429,12 @@ public sealed class LauncherActivity : Activity
                     PadItem? found = null;
                     foreach (var item in _items)
                     {
-                        var dx = e.GetX() - item.Fx * Width;
-                        var dy = e.GetY() - item.Fy * Height;
+                        var itemRadius = item.Radius * Height;
+                        var itemStick = item.Id == "stick" || item.Id == "aim";
+                        var itemCenter = ClampToSafe(
+                            new Vector2(item.Fx * Width, item.Fy * Height), itemRadius, itemStick);
+                        var dx = e.GetX() - itemCenter.X;
+                        var dy = e.GetY() - itemCenter.Y;
                         var dist = MathF.Sqrt(dx * dx + dy * dy);
                         if (dist <= MathF.Max(best, item.Radius * Height))
                         {
@@ -3505,7 +3565,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.14";
+    public const string CurrentAppVersion = "v0.8.0";
 
 
     public string GetCurrentAppVersion()
