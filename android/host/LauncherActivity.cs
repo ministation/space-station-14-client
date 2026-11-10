@@ -134,6 +134,43 @@ public sealed class LauncherActivity : Activity
     }
 
     /// <summary>
+    /// Full pad layout for the game: the editor's default table merged with the
+    /// player's saved changes. The launcher always passes it, so the engine can
+    /// never lay the pad out from a stale or different copy of the defaults.
+    /// </summary>
+    private static string BuildPadLayout(ISharedPreferences? prefs)
+    {
+        var saved = prefs?.GetString("mobile_positions", "") ?? "";
+        var byId = new Dictionary<string, (float Fx, float Fy, float R)>();
+        foreach (var entry in saved.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var at = entry.IndexOf('@');
+            if (at <= 0)
+                continue;
+            var coords = entry[(at + 1)..].Split(',');
+            if (coords.Length < 2)
+                continue;
+            if (!float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
+                !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy))
+                continue;
+            if (coords.Length < 3 ||
+                !float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
+                continue;
+            byId[entry[..at]] = (fx, fy, r);
+        }
+
+        var entries = new List<string>();
+        foreach (var (id, _, fx, fy, radius) in PadEditorView.Defaults)
+        {
+            var item = byId.TryGetValue(id, out var savedItem) ? savedItem : (Fx: fx, Fy: fy, R: radius);
+            entries.Add($"{id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)}," +
+                        $"{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}," +
+                        $"{item.R.ToString("F4", CultureInfo.InvariantCulture)}");
+        }
+        return string.Join(";", entries);
+    }
+
+    /// <summary>
     /// Pad positions saved before the full screen editor were fractions of the
     /// smaller editor view, so the game drew them in the wrong place. Drop them
     /// once so the shared fraction table is exactly what the player sees.
@@ -2034,7 +2071,8 @@ public sealed class LauncherActivity : Activity
             public bool Resized;
         }
 
-        private static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
+        // Shared with BuildPadLayout so the launcher and the game use one table.
+        public static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
         {
             ("stick", "MOVE", 0.21f, 0.81f, 0.15f),
             ("aim", "AIM", 0.79f, 0.81f, 0.15f),
@@ -2142,10 +2180,20 @@ public sealed class LauncherActivity : Activity
             {
                 if (!item.Moved && !item.Resized)
                     continue;
+                // Save the centre the preview actually draws (after the safe area
+                // clamp), not the raw finger position: the game then reproduces
+                // exactly what the player saw in the editor.
+                var radiusPx = item.Radius * Height;
+                var isStick = item.Id == "stick" || item.Id == "aim";
+                Vector2 center = new(item.Fx * Width, item.Fy * Height);
+                if (Width > 0f && Height > 0f)
+                    center = ClampToSafe(center, radiusPx, isStick);
+                var fx = Width > 0f ? center.X / Width : item.Fx;
+                var fy = Height > 0f ? center.Y / Height : item.Fy;
                 // Third field is the radius as a fraction of screen height; the
                 // engine applies it together with the position.
-                entries.Add($"{item.Id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)}," +
-                            $"{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}," +
+                entries.Add($"{item.Id}@{fx.ToString("F4", CultureInfo.InvariantCulture)}," +
+                            $"{fy.ToString("F4", CultureInfo.InvariantCulture)}," +
                             $"{item.Radius.ToString("F4", CultureInfo.InvariantCulture)}");
             }
             _prefs?.Edit()?
@@ -3324,9 +3372,7 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_display.uiScale", "2.0");
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
-            var positions = prefs.GetString("mobile_positions", "");
-            if (!string.IsNullOrEmpty(positions))
-                intent.PutExtra("cvar_build_mobile.controls_positions", positions);
+            intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
         }
 
@@ -3547,9 +3593,7 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_display.uiScale", "2.0");
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
-            var positions = prefs.GetString("mobile_positions", "");
-            if (!string.IsNullOrEmpty(positions))
-                intent.PutExtra("cvar_build_mobile.controls_positions", positions);
+            intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
         }
         StartActivity(intent);
@@ -3565,7 +3609,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.1";
+    public const string CurrentAppVersion = "v0.8.2";
 
 
     public string GetCurrentAppVersion()
