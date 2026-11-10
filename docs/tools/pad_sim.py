@@ -37,36 +37,27 @@ def geometry(width, height, ui_scale):
     )
 
 
-def top_row(g):
-    """Four utility cells share the top bar: esc, exam, inv, pull."""
-    cells = []
-    width = min(70 * g["ctl"], max(24 * g["ctl"],
-        (g["wl"] - 2 * g["safe_x"] - 10 * g["ctl"] - 3 * g["top_gap"]) / 4))
-    pitch = width + g["top_gap"]
-    for i in range(4):
-        x = g["safe_x"] + i * pitch
-        cells.append((x, g["top_y"], x + width, g["top_y"] + g["top_h"]))
-    return cells
-
-
 def layout(width, height, ui_scale):
     g = geometry(width, height, ui_scale)
-    right = [("USE", g["use"], None)]
-    left = [("DROP", g["util"], None)]
+    ring = g["radius"] + g["use"] / 2 + 10 * g["ctl"] * g["fit"]
 
-    def place(name, size, cx, cy):
+    def place(name, size, center, angle):
+        rad = math.radians(angle)
+        cx = center[0] + math.cos(rad) * ring
+        cy = center[1] - math.sin(rad) * ring
         return (name, (cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2), size, 0)
 
-    bottom_left = g["hl"] - g["safe_bottom"] - g["util"] / 2 - 2
-    bottom_right = g["hl"] - g["safe_bottom"] - g["use"] / 2 - 2
-    left_x = g["safe_x"] + g["util"] / 2
-    placed_l = [
-        place("DROP", g["util"], left_x, bottom_left),
-    ]
-
-    right_x = g["wl"] - g["safe_x"]
+    # Three keys per stick, upper arc: use/drop at 45, exam/pull at 90,
+    # inv/esc at 135 degrees.
     placed_r = [
-        place("USE", g["use"], right_x - g["use"] / 2, bottom_right),
+        place("USE", g["use"], g["aim"], 45),
+        place("EXAM", g["util"], g["aim"], 90),
+        place("BAG", g["util"], g["aim"], 135),
+    ]
+    placed_l = [
+        place("DROP", g["util"], g["move"], 45),
+        place("PULL", g["util"], g["move"], 90),
+        place("ESC", g["util"], g["move"], 135),
     ]
     return g, placed_r, placed_l
 

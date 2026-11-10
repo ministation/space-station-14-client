@@ -1918,14 +1918,14 @@ public sealed class LauncherActivity : Activity
 
         private static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
         {
-            ("stick", "MOVE", 0.21f, 0.82f, 0.15f),
-            ("aim", "AIM", 0.79f, 0.82f, 0.15f),
-            ("drop", "DROP", 0.07f, 0.89f, 0.078f),
-            ("use", "USE", 0.92f, 0.87f, 0.097f),
-            ("esc", "ESC", 0.11f, 0.18f, 0.07f),
-            ("exam", "EXAM", 0.49f, 0.18f, 0.07f),
-            ("inv", "INV", 0.68f, 0.18f, 0.07f),
-            ("pull", "PULL", 0.87f, 0.18f, 0.07f),
+            ("stick", "MOVE", 0.21f, 0.81f, 0.15f),
+            ("aim", "AIM", 0.79f, 0.81f, 0.15f),
+            ("drop", "DROP", 0.316f, 0.622f, 0.078f),
+            ("pull", "PULL", 0.21f, 0.544f, 0.078f),
+            ("esc", "ESC", 0.104f, 0.622f, 0.078f),
+            ("use", "USE", 0.896f, 0.622f, 0.09f),
+            ("exam", "EXAM", 0.79f, 0.544f, 0.078f),
+            ("bag", "BAG", 0.684f, 0.622f, 0.078f),
         };
 
         private readonly List<PadItem> _items = new();
@@ -3158,7 +3158,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.9";
+    public const string CurrentAppVersion = "v0.7.10";
 
 
     public string GetCurrentAppVersion()
