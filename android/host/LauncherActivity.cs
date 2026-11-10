@@ -2247,8 +2247,9 @@ public sealed class LauncherActivity : Activity
                 .Apply();
         }
 
-        // Same safe area as the game overlay: display cutout plus a floor for
-        // rounded corners, in the physical pixels the editor draws in.
+        // The pad keeps screen coordinates in game (the overlay cancels the
+        // cutout frame), so the preview maps fractions to the full screen. The
+        // floors keep controls clear of rounded display corners.
         private (float Left, float Top, float Right, float Bottom) SafeInsets()
         {
             UpdateScreenFrame();
@@ -3660,7 +3661,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.3";
+    public const string CurrentAppVersion = "v0.8.4";
 
 
     public string GetCurrentAppVersion()
