@@ -1922,23 +1922,54 @@ public sealed class LauncherActivity : Activity
         dialog.RequestWindowFeature((int)WindowFeatures.NoTitle);
         dialog.SetCanceledOnTouchOutside(false);
 
-        var rootView = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        var rootView = new FrameLayout(this);
         rootView.SetBackgroundColor(Color.ParseColor("#101014"));
+        rootView.AddView(editor, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
 
-        var title = new TextView(this) { Text = "Drag the sticks and buttons, then Save", TextSize = 12 };
+        var topPanel = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        topPanel.SetBackgroundColor(Color.ParseColor("#E6101014"));
+
+        var title = new TextView(this) { Text = "Drag to move, tap to select, slider to resize, then Save", TextSize = 12 };
         title.SetTextColor(LauncherTheme.NanoGold);
         title.SetPadding(Dp(12), Dp(8), Dp(12), Dp(6));
-        rootView.AddView(title);
+        topPanel.AddView(title);
 
-        rootView.AddView(editor, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+        var sizeRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        sizeRow.SetGravity(GravityFlags.CenterVertical);
+        sizeRow.SetPadding(Dp(12), 0, Dp(12), 0);
+        var sizeLabel = new TextView(this) { Text = "Tap an element to resize", TextSize = 11 };
+        sizeLabel.SetTextColor(LauncherTheme.Foreground);
+        sizeRow.AddView(sizeLabel, new LinearLayout.LayoutParams(0, Dp(34), 1f));
+        var sizeBar = new SeekBar(this) { Max = 240 };
+        var updatingSize = false;
+        void SyncSize()
+        {
+            updatingSize = true;
+            sizeBar.Progress = editor.HasSelection ? Math.Clamp(editor.SelectedScalePercent - 40, 0, 240) : 0;
+            sizeLabel.Text = editor.HasSelection
+                ? $"{editor.SelectedLabel} size {editor.SelectedScalePercent}%"
+                : "Tap an element to resize";
+            updatingSize = false;
+        }
+        editor.SelectionChanged += SyncSize;
+        sizeBar.ProgressChanged += (_, e) =>
+        {
+            if (updatingSize || !e.FromUser || !editor.HasSelection)
+                return;
+            editor.SetSelectedScale((40 + e.Progress) / 100f);
+            sizeLabel.Text = $"{editor.SelectedLabel} size {editor.SelectedScalePercent}%";
+        };
+        sizeRow.AddView(sizeBar, new LinearLayout.LayoutParams(Dp(180), Dp(34)));
+        topPanel.AddView(sizeRow);
 
         var bar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        bar.SetPadding(Dp(8), Dp(4), Dp(8), Dp(8));
+        bar.SetPadding(Dp(8), Dp(2), Dp(8), Dp(6));
         var resetBtn = new Button(this) { Text = "Reset", TextSize = 11 };
         resetBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
         resetBtn.SetTextColor(LauncherTheme.Foreground);
         resetBtn.Click += (_, _) => editor.Reset();
-        bar.AddView(resetBtn, new LinearLayout.LayoutParams(0, Dp(40), 1f));
+        bar.AddView(resetBtn, new LinearLayout.LayoutParams(0, Dp(36), 1f));
 
         var saveBtn = new Button(this) { Text = "Save", TextSize = 11 };
         saveBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3);
@@ -1948,8 +1979,11 @@ public sealed class LauncherActivity : Activity
             editor.Save();
             dialog.Dismiss();
         };
-        bar.AddView(saveBtn, new LinearLayout.LayoutParams(0, Dp(40), 1f));
-        rootView.AddView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        bar.AddView(saveBtn, new LinearLayout.LayoutParams(0, Dp(36), 1f));
+        topPanel.AddView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+
+        rootView.AddView(topPanel, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent) { Gravity = GravityFlags.Top });
 
         dialog.SetContentView(rootView);
         dialog.Show();
@@ -1976,6 +2010,7 @@ public sealed class LauncherActivity : Activity
             public float Fy;
             public float Radius;
             public bool Moved;
+            public bool Resized;
         }
 
         private static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
@@ -1995,6 +2030,40 @@ public sealed class LauncherActivity : Activity
         private readonly float _density;
         private readonly Paint _paint = new(PaintFlags.AntiAlias);
         private PadItem? _dragging;
+        private PadItem? _selected;
+        private float _downX;
+        private float _downY;
+        private bool _moved;
+
+        public event Action? SelectionChanged;
+        public string SelectedLabel => _selected?.Label ?? "none";
+        public bool HasSelection => _selected != null;
+
+        private static float DefaultRadius(string id)
+        {
+            foreach (var item in Defaults)
+            {
+                if (item.id == id)
+                    return item.radius;
+            }
+            return 0.078f;
+        }
+
+        /// <summary>Selected element size as a percentage of its default size.</summary>
+        public int SelectedScalePercent => _selected == null
+            ? 100
+            : (int)Math.Round(_selected.Radius / DefaultRadius(_selected.Id) * 100f);
+
+        public void SetSelectedScale(float scale)
+        {
+            if (_selected == null)
+                return;
+            var radius = DefaultRadius(_selected.Id) * Math.Clamp(scale, 0.4f, 2.8f);
+            _selected.Radius = Math.Clamp(radius, 0.03f, 0.26f);
+            _selected.Resized = true;
+            Save();
+            Invalidate();
+        }
 
         public PadEditorView(Context context, ISharedPreferences? prefs, string saved, float density) : base(context)
         {
@@ -2018,6 +2087,12 @@ public sealed class LauncherActivity : Activity
                 item.Fx = fx;
                 item.Fy = fy;
                 item.Moved = true;
+                if (coords.Length >= 3 &&
+                    float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
+                {
+                    item.Radius = Math.Clamp(r, 0.04f, 0.24f);
+                    item.Resized = true;
+                }
             }
             Focusable = true;
             FocusableInTouchMode = true;
@@ -2033,7 +2108,9 @@ public sealed class LauncherActivity : Activity
         public void Reset()
         {
             ResetItems();
+            _selected = null;
             _prefs?.Edit()?.Remove("mobile_positions")?.Apply();
+            SelectionChanged?.Invoke();
             Invalidate();
         }
 
@@ -2042,9 +2119,13 @@ public sealed class LauncherActivity : Activity
             var entries = new List<string>();
             foreach (var item in _items)
             {
-                if (!item.Moved)
+                if (!item.Moved && !item.Resized)
                     continue;
-                entries.Add($"{item.Id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)},{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}");
+                // Third field is the radius as a fraction of screen height; the
+                // engine applies it together with the position.
+                entries.Add($"{item.Id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)}," +
+                            $"{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}," +
+                            $"{item.Radius.ToString("F4", CultureInfo.InvariantCulture)}");
             }
             _prefs?.Edit()?.PutString("mobile_positions", string.Join(";", entries))?.Apply();
         }
@@ -2052,39 +2133,231 @@ public sealed class LauncherActivity : Activity
         protected override void OnDraw(Canvas canvas)
         {
             base.OnDraw(canvas);
-            _paint.SetStyle(Paint.Style.Fill);
-            _paint.Color = Color.ParseColor("#1A1D26");
-            canvas.DrawRect(0, 0, Width, Height, _paint);
+            canvas.DrawColor(Color.Argb(255, 26, 29, 38));
 
             foreach (var item in _items)
             {
                 var cx = item.Fx * Width;
                 var cy = item.Fy * Height;
                 var radius = item.Radius * Height;
-                var active = item == _dragging;
-                _paint.SetStyle(Paint.Style.Fill);
-                _paint.Color = active ? Color.ParseColor("#3D5A80") : Color.ParseColor("#2A2E3C");
-                canvas.DrawCircle(cx, cy, radius, _paint);
-                _paint.SetStyle(Paint.Style.Stroke);
-                _paint.StrokeWidth = MathF.Max(2f, _density);
-                _paint.Color = Color.ParseColor("#9AA3B8");
-                canvas.DrawCircle(cx, cy, radius, _paint);
-
                 if (item.Id == "stick" || item.Id == "aim")
+                    DrawStick(canvas, cx, cy, radius, item.Id == "aim");
+                else
+                    DrawButton(canvas, cx, cy, radius, item.Label, AccentOf(item.Id));
+            }
+
+            if (_selected != null)
+            {
+                var cx = _selected.Fx * Width;
+                var cy = _selected.Fy * Height;
+                _paint.SetStyle(Paint.Style.Stroke);
+                _paint.StrokeWidth = MathF.Max(3f, _density * 2f);
+                _paint.Color = Color.Argb(255, 255, 215, 0);
+                canvas.DrawCircle(cx, cy, _selected.Radius * Height + _density * 4f, _paint);
+            }
+        }
+
+        private static Color AccentOf(string id) => id switch
+        {
+            "pull" => Color.Argb(255, 155, 89, 182),
+            "exam" => Color.Argb(255, 52, 152, 219),
+            "use" => Color.Argb(255, 0, 180, 216),
+            "drop" => Color.Argb(255, 231, 76, 60),
+            "bag" => Color.Argb(255, 26, 188, 156),
+            _ => Color.Argb(255, 210, 210, 210),
+        };
+
+        // Same idle face colour as PojavActionButton.Draw.
+        private static Color FaceOf(Color accent) => Mix(Color.Argb(255, 74, 78, 86), accent, 0.28f);
+
+        private static Color Mix(Color a, Color b, float t) => Color.Argb(
+            (int)(a.A + (b.A - a.A) * t),
+            (int)(a.R + (b.R - a.R) * t),
+            (int)(a.G + (b.G - a.G) * t),
+            (int)(a.B + (b.B - a.B) * t));
+
+        private void DrawButton(Canvas canvas, float cx, float cy, float radius, string label, Color accent)
+        {
+            var unit = MathF.Max(3f, MathF.Round(radius / 6f));
+            var face = FaceOf(accent);
+            var light = Mix(face, Color.White, 0.55f);
+            var dark = Mix(face, Color.Black, 0.55f);
+            var border = Color.Argb(235, 8, 10, 14);
+            DrawDisc(canvas, cx, cy, radius, face, light, dark, border, unit, false);
+
+            var labelUnit = MathF.Max(2f, MathF.Floor(unit * 0.75f));
+            var textW = PixelTextWidth(label, labelUnit);
+            var textH = 5f * labelUnit;
+            while (labelUnit > 1.5f && (textW > radius * 1.55f || textH > radius * 1.1f))
+            {
+                labelUnit -= 1f;
+                textW = PixelTextWidth(label, labelUnit);
+                textH = 5f * labelUnit;
+            }
+            DrawPixelText(canvas, label, cx - textW / 2f, cy - textH / 2f, labelUnit,
+                Color.Argb(245, 248, 250, 255));
+        }
+
+        private void DrawStick(Canvas canvas, float cx, float cy, float radius, bool aim)
+        {
+            var unit = MathF.Max(2f, MathF.Round(radius / 7f));
+            DrawDisc(canvas, cx, cy, radius,
+                Color.Argb(44, 9, 11, 14), Color.Argb(8, 190, 195, 202),
+                Color.Argb(30, 0, 0, 0), Color.Argb(40, 132, 139, 150), unit, false);
+            DrawDisc(canvas, cx, cy, radius * 0.6f,
+                Color.Argb(16, 0, 0, 0), Color.Argb(3, 200, 205, 212),
+                Color.Argb(12, 0, 0, 0), Color.Argb(20, 0, 0, 0),
+                MathF.Max(2f, unit * 0.8f), false);
+
+            var block = MathF.Max(2f, MathF.Round(radius * 0.11f));
+            var cross = Color.Argb(110, 186, 192, 202);
+            _paint.SetStyle(Paint.Style.Fill);
+            _paint.Color = cross;
+            void Pix(float ox, float oy)
+            {
+                var half = block / 2f;
+                canvas.DrawRect(cx + ox - half, cy + oy - half, cx + ox + half, cy + oy + half, _paint);
+            }
+
+            if (aim)
+            {
+                var arm = radius * 0.42f;
+                Pix(-arm, 0);
+                Pix(arm, 0);
+                Pix(0, -arm);
+                Pix(0, arm);
+                Pix(0, 0);
+                return;
+            }
+
+            var reach = radius * 0.62f;
+            var s = block * 1.3f;
+            // Four pixel chevrons, like the walk stick in game.
+            Pix(-s, -reach); Pix(0, -reach - s); Pix(s, -reach);
+            Pix(-s, reach); Pix(0, reach + s); Pix(s, reach);
+            Pix(-reach, -s); Pix(-reach - s, 0); Pix(-reach, s);
+            Pix(reach, -s); Pix(reach + s, 0); Pix(reach, s);
+        }
+
+        private static void DrawDisc(Canvas canvas, float cx, float cy, float radius,
+            Color face, Color light, Color dark, Color border, float unit, bool pressed)
+        {
+            var paint = new Paint(PaintFlags.AntiAlias);
+            var rows = Math.Max(2, (int)MathF.Ceiling(radius / unit) * 2);
+            var rowHeight = radius * 2f / rows;
+            var topColor = pressed ? dark : light;
+            var bottomColor = pressed ? light : dark;
+
+            for (var i = 0; i < rows; i++)
+            {
+                var y0 = -radius + i * rowHeight;
+                var yMid = y0 + rowHeight * 0.5f;
+                var half = MathF.Sqrt(MathF.Max(0f, radius * radius - yMid * yMid));
+                if (half <= 0.75f)
+                    continue;
+
+                var left = cx - half;
+                var top = cy + y0;
+                paint.Color = border;
+                canvas.DrawRect(left, top, left + half * 2f, top + rowHeight, paint);
+
+                var inset = MathF.Min(unit, half * 0.4f);
+                var innerLeft = left + inset;
+                var innerRight = left + half * 2f - inset;
+                if (innerRight - innerLeft <= 0.5f)
+                    continue;
+
+                paint.Color = face;
+                canvas.DrawRect(innerLeft, top, innerRight, top + rowHeight, paint);
+
+                var strip = MathF.Min(unit, (innerRight - innerLeft) * 0.5f);
+                paint.Color = yMid < 0f ? topColor : bottomColor;
+                var stripLeft = yMid < 0f ? innerLeft : innerRight - strip;
+                canvas.DrawRect(stripLeft, top, stripLeft + strip, top + rowHeight, paint);
+            }
+        }
+
+        private static readonly Dictionary<char, int[]> Glyphs = new()
+        {
+            ['A'] = new[] { 2, 5, 7, 5, 5 },
+            ['B'] = new[] { 6, 5, 6, 5, 6 },
+            ['C'] = new[] { 3, 4, 4, 4, 3 },
+            ['D'] = new[] { 6, 5, 5, 5, 6 },
+            ['E'] = new[] { 7, 4, 6, 4, 7 },
+            ['F'] = new[] { 7, 4, 6, 4, 4 },
+            ['G'] = new[] { 3, 4, 5, 5, 3 },
+            ['H'] = new[] { 5, 5, 7, 5, 5 },
+            ['I'] = new[] { 7, 2, 2, 2, 7 },
+            ['J'] = new[] { 1, 1, 1, 5, 2 },
+            ['K'] = new[] { 5, 5, 6, 5, 5 },
+            ['L'] = new[] { 4, 4, 4, 4, 7 },
+            ['M'] = new[] { 5, 7, 7, 5, 5 },
+            ['N'] = new[] { 5, 7, 7, 7, 5 },
+            ['O'] = new[] { 2, 5, 5, 5, 2 },
+            ['P'] = new[] { 6, 5, 6, 4, 4 },
+            ['Q'] = new[] { 2, 5, 5, 6, 3 },
+            ['R'] = new[] { 6, 5, 6, 5, 5 },
+            ['S'] = new[] { 3, 4, 2, 1, 6 },
+            ['T'] = new[] { 7, 2, 2, 2, 2 },
+            ['U'] = new[] { 5, 5, 5, 5, 7 },
+            ['V'] = new[] { 5, 5, 5, 5, 2 },
+            ['W'] = new[] { 5, 5, 7, 7, 5 },
+            ['X'] = new[] { 5, 5, 2, 5, 5 },
+            ['Y'] = new[] { 5, 5, 2, 2, 2 },
+            ['Z'] = new[] { 7, 1, 2, 4, 7 },
+            ['0'] = new[] { 7, 5, 5, 5, 7 },
+            ['1'] = new[] { 2, 6, 2, 2, 7 },
+            ['2'] = new[] { 6, 1, 2, 4, 7 },
+            ['3'] = new[] { 6, 1, 2, 1, 6 },
+            ['4'] = new[] { 5, 5, 7, 1, 1 },
+            ['5'] = new[] { 7, 4, 6, 1, 6 },
+            ['6'] = new[] { 3, 4, 7, 5, 7 },
+            ['7'] = new[] { 7, 1, 2, 2, 2 },
+            ['8'] = new[] { 7, 5, 7, 5, 7 },
+            ['9'] = new[] { 7, 5, 7, 1, 6 },
+            ['-'] = new[] { 0, 0, 7, 0, 0 },
+            ['.'] = new[] { 0, 0, 0, 0, 2 },
+        };
+
+        private static float PixelTextWidth(string text, float unit)
+        {
+            var columns = 0f;
+            foreach (var ch in text)
+                columns += ch == ' ' ? 2f : 4f;
+            columns -= 1f;
+            return MathF.Max(0f, columns) * unit;
+        }
+
+        private static void DrawPixelText(Canvas canvas, string text, float left, float top, float unit, Color color)
+        {
+            var paint = new Paint(PaintFlags.AntiAlias);
+            paint.Color = color;
+            var x = left;
+            foreach (var raw in text)
+            {
+                var c = char.ToUpperInvariant(raw);
+                if (c == ' ')
                 {
-                    _paint.SetStyle(Paint.Style.Fill);
-                    _paint.Color = Color.ParseColor("#9AA3B8");
-                    canvas.DrawCircle(cx, cy, radius * 0.3f, _paint);
+                    x += 2f * unit;
                     continue;
                 }
-
-                _paint.SetStyle(Paint.Style.Fill);
-                _paint.Color = Color.ParseColor("#F2F4FA");
-                _paint.TextSize = MathF.Max(10f, radius * 0.42f);
-                _paint.TextAlign = Paint.Align.Center;
-                _paint.SetTypeface(Typeface.DefaultBold);
-                var baseline = cy - (_paint.Descent() + _paint.Ascent()) / 2f;
-                canvas.DrawText(item.Label, cx, baseline, _paint);
+                if (!Glyphs.TryGetValue(c, out var glyph))
+                {
+                    x += 4f * unit;
+                    continue;
+                }
+                for (var row = 0; row < 5; row++)
+                {
+                    for (var col = 0; col < 3; col++)
+                    {
+                        if ((glyph[row] & (1 << (2 - col))) == 0)
+                            continue;
+                        var px = x + col * unit;
+                        var py = top + row * unit;
+                        canvas.DrawRect(px, py, px + unit, py + unit, paint);
+                    }
+                }
+                x += 4f * unit;
             }
         }
 
@@ -2110,6 +2383,9 @@ public sealed class LauncherActivity : Activity
                         }
                     }
                     _dragging = found;
+                    _downX = e.GetX();
+                    _downY = e.GetY();
+                    _moved = false;
                     Invalidate();
                     return found != null;
                 }
@@ -2117,6 +2393,11 @@ public sealed class LauncherActivity : Activity
                 {
                     if (_dragging == null)
                         return false;
+                    if (!_moved &&
+                        MathF.Abs(e.GetX() - _downX) + MathF.Abs(e.GetY() - _downY) > 8f * _density)
+                        _moved = true;
+                    if (!_moved)
+                        return true;
                     _dragging.Fx = Math.Clamp(e.GetX() / Width, 0.01f, 0.99f);
                     _dragging.Fy = Math.Clamp(e.GetY() / Height, 0.01f, 0.99f);
                     Invalidate();
@@ -2127,9 +2408,18 @@ public sealed class LauncherActivity : Activity
                 {
                     if (_dragging == null)
                         return false;
-                    _dragging.Moved = true;
-                    Save();
+                    if (_moved)
+                    {
+                        _dragging.Moved = true;
+                        Save();
+                    }
+                    else
+                    {
+                        _selected = _dragging;
+                        SelectionChanged?.Invoke();
+                    }
                     _dragging = null;
+                    _moved = false;
                     Invalidate();
                     return true;
                 }
@@ -2137,7 +2427,6 @@ public sealed class LauncherActivity : Activity
             return true;
         }
     }
-
     // [SolomonNumb1] settings dialog: controls scale, opacity, joystick size, FPS limits, and cache management
     private void ShowSettingsDialog()
     {
@@ -3216,7 +3505,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.12";
+    public const string CurrentAppVersion = "v0.7.13";
 
 
     public string GetCurrentAppVersion()
