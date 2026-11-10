@@ -578,6 +578,7 @@ namespace Content.Android
                 // Mobile first defaults: low graphics, particles and parallax off.
                 // display.max_fps 0 means no cap: the phone's refresh rate is the limit.
                 // Extras from the launcher below can override any of these.
+                LaunchBuildCVars["display.uiScale"] = "2.0";
                 LaunchBuildCVars["display.vsync"] = "false";
                 LaunchBuildCVars["display.max_fps"] = "60";
                 LaunchBuildCVars["particles.quality"] = "0";

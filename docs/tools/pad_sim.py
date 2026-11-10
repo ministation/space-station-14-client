@@ -1,70 +1,58 @@
 #!/usr/bin/env python3
 """Replica of the mobile pad layout in RobustToolbox MobileControlsOverlay.cs.
 
-Terraria-like pad: sticks low and inboard, use on the right edge and drop on
-the left edge. Run after touching the pad: it places every button for a grid of
-phone resolutions and exits non-zero when a button overlaps another button,
-a stick, or the screen frame. Keep this file in sync with ArrangeOverride.
+The pad is a fixed table of screen fractions, the same table the launcher
+editor (PadEditorView.Defaults) draws. No size cvar scales it. Run after
+touching the pad: it places every button for a grid of phone resolutions and
+exits non-zero when a button overlaps another button, a stick or the screen
+frame. Keep this file in sync with ArrangeOverride.
 """
 import math
 import sys
 
 # Engine side of the layout: must match MobileControlsOverlay.ArrangeOverride.
-BASE_SCALE = 2.25      # mobile.controls_scale default
-STICK_SCALE = 1.1      # mobile.thumbstick_scale default
-RIM_ALLOW = 0.32       # buttons may bite a third into the stick rim
+STICK_RADIUS = 0.15      # of screen height
+USE_RADIUS = 0.09        # of screen height
+UTIL_RADIUS = 0.078      # of screen height
+RIM_ALLOW = 0.32         # buttons may bite a third into the stick rim
+
+BUTTONS = [
+    # (name, fx, fy, radius fraction of height)
+    ("USE", 0.896, 0.622, USE_RADIUS),
+    ("EXAM", 0.79, 0.544, UTIL_RADIUS),
+    ("BAG", 0.684, 0.622, UTIL_RADIUS),
+    ("DROP", 0.316, 0.622, UTIL_RADIUS),
+    ("PULL", 0.21, 0.544, UTIL_RADIUS),
+    ("ESC", 0.104, 0.622, UTIL_RADIUS),
+]
 
 
 def geometry(width, height, ui_scale):
-    ctl = BASE_SCALE * min(2.0 / ui_scale, 2.0)
     wl, hl = width / ui_scale, height / ui_scale
-    fit = min(max(min(width, height) / 1440.0, 0.5), 1.3)
-    safe_x = max(10 * ctl, wl * 0.02)
-    safe_top = max(6 * ctl, hl * 0.006)
-    safe_bottom = max(6 * ctl, hl * 0.008)
-    top_h = 50 * ctl
-    top_y = max(safe_top, 6 * ctl)
-    top_gap = 8 * ctl
-    radius = min(wl * 0.075, hl * 0.14) * STICK_SCALE
     return dict(
-        wl=wl, hl=hl, ui=ui_scale, ctl=ctl, fit=fit,
-        safe_x=safe_x, safe_top=safe_top, safe_bottom=safe_bottom,
-        use=57 * ctl * fit, util=50 * ctl * fit,
-        radius=radius,
-        move=(wl * 0.21, hl - safe_bottom - radius - 2),
-        aim=(wl * 0.79, hl - safe_bottom - radius - 2),
-        top_y=top_y, top_h=top_h, top_gap=top_gap,
+        wl=wl, hl=hl, ui=ui_scale,
+        radius=hl * STICK_RADIUS,
+        move=(wl * 0.21, hl * 0.81),
+        aim=(wl * 0.79, hl * 0.81),
     )
 
 
 def layout(width, height, ui_scale):
     g = geometry(width, height, ui_scale)
-    ring = g["radius"] + g["use"] / 2 + 10 * g["ctl"] * g["fit"]
 
-    def place(name, size, center, angle):
-        rad = math.radians(angle)
-        cx = center[0] + math.cos(rad) * ring
-        cy = center[1] - math.sin(rad) * ring
+    def place(name, fx, fy, rad):
+        size = 2 * rad * g["hl"]
+        cx, cy = fx * g["wl"], fy * g["hl"]
         return (name, (cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2), size, 0)
 
-    # Three keys per stick, upper arc: use/drop at 45, exam/pull at 90,
-    # inv/esc at 135 degrees.
-    placed_r = [
-        place("USE", g["use"], g["aim"], 45),
-        place("EXAM", g["util"], g["aim"], 90),
-        place("BAG", g["util"], g["aim"], 135),
-    ]
-    placed_l = [
-        place("DROP", g["util"], g["move"], 45),
-        place("PULL", g["util"], g["move"], 90),
-        place("ESC", g["util"], g["move"], 135),
-    ]
+    placed_r = [place(*b) for b in BUTTONS if b[0] in ("USE", "EXAM", "BAG")]
+    placed_l = [place(*b) for b in BUTTONS if b[0] in ("DROP", "PULL", "ESC")]
     return g, placed_r, placed_l
 
 
 def rect_inside(rect, g):
-    return (rect[0] >= g["safe_x"] - 1.0 and rect[1] >= g["safe_top"] - 1.0 and
-            rect[2] <= g["wl"] - g["safe_x"] + 1.0 and rect[3] <= g["hl"] - g["safe_bottom"] + 1.0)
+    return (rect[0] >= -1.0 and rect[1] >= -1.0 and
+            rect[2] <= g["wl"] + 1.0 and rect[3] <= g["hl"] + 1.0)
 
 
 def circle_overlap(a, b):
@@ -85,7 +73,7 @@ def stick_overlap(rect, center, radius):
 
 def main():
     # Real phones only: physical height 720 and up. Anything smaller is a split
-    # screen or a watch, where the engine falls back to a 0.6 clamp.
+    # screen or a watch.
     sizes = [(1280, 720), (1600, 720), (1920, 1080), (2160, 1080), (2340, 1080),
              (2400, 1080), (2560, 1440), (2800, 1260), (3120, 1440)]
     failures = []

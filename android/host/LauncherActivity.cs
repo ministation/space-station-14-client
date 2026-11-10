@@ -1020,10 +1020,7 @@ public sealed class LauncherActivity : Activity
 
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private)!;
 
-        AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 2.25f, new[] { 1.5f, 1.8f, 2.0f, 2.25f }, "%");
-        AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
-        AddCycleRow(list, "UI scale", prefs, "gui_scale", 1.5f, new[] { 1.0f, 1.2f, 1.4f, 1.5f, 1.6f, 1.75f, 2.0f }, "x");
         AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "720p", new[] { "720p", "900p", "1080p", "native" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
 
@@ -2971,14 +2968,11 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 2.25f);
-            intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
-            intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var guiScale = prefs.GetFloat("gui_scale", 1.5f);
-            intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            // UI scale is a client constant now: 200% is the scale the game
+            // itself is tuned for, and the launcher no longer changes it.
+            intent.PutExtra("cvar_build_display.uiScale", "2.0");
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             var positions = prefs.GetString("mobile_positions", "");
@@ -3197,14 +3191,11 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 2.25f);
-            intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var stickScale = prefs.GetFloat("mobile_stick_scale", 1.1f);
-            intent.PutExtra("cvar_build_mobile.thumbstick_scale", stickScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            var guiScale = prefs.GetFloat("gui_scale", 1.5f);
-            intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            // UI scale is a client constant now: 200% is the scale the game
+            // itself is tuned for, and the launcher no longer changes it.
+            intent.PutExtra("cvar_build_display.uiScale", "2.0");
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             var positions = prefs.GetString("mobile_positions", "");
@@ -3225,7 +3216,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.11";
+    public const string CurrentAppVersion = "v0.7.12";
 
 
     public string GetCurrentAppVersion()
