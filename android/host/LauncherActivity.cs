@@ -141,12 +141,12 @@ public sealed class LauncherActivity : Activity
     private void MigratePadLayout()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 2)
+        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 3)
             return;
 
         prefs.Edit()?
             .Remove("mobile_positions")?
-            .PutInt("mobile_positions_layout", 2)?
+            .PutInt("mobile_positions_layout", 3)?
             .Apply();
     }
 
@@ -2130,7 +2130,7 @@ public sealed class LauncherActivity : Activity
         {
             ResetItems();
             _selected = null;
-            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 2)?.Apply();
+            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 3)?.Apply();
             SelectionChanged?.Invoke();
             Invalidate();
         }
@@ -2150,7 +2150,7 @@ public sealed class LauncherActivity : Activity
             }
             _prefs?.Edit()?
                 .PutString("mobile_positions", string.Join(";", entries))?
-                .PutInt("mobile_positions_layout", 2)?
+                .PutInt("mobile_positions_layout", 3)?
                 .Apply();
         }
 
@@ -3565,7 +3565,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.0";
+    public const string CurrentAppVersion = "v0.8.1";
 
 
     public string GetCurrentAppVersion()
