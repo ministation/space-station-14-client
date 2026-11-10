@@ -578,7 +578,7 @@ namespace Content.Android
                 // Mobile first defaults: low graphics, particles and parallax off.
                 // display.max_fps 0 means no cap: the phone's refresh rate is the limit.
                 // Extras from the launcher below can override any of these.
-                LaunchBuildCVars["display.uiScale"] = "2.0";
+                LaunchBuildCVars["display.uiScale"] = "2.25";
                 LaunchBuildCVars["display.vsync"] = "false";
                 LaunchBuildCVars["display.max_fps"] = "60";
                 LaunchBuildCVars["particles.quality"] = "0";
@@ -757,6 +757,10 @@ namespace Content.Android
                     int targetW = (int)Math.Round(targetH * aspect);
                     global::Android.Util.Log.Info("SS14Launch", $"[Resolution] Setting Surface size to {targetW}x{targetH} (native is {screenW}x{screenH})");
                     MSurface.Holder.SetFixedSize(targetW, targetH);
+                    // SDL sizes the surface view to the render resolution, which
+                    // leaves the game in the top left corner of the screen. The
+                    // view has to stay full screen so Android scales the buffer.
+                    ForceSurfaceFullscreen();
                 }
                 else
                 {
@@ -766,6 +770,35 @@ namespace Content.Android
             catch (Exception ex)
             {
                 global::Android.Util.Log.Warn("SS14Launch", $"ApplyDisplayResolution failed: {ex.Message}");
+            }
+        }
+
+        private void ForceSurfaceFullscreen(int retries = 2)
+        {
+            try
+            {
+                if (MSurface?.LayoutParameters == null)
+                    return;
+
+                // SDL puts the surface in a RelativeLayout, so the existing
+                // params must be reused instead of replaced by ViewGroup ones.
+                var lp = MSurface.LayoutParameters;
+                if (lp.Width == ViewGroup.LayoutParams.MatchParent &&
+                    lp.Height == ViewGroup.LayoutParams.MatchParent)
+                {
+                    return;
+                }
+
+                lp.Width = ViewGroup.LayoutParams.MatchParent;
+                lp.Height = ViewGroup.LayoutParams.MatchParent;
+                MSurface.LayoutParameters = lp;
+                MSurface.RequestLayout();
+                if (retries > 0)
+                    MSurface.PostDelayed(() => ForceSurfaceFullscreen(retries - 1), 500);
+            }
+            catch (Exception ex)
+            {
+                global::Android.Util.Log.Warn("SS14Launch", $"ForceSurfaceFullscreen failed: {ex.Message}");
             }
         }
 
@@ -1211,14 +1244,46 @@ namespace Content.Android
             if (!OperatingSystem.IsAndroidVersionAtLeast(28))
                 return;
 
-            var cutout = Window?.DecorView?.RootWindowInsets?.DisplayCutout;
-            if (cutout == null)
+            var insets = Window?.DecorView?.RootWindowInsets;
+            if (insets == null)
                 return;
 
-            _safeAreaLeft = cutout.SafeInsetLeft;
-            _safeAreaRight = cutout.SafeInsetRight;
-            _safeAreaTop = cutout.SafeInsetTop;
-            _safeAreaBottom = cutout.SafeInsetBottom;
+            var metrics = Resources?.DisplayMetrics;
+            if (metrics != null)
+            {
+                // Keep a thin frame at the bottom even when Android reports no
+                // inset: the gesture strip and rounded corners live there.
+                var shortSide = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+                _safeAreaBottom = Math.Max(_safeAreaBottom, (int)Math.Round(shortSide * 0.015f));
+            }
+
+            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            {
+                // Hidden navigation bars still own the bottom gesture strip.
+                var gestures = insets.GetInsets(WindowInsets.Type.SystemGestures());
+                _safeAreaBottom = Math.Max(_safeAreaBottom, gestures.Bottom);
+            }
+
+            var cutout = insets.DisplayCutout;
+            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            {
+                var raw = insets.GetInsets(WindowInsets.Type.DisplayCutout());
+                _safeAreaLeft = Math.Max(_safeAreaLeft, raw.Left);
+                _safeAreaRight = Math.Max(_safeAreaRight, raw.Right);
+                _safeAreaTop = Math.Max(_safeAreaTop, raw.Top);
+                _safeAreaBottom = Math.Max(_safeAreaBottom, raw.Bottom);
+            }
+
+            if (cutout != null)
+            {
+                _safeAreaLeft = Math.Max(_safeAreaLeft, cutout.SafeInsetLeft);
+                _safeAreaRight = Math.Max(_safeAreaRight, cutout.SafeInsetRight);
+                _safeAreaTop = Math.Max(_safeAreaTop, cutout.SafeInsetTop);
+                _safeAreaBottom = Math.Max(_safeAreaBottom, cutout.SafeInsetBottom);
+            }
+
+            global::Android.Util.Log.Info("SS14Launch",
+                $"[SafeArea] cutout={(cutout != null ? "yes" : "no")} l={_safeAreaLeft} t={_safeAreaTop} r={_safeAreaRight} b={_safeAreaBottom}");
         }
         catch
         {

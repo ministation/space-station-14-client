@@ -1080,7 +1080,7 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private)!;
 
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
-        AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "1080p", new[] { "720p", "900p", "1080p", "native" });
+        AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "native", new[] { "native", "1080p", "900p", "720p" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
@@ -3421,8 +3421,8 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             // UI scale is a client constant now: 200% is the scale the game
             // itself is tuned for, and the launcher no longer changes it.
-            intent.PutExtra("cvar_build_display.uiScale", "2.0");
-            var dispRes = prefs.GetString("display_resolution", "1080p") ?? "1080p";
+            intent.PutExtra("cvar_build_display.uiScale", "2.25");
+            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
@@ -3642,8 +3642,8 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             // UI scale is a client constant now: 200% is the scale the game
             // itself is tuned for, and the launcher no longer changes it.
-            intent.PutExtra("cvar_build_display.uiScale", "2.0");
-            var dispRes = prefs.GetString("display_resolution", "1080p") ?? "1080p";
+            intent.PutExtra("cvar_build_display.uiScale", "2.25");
+            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
             ApplyGraphicsExtras(intent, prefs);
@@ -3661,7 +3661,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.4";
+    public const string CurrentAppVersion = "v0.8.5";
 
 
     public string GetCurrentAppVersion()

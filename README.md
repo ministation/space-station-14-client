@@ -23,15 +23,15 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.8.4](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.8.4).
+APK: [Release android-v0.8.5](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.8.5).
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.8.4: 430c31ad31d47c508afe5d2c7f24538220d7f86a9c95224948a6413ed1530ad4
+sha256 версии 0.8.5: accfa42762f04c536ac993457867b25f06919b1b53e900a79f432894b0c7ad82
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/www/android/<версия>).
-arm64-v8a, Android 8.0 и новее. AOT-компиляция в 0.6.2 на устройстве оказалась медленнее JIT, поэтому Release снова идёт через JIT. Масштаб интерфейса зафиксирован на 200% (display.uiScale 2.0), рендер 720p с апскейлом на телефоне. Редактор кнопок в лаунчере рисует их как в игре и меняет размер каждого элемента. Первый запуск скачивает контент сервера (около 1.27 ГБ),
+arm64-v8a, Android 8.0 и новее. AOT-компиляция в 0.6.2 на устройстве оказалась медленнее JIT, поэтому Release снова идёт через JIT. Масштаб интерфейса зафиксирован на 225% (display.uiScale 2.25), рендер native, слабые устройства могут выбрать 1080p, 900p или 720p в настройках. Редактор кнопок в лаунчере рисует их как в игре и меняет размер каждого элемента. Первый запуск скачивает контент сервера (около 1.27 ГБ),
 дальше обновления сервера докачивают только изменённые файлы.
 
 ## Как это работает
