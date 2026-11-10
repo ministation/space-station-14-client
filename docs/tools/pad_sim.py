@@ -10,7 +10,7 @@ import math
 import sys
 
 # Engine side of the layout: must match MobileControlsOverlay.ArrangeOverride.
-BASE_SCALE = 1.5       # mobile.controls_scale default
+BASE_SCALE = 2.25      # mobile.controls_scale default
 STICK_SCALE = 1.1      # mobile.thumbstick_scale default
 RIM_ALLOW = 0.32       # buttons may bite a third into the stick rim
 
@@ -29,7 +29,7 @@ def geometry(width, height, ui_scale):
     return dict(
         wl=wl, hl=hl, ui=ui_scale, ctl=ctl, fit=fit,
         safe_x=safe_x, safe_top=safe_top, safe_bottom=safe_bottom,
-        use=62 * ctl * fit, inter=56 * ctl * fit, util=50 * ctl * fit,
+        use=57 * ctl * fit, inter=53 * ctl * fit, util=50 * ctl * fit,
         btn_gap=12 * ctl * fit, radius=radius,
         move=(wl * 0.21, hl - safe_bottom - radius - 2),
         aim=(wl * 0.79, hl - safe_bottom - radius - 2),
@@ -38,12 +38,12 @@ def geometry(width, height, ui_scale):
 
 
 def top_row(g):
-    """Eight utility cells share the top bar, hide included."""
+    """Five utility cells share the top bar; edit, hide and alt are gone."""
     cells = []
     width = min(70 * g["ctl"], max(24 * g["ctl"],
-        (g["wl"] - 2 * g["safe_x"] - 11 * g["ctl"] - 7 * g["top_gap"]) / 8))
+        (g["wl"] - 2 * g["safe_x"] - 10 * g["ctl"] - 4 * g["top_gap"]) / 5))
     pitch = width + g["top_gap"]
-    for i in range(8):
+    for i in range(5):
         x = g["safe_x"] + i * pitch
         cells.append((x, g["top_y"], x + width, g["top_y"] + g["top_h"]))
     return cells

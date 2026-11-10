@@ -168,6 +168,7 @@ public sealed class LauncherActivity : Activity
             SetOverlayProgress(tot > 0 ? (int)(cur * 100L / tot) : -1);
             _overlayText.Text = ContentDownloadService.CurrentStatus ?? "Downloading content...";
         }
+
     }
 
     protected override void OnDestroy()
@@ -1019,10 +1020,12 @@ public sealed class LauncherActivity : Activity
 
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private)!;
 
-        AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 1.5f, new[] { 1.0f, 1.3f, 1.5f, 1.7f }, "%");
+        AddCycleRow(list, "Controls scale", prefs, "mobile_scale", 2.25f, new[] { 1.5f, 1.8f, 2.0f, 2.25f }, "%");
         AddCycleRow(list, "Thumbstick scale", prefs, "mobile_stick_scale", 1.1f, new[] { 0.9f, 1.0f, 1.1f, 1.3f }, "%");
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddCycleRow(list, "UI scale", prefs, "gui_scale", 1.5f, new[] { 1.0f, 1.2f, 1.4f, 1.5f, 1.6f, 1.75f, 2.0f }, "x");
+
+        AddActionRow(list, "Customize controls", () => ShowControlsEditor());
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
@@ -1843,6 +1846,238 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         prefs?.Edit()?.PutString("mobile_layout", serialized)?.Apply();
         MainActivity.LaunchBuildCVars["mobile.controls_layout"] = serialized;
+    }
+
+    // Launcher-side pad editor: the game no longer has an edit mode, so the
+    // player drags the sticks and buttons here and the fractions are passed to
+    // the engine as cvar_build_mobile.controls_positions on the next launch.
+    private void ShowControlsEditor()
+    {
+        var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
+        var editor = new PadEditorView(this, prefs, prefs?.GetString("mobile_positions", "") ?? "", Density);
+
+        var dialog = new Dialog(this);
+        dialog.RequestWindowFeature((int)WindowFeatures.NoTitle);
+        dialog.SetCanceledOnTouchOutside(false);
+
+        var rootView = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        rootView.SetBackgroundColor(Color.ParseColor("#101014"));
+
+        var title = new TextView(this) { Text = "Drag the sticks and buttons, then Save", TextSize = 12 };
+        title.SetTextColor(LauncherTheme.NanoGold);
+        title.SetPadding(Dp(12), Dp(8), Dp(12), Dp(6));
+        rootView.AddView(title);
+
+        rootView.AddView(editor, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, 0, 1f));
+
+        var bar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        bar.SetPadding(Dp(8), Dp(4), Dp(8), Dp(8));
+        var resetBtn = new Button(this) { Text = "Reset", TextSize = 11 };
+        resetBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
+        resetBtn.SetTextColor(LauncherTheme.Foreground);
+        resetBtn.Click += (_, _) => editor.Reset();
+        bar.AddView(resetBtn, new LinearLayout.LayoutParams(0, Dp(40), 1f));
+
+        var saveBtn = new Button(this) { Text = "Save", TextSize = 11 };
+        saveBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3);
+        saveBtn.SetTextColor(LauncherTheme.Foreground);
+        saveBtn.Click += (_, _) =>
+        {
+            editor.Save();
+            dialog.Dismiss();
+        };
+        bar.AddView(saveBtn, new LinearLayout.LayoutParams(0, Dp(40), 1f));
+        rootView.AddView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+
+        dialog.SetContentView(rootView);
+        dialog.Show();
+        var window = dialog.Window;
+        if (window != null)
+        {
+            window.SetLayout(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
+            window.AddFlags(WindowManagerFlags.Fullscreen);
+            window.SetBackgroundDrawable(new ColorDrawable(Color.ParseColor("#101014")));
+            if (window.DecorView is View decor)
+                decor.SystemUiVisibility = (StatusBarVisibility)(SystemUiFlags.LayoutStable |
+                    SystemUiFlags.LayoutFullscreen | SystemUiFlags.HideNavigation |
+                    SystemUiFlags.Fullscreen | SystemUiFlags.ImmersiveSticky);
+        }
+    }
+
+    private sealed class PadEditorView : View
+    {
+        private sealed class PadItem
+        {
+            public string Id = "";
+            public string Label = "";
+            public float Fx;
+            public float Fy;
+            public float Radius;
+            public bool Moved;
+        }
+
+        private static readonly (string id, string label, float fx, float fy, float radius)[] Defaults =
+        {
+            ("stick", "MOVE", 0.21f, 0.82f, 0.15f),
+            ("aim", "AIM", 0.79f, 0.82f, 0.15f),
+            ("drop", "DROP", 0.07f, 0.89f, 0.078f),
+            ("bag", "BAG", 0.07f, 0.70f, 0.078f),
+            ("use", "USE", 0.92f, 0.87f, 0.097f),
+            ("inter", "INTER", 0.92f, 0.65f, 0.085f),
+            ("sec", "SEC", 0.92f, 0.45f, 0.078f),
+            ("esc", "ESC", 0.11f, 0.18f, 0.07f),
+            ("keyb", "KEYB", 0.30f, 0.18f, 0.07f),
+            ("exam", "EXAM", 0.49f, 0.18f, 0.07f),
+            ("inv", "INV", 0.68f, 0.18f, 0.07f),
+            ("pull", "PULL", 0.87f, 0.18f, 0.07f),
+        };
+
+        private readonly List<PadItem> _items = new();
+        private readonly ISharedPreferences? _prefs;
+        private readonly float _density;
+        private readonly Paint _paint = new(PaintFlags.AntiAlias);
+        private PadItem? _dragging;
+
+        public PadEditorView(Context context, ISharedPreferences? prefs, string saved, float density) : base(context)
+        {
+            _prefs = prefs;
+            _density = density;
+            ResetItems();
+            foreach (var entry in saved.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var at = entry.IndexOf('@');
+                if (at <= 0)
+                    continue;
+                var coords = entry[(at + 1)..].Split(',');
+                if (coords.Length < 2)
+                    continue;
+                if (!float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
+                    !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy))
+                    continue;
+                var item = _items.Find(i => i.Id == entry[..at]);
+                if (item == null)
+                    continue;
+                item.Fx = fx;
+                item.Fy = fy;
+                item.Moved = true;
+            }
+            Focusable = true;
+            FocusableInTouchMode = true;
+        }
+
+        private void ResetItems()
+        {
+            _items.Clear();
+            foreach (var (id, label, fx, fy, radius) in Defaults)
+                _items.Add(new PadItem { Id = id, Label = label, Fx = fx, Fy = fy, Radius = radius });
+        }
+
+        public void Reset()
+        {
+            ResetItems();
+            _prefs?.Edit()?.Remove("mobile_positions")?.Apply();
+            Invalidate();
+        }
+
+        public void Save()
+        {
+            var entries = new List<string>();
+            foreach (var item in _items)
+            {
+                if (!item.Moved)
+                    continue;
+                entries.Add($"{item.Id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)},{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}");
+            }
+            _prefs?.Edit()?.PutString("mobile_positions", string.Join(";", entries))?.Apply();
+        }
+
+        protected override void OnDraw(Canvas canvas)
+        {
+            base.OnDraw(canvas);
+            _paint.SetStyle(Paint.Style.Fill);
+            _paint.Color = Color.ParseColor("#1A1D26");
+            canvas.DrawRect(0, 0, Width, Height, _paint);
+
+            foreach (var item in _items)
+            {
+                var cx = item.Fx * Width;
+                var cy = item.Fy * Height;
+                var radius = item.Radius * Height;
+                var active = item == _dragging;
+                _paint.SetStyle(Paint.Style.Fill);
+                _paint.Color = active ? Color.ParseColor("#3D5A80") : Color.ParseColor("#2A2E3C");
+                canvas.DrawCircle(cx, cy, radius, _paint);
+                _paint.SetStyle(Paint.Style.Stroke);
+                _paint.StrokeWidth = MathF.Max(2f, _density);
+                _paint.Color = Color.ParseColor("#9AA3B8");
+                canvas.DrawCircle(cx, cy, radius, _paint);
+
+                if (item.Id == "stick" || item.Id == "aim")
+                {
+                    _paint.SetStyle(Paint.Style.Fill);
+                    _paint.Color = Color.ParseColor("#9AA3B8");
+                    canvas.DrawCircle(cx, cy, radius * 0.3f, _paint);
+                    continue;
+                }
+
+                _paint.SetStyle(Paint.Style.Fill);
+                _paint.Color = Color.ParseColor("#F2F4FA");
+                _paint.TextSize = MathF.Max(10f, radius * 0.42f);
+                _paint.TextAlign = Paint.Align.Center;
+                _paint.SetTypeface(Typeface.DefaultBold);
+                var baseline = cy - (_paint.Descent() + _paint.Ascent()) / 2f;
+                canvas.DrawText(item.Label, cx, baseline, _paint);
+            }
+        }
+
+        public override bool OnTouchEvent(MotionEvent? e)
+        {
+            if (e == null)
+                return false;
+            switch (e.ActionMasked)
+            {
+                case MotionEventActions.Down:
+                {
+                    var best = 44f * _density;
+                    PadItem? found = null;
+                    foreach (var item in _items)
+                    {
+                        var dx = e.GetX() - item.Fx * Width;
+                        var dy = e.GetY() - item.Fy * Height;
+                        var dist = MathF.Sqrt(dx * dx + dy * dy);
+                        if (dist <= MathF.Max(best, item.Radius * Height))
+                        {
+                            best = dist;
+                            found = item;
+                        }
+                    }
+                    _dragging = found;
+                    Invalidate();
+                    return found != null;
+                }
+                case MotionEventActions.Move:
+                {
+                    if (_dragging == null)
+                        return false;
+                    _dragging.Fx = Math.Clamp(e.GetX() / Width, 0.01f, 0.99f);
+                    _dragging.Fy = Math.Clamp(e.GetY() / Height, 0.01f, 0.99f);
+                    Invalidate();
+                    return true;
+                }
+                case MotionEventActions.Up:
+                case MotionEventActions.Cancel:
+                {
+                    if (_dragging == null)
+                        return false;
+                    _dragging.Moved = true;
+                    Save();
+                    _dragging = null;
+                    Invalidate();
+                    return true;
+                }
+            }
+            return true;
+        }
     }
 
     // [SolomonNumb1] settings dialog: controls scale, opacity, joystick size, FPS limits, and cache management
@@ -2675,7 +2910,7 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 1.5f);
+            var s = prefs.GetFloat("mobile_scale", 2.25f);
             intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
@@ -2685,6 +2920,9 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
+            var positions = prefs.GetString("mobile_positions", "");
+            if (!string.IsNullOrEmpty(positions))
+                intent.PutExtra("cvar_build_mobile.controls_positions", positions);
         }
 
         if (!string.IsNullOrEmpty(serverInfo?.Auth?.PublicKey))
@@ -2897,7 +3135,7 @@ public sealed class LauncherActivity : Activity
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         if (prefs != null)
         {
-            var s = prefs.GetFloat("mobile_scale", 1.5f);
+            var s = prefs.GetFloat("mobile_scale", 2.25f);
             intent.PutExtra("cvar_build_mobile.controls_scale", s.ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
@@ -2907,6 +3145,9 @@ public sealed class LauncherActivity : Activity
             intent.PutExtra("cvar_build_display.uiScale", guiScale.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
+            var positions = prefs.GetString("mobile_positions", "");
+            if (!string.IsNullOrEmpty(positions))
+                intent.PutExtra("cvar_build_mobile.controls_positions", positions);
         }
         StartActivity(intent);
     }
@@ -2921,7 +3162,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.7.7";
+    public const string CurrentAppVersion = "v0.7.8";
 
 
     public string GetCurrentAppVersion()
