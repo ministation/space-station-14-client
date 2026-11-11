@@ -5860,7 +5860,7 @@ index 274aa2a..5a0203e 100644
 +    }
  }
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
-index 32083c3..a944336 100644
+index 32083c3..e300652 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
 @@ -3,6 +3,7 @@ using System.Collections.Generic;
@@ -5871,14 +5871,14 @@ index 32083c3..a944336 100644
  using Robust.Client.UserInterface.CustomControls;
  using Robust.Shared.Localization;
  using Robust.Shared.Maths;
-@@ -14,6 +15,43 @@ internal sealed partial class UserInterfaceManager
+@@ -14,6 +15,42 @@ internal sealed partial class UserInterfaceManager
  {
      private readonly List<Control> _modalStack = new();
  
 +        /// <summary>
-+        /// Insets the whole UI root by the display cutout, so the game view and
-+        /// every window stay clear of the camera hole. The CVars are physical
-+        /// render pixels, the UI root works in logical units.
++        /// Insets the UI root's children by the display cutout, so the game view
++        /// and every window stay clear of the camera hole. The CVars are physical
++        /// render pixels, the UI works in logical units.
 +        /// </summary>
 +        private void ApplyMobileSafeArea(WindowRoot root)
 +        {
@@ -5896,26 +5896,25 @@ index 32083c3..a944336 100644
 +            margin.Top = Math.Clamp(margin.Top, 0f, logicalSize.Y * 0.45f);
 +            margin.Bottom = Math.Clamp(margin.Bottom, 0f, logicalSize.Y * 0.45f);
 +
-+            if (!root.Margin.Equals(margin))
-+                root.Margin = margin;
-+
-+            // The pad keeps full screen coordinates: the launcher editor previews
-+            // it on the whole screen, and its buttons never sit where the camera
-+            // is anyway. Expanding the overlay by the same insets keeps the two
-+            // frames identical.
-+            var pad = MobileOverlay;
-+            if (pad != null)
++            // A window root is drawn and hit-tested from the window origin, so a
++            // margin on the root itself only shrinks its layout and never moves it:
++            // the border would always land on the right and bottom, whatever side
++            // was chosen. Inset the root's children instead.
++            foreach (var child in root.Children)
 +            {
-+                var padMargin = new Thickness(-margin.Left, -margin.Top, -margin.Right, -margin.Bottom);
-+                if (!pad.Margin.Equals(padMargin))
-+                    pad.Margin = padMargin;
++                // The pad keeps full screen coordinates: the launcher editor previews
++                // it on the whole screen, and its buttons never sit where the camera
++                // is anyway.
++                var childMargin = child == MobileOverlay ? default : margin;
++                if (!child.Margin.Equals(childMargin))
++                    child.Margin = childMargin;
 +            }
 +        }
 +
          private void RunMeasure(Control control)
          {
              if (control.IsMeasureValid || !control.IsInsideTree)
-@@ -26,6 +64,7 @@ internal sealed partial class UserInterfaceManager
+@@ -26,6 +63,7 @@ internal sealed partial class UserInterfaceManager
  
              if (control is WindowRoot root)
              {
@@ -5923,7 +5922,7 @@ index 32083c3..a944336 100644
                  control.Measure(root.Window.RenderTarget.Size / root.UIScale);
              }
              else if (control.PreviousMeasure.HasValue)
-@@ -46,6 +85,7 @@ internal sealed partial class UserInterfaceManager
+@@ -46,6 +84,7 @@ internal sealed partial class UserInterfaceManager
  
              if (control is WindowRoot root)
              {
