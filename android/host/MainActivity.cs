@@ -1393,21 +1393,29 @@ namespace Content.Android
     /// </summary>
     internal static class MobileSafeArea
     {
-        // One frame all around: covers the camera whichever edge Android reports
-        // it on and keeps the UI and the pad centered instead of shifting them.
+        // The camera edge can be reported on the wrong side, so the player picks
+        // the frame side in the launcher. "auto" draws every edge Android reports.
+        public const string FrameAuto = "auto";
+        public const string FrameLeft = "left";
+        public const string FrameRight = "right";
+        public const string FrameTop = "top";
+        public const string FrameBottom = "bottom";
         public const string FrameAllSides = "all sides";
-        public const string FrameCamera = "camera";
         public const string FrameOff = "off";
-        public const string DefaultMode = FrameAllSides;
+        public const string DefaultMode = FrameAuto;
         public const int DefaultScale = 1;
 
-        // Even when Android reports no inset, the gesture strip and the rounded
-        // corners live in the bottom strip; keep a thin frame there.
+        // The bottom band is only there to keep controls off the gesture strip.
+        // The gesture inset alone reads as a thick black bar, keep it 2.5x thinner.
         private const float BottomFrameFraction = 0.015f;
+        private const float BottomGestureDivisor = 2.5f;
 
         public static string NormalizeMode(string? mode)
         {
-            return mode == FrameCamera || mode == FrameOff ? mode : DefaultMode;
+            return mode is FrameLeft or FrameRight or FrameTop or FrameBottom
+                or FrameAllSides or FrameOff or FrameAuto
+                ? mode
+                : DefaultMode;
         }
 
         public static int NormalizeScale(int scale) => Math.Clamp(scale, 1, 4);
@@ -1493,21 +1501,31 @@ namespace Content.Android
                 return (0, 0, 0, 0);
 
             scale = NormalizeScale(scale);
-            if (mode == FrameCamera)
+            var depth = Math.Max(Math.Max(left, top), Math.Max(right, cameraBottom));
+            var thickness = Math.Max(depth, minimum) * scale;
+            var bottom = Math.Max(minimum,
+                (int)Math.Round(Math.Max(gestureBottom, cameraBottom) / BottomGestureDivisor));
+
+            switch (mode)
             {
-                // Only the camera gets the multiplier: the gesture strip is already
-                // wide enough and scaling it covers the game view.
-                return (
-                    left * scale,
-                    top * scale,
-                    right * scale,
-                    Math.Max(cameraBottom * scale, Math.Max(gestureBottom, minimum)));
+                case FrameLeft:
+                    return (thickness, 0, 0, bottom);
+                case FrameRight:
+                    return (0, 0, thickness, bottom);
+                case FrameTop:
+                    return (0, thickness, 0, bottom);
+                case FrameBottom:
+                    return (0, 0, 0, Math.Max(thickness, bottom));
+                case FrameAllSides:
+                    return (thickness, thickness, thickness, thickness);
             }
 
-            var frame = Math.Max(
-                Math.Max(Math.Max(left, top), Math.Max(right, cameraBottom)),
-                Math.Max(gestureBottom, minimum)) * scale;
-            return (frame, frame, frame, frame);
+            // Auto: every edge Android reports, so a correct report needs no setup.
+            return (
+                left > 0 ? thickness : 0,
+                top > 0 ? thickness : 0,
+                right > 0 ? thickness : 0,
+                bottom);
         }
 
         /// <summary>

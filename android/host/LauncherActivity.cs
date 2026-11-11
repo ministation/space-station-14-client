@@ -1081,8 +1081,12 @@ public sealed class LauncherActivity : Activity
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "native", new[] { "native", "1080p", "900p", "720p" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
-        AddChoiceRow(list, "Screen frame", prefs, "frame_mode", MobileSafeArea.DefaultMode,
-            new[] { MobileSafeArea.FrameAllSides, MobileSafeArea.FrameCamera, MobileSafeArea.FrameOff });
+        AddChoiceRow(list, "Screen frame", prefs, "frame_mode", MobileSafeArea.DefaultMode, new[]
+        {
+            MobileSafeArea.FrameAuto, MobileSafeArea.FrameLeft, MobileSafeArea.FrameRight,
+            MobileSafeArea.FrameTop, MobileSafeArea.FrameBottom, MobileSafeArea.FrameAllSides,
+            MobileSafeArea.FrameOff,
+        });
         AddChoiceRow(list, "Frame size", prefs, "frame_scale", "x1", new[] { "x1", "x2", "x3" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
@@ -3661,7 +3665,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.9";
+    public const string CurrentAppVersion = "v0.8.10";
 
 
     public string GetCurrentAppVersion()
