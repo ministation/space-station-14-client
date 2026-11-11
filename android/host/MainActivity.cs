@@ -1393,8 +1393,8 @@ namespace Content.Android
         // corners live in the bottom strip; keep a thin frame there.
         private const float BottomFrameFraction = 0.015f;
 
-        // The player asked for a frame three times wider than the raw insets:
-        // the reported cutout and gesture strips read as a narrow black line.
+        // The player asked for a camera frame three times wider than the cutout:
+        // the reported inset reads as a narrow black line.
         private const float FrameMultiplier = 3f;
 
         public static (int Left, int Top, int Right, int Bottom) Measure(
@@ -1406,34 +1406,31 @@ namespace Content.Android
             var left = 0;
             var top = 0;
             var right = 0;
-            var bottom = (int)Math.Round(screenH * BottomFrameFraction);
+            var cameraBottom = 0;
+            var gestureBottom = 0;
 
-            if (insets == null || !OperatingSystem.IsAndroidVersionAtLeast(28))
-                return ScaleFrame(left, top, right, bottom);
-
-            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            if (insets != null && OperatingSystem.IsAndroidVersionAtLeast(28))
             {
-                // Hidden navigation bars still own the bottom gesture strip.
-                var gestures = insets.GetInsets(WindowInsets.Type.SystemGestures());
-                bottom = Math.Max(bottom, gestures.Bottom);
-                // The cutout stays reported while the system bars are hidden.
-                var cut = insets.GetInsetsIgnoringVisibility(WindowInsets.Type.DisplayCutout());
-                left = Math.Max(left, cut.Left);
-                top = Math.Max(top, cut.Top);
-                right = Math.Max(right, cut.Right);
-                bottom = Math.Max(bottom, cut.Bottom);
-            }
-
-            var cutout = insets.DisplayCutout;
-            if (cutout != null)
-            {
-                left = Math.Max(left, cutout.SafeInsetLeft);
-                top = Math.Max(top, cutout.SafeInsetTop);
-                right = Math.Max(right, cutout.SafeInsetRight);
-                bottom = Math.Max(bottom, cutout.SafeInsetBottom);
-
-                if (left == 0 && top == 0 && right == 0 && cutout.SafeInsetBottom == 0)
+                if (OperatingSystem.IsAndroidVersionAtLeast(30))
                 {
+                    // Hidden navigation bars still own the bottom gesture strip.
+                    gestureBottom = insets.GetInsets(WindowInsets.Type.SystemGestures()).Bottom;
+                    // The cutout stays reported while the system bars are hidden.
+                    var cut = insets.GetInsetsIgnoringVisibility(WindowInsets.Type.DisplayCutout());
+                    left = cut.Left;
+                    top = cut.Top;
+                    right = cut.Right;
+                    cameraBottom = cut.Bottom;
+                }
+
+                var cutout = insets.DisplayCutout;
+                if (cutout != null)
+                {
+                    left = Math.Max(left, cutout.SafeInsetLeft);
+                    top = Math.Max(top, cutout.SafeInsetTop);
+                    right = Math.Max(right, cutout.SafeInsetRight);
+                    cameraBottom = Math.Max(cameraBottom, cutout.SafeInsetBottom);
+
                     // Some devices fill only the bounding rects. Take the depth of
                     // the rects that touch a window edge.
                     var rects = cutout.BoundingRects;
@@ -1448,23 +1445,23 @@ namespace Content.Android
                             if (rect.Top <= 1)
                                 top = Math.Max(top, rect.Bottom);
                             else if (rect.Bottom >= screenH - 1)
-                                bottom = Math.Max(bottom, screenH - rect.Top);
+                                cameraBottom = Math.Max(cameraBottom, screenH - rect.Top);
                         }
                     }
                 }
             }
 
-            return ScaleFrame(left, top, right, bottom);
-        }
+            // Only the camera gets the multiplier. The gesture strip is already wide
+            // and tripling it put a huge black bar over the bottom of the screen.
+            var bottom = Math.Max(
+                (int)Math.Round(cameraBottom * FrameMultiplier),
+                Math.Max(gestureBottom, (int)Math.Round(screenH * BottomFrameFraction)));
 
-        private static (int Left, int Top, int Right, int Bottom) ScaleFrame(
-            int left, int top, int right, int bottom)
-        {
             return (
                 (int)Math.Round(left * FrameMultiplier),
                 (int)Math.Round(top * FrameMultiplier),
                 (int)Math.Round(right * FrameMultiplier),
-                (int)Math.Round(bottom * FrameMultiplier));
+                bottom);
         }
 
         /// <summary>

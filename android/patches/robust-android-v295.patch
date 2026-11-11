@@ -601,7 +601,7 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..6e6497a 100644
+index a6bc6a0..ea0dbec 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
 @@ -1,3 +1,4 @@
@@ -609,13 +609,16 @@ index a6bc6a0..6e6497a 100644
  using Robust.Client.Input;
  
  namespace Robust.Client
-@@ -49,5 +50,33 @@ namespace Robust.Client
+@@ -49,5 +50,51 @@ namespace Robust.Client
                  return;
              }
          }
 +
 +        // The finger that currently drives the synthetic mouse, if any.
 +        private long? _touchMouseFinger;
++
++        // The finger that is clicking a UI control, if any.
++        private long? _touchUiFinger;
 +
 +        public void TouchFinger(TouchFingerEventArgs touchEvent)
 +        {
@@ -631,10 +634,25 @@ index a6bc6a0..6e6497a 100644
 +
 +            switch (touchEvent.Action)
 +            {
-+                case TouchFingerAction.Down when _touchMouseFinger == null:
++                case TouchFingerAction.Down when _touchUiFinger == null && _touchMouseFinger == null:
++                    // A UI click goes straight to the control under the finger. Sending
++                    // it through the key bindings aims at the focused control, which on
++                    // touch is stale, so the button never fires.
++                    if (_userInterfaceManager.InjectTouchClick(touchEvent.Coordinates, true))
++                    {
++                        _touchUiFinger = touchEvent.FingerId;
++                        break;
++                    }
++
 +                    _touchMouseFinger = touchEvent.FingerId;
 +                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
 +                    break;
++
++                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchUiFinger == touchEvent.FingerId:
++                    _touchUiFinger = null;
++                    _userInterfaceManager.InjectTouchClick(touchEvent.Coordinates, false);
++                    break;
++
 +                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchMouseFinger == touchEvent.FingerId:
 +                    _touchMouseFinger = null;
 +                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, false);
@@ -2966,15 +2984,23 @@ index 5be710c..b09d7bd 100644
                  mode = DragMode.Move;
              }
 diff --git a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-index 29c54bc..2ecdf14 100644
+index 29c54bc..0ac4d9d 100644
 --- a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
 +++ b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-@@ -30,6 +30,9 @@ namespace Robust.Client.UserInterface
+@@ -30,6 +30,17 @@ namespace Robust.Client.UserInterface
  
          void MouseWheel(MouseWheelEventArgs args);
  
 +        /// <returns>True if the mobile pad claimed the finger.</returns>
 +        bool TouchFinger(TouchFingerEventArgs args);
++
++        /// <summary>
++        /// Dispatches a touch click straight to the control under the finger. Touch input
++        /// never produces a mouse press, so the engine's key binding path would send it to
++        /// a stale focused control; this targets the control the finger is actually on.
++        /// </summary>
++        /// <returns>True if a control was under the finger and got the click.</returns>
++        bool InjectTouchClick(ScreenCoordinates pointerLocation, bool down);
 +
          void TextEntered(TextEnteredEventArgs textEnteredEvent);
  
@@ -5613,7 +5639,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..5fb38c5 100644
+index 274aa2a..9557126 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -5748,7 +5774,7 @@ index 274aa2a..5fb38c5 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,15 @@ internal partial class UserInterfaceManager
+@@ -583,4 +687,47 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -5762,6 +5788,38 @@ index 274aa2a..5fb38c5 100644
 +        }
 +
 +        return false;
++    }
++
++    private Control? _touchClickControl;
++
++    public bool InjectTouchClick(ScreenCoordinates pointerLocation, bool down)
++    {
++        var control = down ? MouseGetControl(pointerLocation) : _touchClickControl;
++        if (!down)
++            _touchClickControl = null;
++
++        if (control == null || !control.VisibleInTree)
++            return false;
++
++        if (down)
++            _touchClickControl = control;
++
++        var guiArgs = new GUIBoundKeyEventArgs(
++            EngineKeyFunctions.UIClick,
++            down ? BoundKeyState.Down : BoundKeyState.Up,
++            pointerLocation,
++            true,
++            pointerLocation.Position / control.UIScale - control.GlobalPosition,
++            pointerLocation.Position - control.GlobalPixelPosition);
++
++        _doGuiInput(control, guiArgs, (c, ev) =>
++        {
++            if (down)
++                c.KeyBindDown(ev);
++            else
++                c.KeyBindUp(ev);
++        });
++        return true;
 +    }
  }
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
