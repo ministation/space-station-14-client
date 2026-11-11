@@ -578,7 +578,7 @@ namespace Content.Android
                 // Mobile first defaults: low graphics, particles and parallax off.
                 // display.max_fps 0 means no cap: the phone's refresh rate is the limit.
                 // Extras from the launcher below can override any of these.
-                LaunchBuildCVars["display.uiScale"] = "2.25";
+                LaunchBuildCVars["display.uiScale"] = UIScaleForResolution(Intent?.GetStringExtra("display_resolution"));
                 LaunchBuildCVars["display.vsync"] = "false";
                 LaunchBuildCVars["display.max_fps"] = "60";
                 LaunchBuildCVars["particles.quality"] = "0";
@@ -663,15 +663,36 @@ namespace Content.Android
         }
 
 
+        /// <summary>
+        /// Assign through the attributes property: mutating the object in place does
+        /// not reach the window manager once the window is attached, and the cutout
+        /// mode has to be in place before the first insets dispatch.
+        /// </summary>
+        private void SetCutoutMode(LayoutInDisplayCutoutMode mode)
+        {
+            var attributes = Window?.Attributes;
+            if (attributes == null)
+                return;
+            attributes.LayoutInDisplayCutoutMode = mode;
+            Window!.Attributes = attributes;
+        }
+
         private void ApplyImmersiveMode()
         {
             try
             {
                 if (Window == null) return;
 
-                if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
                 {
-                    Window.Attributes!.LayoutInDisplayCutoutMode = LayoutInDisplayCutoutMode.ShortEdges;
+                    // Always: the system reports the camera hole in every orientation,
+                    // including the long edge when the phone lies in landscape.
+                    SetCutoutMode(LayoutInDisplayCutoutMode.Always);
+                }
+                else if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+                {
+                    // Always appeared in Android 11; older releases only have short edges.
+                    SetCutoutMode(LayoutInDisplayCutoutMode.ShortEdges);
                 }
 
                 Window.AddFlags(WindowManagerFlags.KeepScreenOn);
@@ -679,7 +700,6 @@ namespace Content.Android
                 if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
                 {
                     Window.SetDecorFitsSystemWindows(false);
-                    CaptureSafeAreaInsets();
                     var controller = Window.InsetsController;
                     if (controller != null)
                     {
@@ -702,6 +722,7 @@ namespace Content.Android
                 }
 
                 Window.SetSoftInputMode(SoftInput.StateAlwaysHidden);
+                InstallSafeAreaListener();
             }
             catch (Exception ex)
             {
@@ -729,8 +750,8 @@ namespace Content.Android
             try
             {
                 if (MSurface?.Holder == null) return;
-                var res = Intent?.GetStringExtra("display_resolution") ?? "native";
-                if (res == "native" || string.IsNullOrEmpty(res))
+                var targetH = RenderHeightForResolution(Intent?.GetStringExtra("display_resolution"));
+                if (targetH <= 0)
                 {
                     MSurface.Holder.SetSizeFromLayout();
                     return;
@@ -743,14 +764,6 @@ namespace Content.Android
                 var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
                 if (screenH <= 0) return;
                 var aspect = (float)screenW / screenH;
-
-                int targetH = res switch
-                {
-                    "720p" => 720,
-                    "900p" => 900,
-                    "1080p" => 1080,
-                    _ => screenH
-                };
 
                 if (targetH < screenH)
                 {
@@ -1087,7 +1100,10 @@ namespace Content.Android
 
                 var hasZip = !string.IsNullOrEmpty(mountZip) && File.Exists(mountZip);
 
-                CaptureSafeAreaInsets();
+                // The insets listener runs on the UI thread after the window is laid
+                // out. Main() runs on the SDL thread and used to read the decor before
+                // it had any insets, which is why the cutout frame was missing.
+                WaitForSafeAreaInsets();
 
                 var args = new List<string>
                 {
@@ -1146,21 +1162,25 @@ namespace Content.Android
                         args.Add(username);
                     }
 
-                    foreach (var (cvarName, val) in LaunchBuildCVars)
-                    {
-                        // Launcher metadata lives under the build.* namespace, while user settings
-                        // and graphics defaults are ordinary engine/content CVars and must keep their name.
-                        var isBuildMeta = cvarName is "engine_version" or "fork_id" or "version" or "download_url"
-                            or "manifest_url" or "manifest_download_url" or "manifest_hash" or "hash" or "source_url" or "source_commit_id";
-                        var cvarKey = isBuildMeta ? $"build.{cvarName}" : cvarName;
-                        args.Add("--cvar");
-                        args.Add($"{cvarKey}={val}");
-                        global::Android.Util.Log.Info("SS14Launch", $"[Main] CVar: {cvarKey}={val}");
-                    }
                 }
 
-                // The launcher flow never passed the cutout insets, so the pad used
-                // to slide under the camera hole and the rounded corners.
+                // Defaults and launcher extras are passed on the connect path and the
+                // offline path alike: the offline menu needs the same resolution, UI
+                // scale and graphics settings as a server launch.
+                foreach (var (cvarName, val) in LaunchBuildCVars)
+                {
+                    // Launcher metadata lives under the build.* namespace, while user settings
+                    // and graphics defaults are ordinary engine/content CVars and must keep their name.
+                    var isBuildMeta = cvarName is "engine_version" or "fork_id" or "version" or "download_url"
+                        or "manifest_url" or "manifest_download_url" or "manifest_hash" or "hash" or "source_url" or "source_commit_id";
+                    var cvarKey = isBuildMeta ? $"build.{cvarName}" : cvarName;
+                    args.Add("--cvar");
+                    args.Add($"{cvarKey}={val}");
+                    global::Android.Util.Log.Info("SS14Launch", $"[Main] CVar: {cvarKey}={val}");
+                }
+
+                // Cutout frame in physical render pixels: the engine keeps the same
+                // physical border on screen whatever the render resolution is.
                 args.Add("--cvar");
                 args.Add($"mobile.safe_area_left={SafeInset(_safeAreaLeft)}");
                 args.Add("--cvar");
@@ -1198,6 +1218,31 @@ namespace Content.Android
     private int _safeAreaRight;
     private int _safeAreaTop;
     private int _safeAreaBottom;
+    private volatile bool _safeAreaReady;
+
+    /// <summary>
+    /// UI scale per render resolution. A smaller render target is stretched to the
+    /// whole screen, so the scale shrinks with it to keep the UI the same physical
+    /// size. Hard-coded on purpose: the resolution is the only setting.
+    /// </summary>
+    private static string UIScaleForResolution(string? resolution) => resolution switch
+    {
+        "720p" => "1.50",
+        "900p" => "1.75",
+        "1080p" => "2.00",
+        _ => "2.25",
+    };
+
+    /// <summary>
+    /// Render surface height for a display_resolution extra; 0 means native.
+    /// </summary>
+    private static int RenderHeightForResolution(string? resolution) => resolution switch
+    {
+        "720p" => 720,
+        "900p" => 900,
+        "1080p" => 1080,
+        _ => 0,
+    };
 
     /// <summary>
     /// Display cutout insets are measured in physical screen pixels, while the
@@ -1211,19 +1256,11 @@ namespace Content.Android
             var metrics = Resources?.DisplayMetrics;
             if (metrics == null)
                 return 1f;
-            var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
             var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
             if (screenH <= 0)
                 return 1f;
-            var res = Intent?.GetStringExtra("display_resolution") ?? "native";
-            var targetH = res switch
-            {
-                "720p" => 720,
-                "900p" => 900,
-                "1080p" => 1080,
-                _ => screenH
-            };
-            return targetH < screenH ? targetH / (float)screenH : 1f;
+            var targetH = RenderHeightForResolution(Intent?.GetStringExtra("display_resolution"));
+            return targetH > 0 && targetH < screenH ? targetH / (float)screenH : 1f;
         }
         catch
         {
@@ -1234,61 +1271,212 @@ namespace Content.Android
     private int SafeInset(int value) => (int)Math.Round(value * SurfaceScale());
 
     /// <summary>
-    /// Reads the display cutout safe area. The pad uses it so buttons never sit
-    /// under the camera hole or a rounded corner.
+    /// Insets are read on the UI thread from the window callback. Main() runs on
+    /// the SDL thread, so it waits for that callback instead of reading the decor
+    /// before the window has any insets.
+    /// </summary>
+    private void InstallSafeAreaListener()
+    {
+        try
+        {
+            var decor = Window?.DecorView;
+            if (decor == null)
+                return;
+
+            if (!OperatingSystem.IsAndroidVersionAtLeast(28))
+            {
+                CaptureSafeAreaInsets();
+                return;
+            }
+
+            decor.SetOnApplyWindowInsetsListener(new SafeAreaInsetsListener(OnWindowInsetsChanged));
+            decor.RequestApplyInsets();
+        }
+        catch (Exception ex)
+        {
+            global::Android.Util.Log.Warn("SS14Launch", $"InstallSafeAreaListener failed: {ex.Message}");
+        }
+    }
+
+    private void OnWindowInsetsChanged(View view, WindowInsets insets)
+    {
+        try
+        {
+            ApplySafeArea(insets, Resources?.DisplayMetrics);
+        }
+        catch
+        {
+            // Insets are cosmetic: the percentage frame still applies.
+        }
+    }
+
+    private void WaitForSafeAreaInsets()
+    {
+        var deadline = SystemClock.UptimeMillis() + 2000;
+        while (!_safeAreaReady && SystemClock.UptimeMillis() < deadline)
+            System.Threading.Thread.Sleep(20);
+
+        if (!_safeAreaReady)
+        {
+            global::Android.Util.Log.Warn("SS14Launch", "[SafeArea] listener did not fire in 2s, reading insets directly");
+            CaptureSafeAreaInsets();
+        }
+
+        global::Android.Util.Log.Info("SS14Launch",
+            $"[SafeArea] final ready={_safeAreaReady} surfaceScale={SurfaceScale():F3} " +
+            $"physical l={_safeAreaLeft} t={_safeAreaTop} r={_safeAreaRight} b={_safeAreaBottom} " +
+            $"passed l={SafeInset(_safeAreaLeft)} t={SafeInset(_safeAreaTop)} r={SafeInset(_safeAreaRight)} b={SafeInset(_safeAreaBottom)}");
+    }
+
+    private void ApplySafeArea(WindowInsets? insets, global::Android.Util.DisplayMetrics? metrics)
+    {
+        if (metrics == null || metrics.WidthPixels <= 0 || metrics.HeightPixels <= 0)
+            return;
+
+        var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
+        var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+        var (left, top, right, bottom) = MobileSafeArea.Measure(insets, screenW, screenH);
+
+        _safeAreaLeft = left;
+        _safeAreaTop = top;
+        _safeAreaRight = right;
+        _safeAreaBottom = bottom;
+        _safeAreaReady = true;
+
+        global::Android.Util.Log.Info("SS14Launch",
+            $"[SafeArea] l={left} t={top} r={right} b={bottom} screen={screenW}x{screenH}");
+    }
+
+    /// <summary>
+    /// Last resort for devices that never dispatch an insets callback: Main()
+    /// calls this after the wait times out.
     /// </summary>
     private void CaptureSafeAreaInsets()
     {
         try
         {
-            if (!OperatingSystem.IsAndroidVersionAtLeast(28))
-                return;
-
-            var insets = Window?.DecorView?.RootWindowInsets;
-            if (insets == null)
-                return;
-
-            var metrics = Resources?.DisplayMetrics;
-            if (metrics != null)
-            {
-                // Keep a thin frame at the bottom even when Android reports no
-                // inset: the gesture strip and rounded corners live there.
-                var shortSide = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
-                _safeAreaBottom = Math.Max(_safeAreaBottom, (int)Math.Round(shortSide * 0.015f));
-            }
-
-            if (OperatingSystem.IsAndroidVersionAtLeast(30))
-            {
-                // Hidden navigation bars still own the bottom gesture strip.
-                var gestures = insets.GetInsets(WindowInsets.Type.SystemGestures());
-                _safeAreaBottom = Math.Max(_safeAreaBottom, gestures.Bottom);
-            }
-
-            var cutout = insets.DisplayCutout;
-            if (OperatingSystem.IsAndroidVersionAtLeast(30))
-            {
-                var raw = insets.GetInsets(WindowInsets.Type.DisplayCutout());
-                _safeAreaLeft = Math.Max(_safeAreaLeft, raw.Left);
-                _safeAreaRight = Math.Max(_safeAreaRight, raw.Right);
-                _safeAreaTop = Math.Max(_safeAreaTop, raw.Top);
-                _safeAreaBottom = Math.Max(_safeAreaBottom, raw.Bottom);
-            }
-
-            if (cutout != null)
-            {
-                _safeAreaLeft = Math.Max(_safeAreaLeft, cutout.SafeInsetLeft);
-                _safeAreaRight = Math.Max(_safeAreaRight, cutout.SafeInsetRight);
-                _safeAreaTop = Math.Max(_safeAreaTop, cutout.SafeInsetTop);
-                _safeAreaBottom = Math.Max(_safeAreaBottom, cutout.SafeInsetBottom);
-            }
-
-            global::Android.Util.Log.Info("SS14Launch",
-                $"[SafeArea] cutout={(cutout != null ? "yes" : "no")} l={_safeAreaLeft} t={_safeAreaTop} r={_safeAreaRight} b={_safeAreaBottom}");
+            var (left, top, right, bottom) = MobileSafeArea.MeasureWindow(this);
+            _safeAreaLeft = left;
+            _safeAreaTop = top;
+            _safeAreaRight = right;
+            _safeAreaBottom = bottom;
+            _safeAreaReady = true;
         }
         catch
         {
             // Insets are cosmetic here: fall back to the percentage frame.
         }
     }
+
+    private sealed class SafeAreaInsetsListener : Java.Lang.Object, View.IOnApplyWindowInsetsListener
+    {
+        private readonly Action<View, WindowInsets> _apply;
+
+        public SafeAreaInsetsListener(Action<View, WindowInsets> apply) => _apply = apply;
+
+        public WindowInsets OnApplyWindowInsets(View view, WindowInsets insets)
+        {
+            _apply(view, insets);
+            return insets;
+        }
+    }
+    }
+
+    /// <summary>
+    /// Safe area frame in physical screen pixels. The game passes it to the engine
+    /// (scaled to the render surface) and the launcher pad editor draws it as is,
+    /// so the black border is the same in the preview and in the game.
+    /// </summary>
+    internal static class MobileSafeArea
+    {
+        // Even when Android reports no inset, the gesture strip and the rounded
+        // corners live in the bottom strip; keep a thin frame there.
+        private const float BottomFrameFraction = 0.015f;
+
+        public static (int Left, int Top, int Right, int Bottom) Measure(
+            WindowInsets? insets, int screenWidth, int screenHeight)
+        {
+            var screenW = Math.Max(screenWidth, screenHeight);
+            var screenH = Math.Min(screenWidth, screenHeight);
+
+            var left = 0;
+            var top = 0;
+            var right = 0;
+            var bottom = (int)Math.Round(screenH * BottomFrameFraction);
+
+            if (insets == null || !OperatingSystem.IsAndroidVersionAtLeast(28))
+                return (left, top, right, bottom);
+
+            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            {
+                // Hidden navigation bars still own the bottom gesture strip.
+                var gestures = insets.GetInsets(WindowInsets.Type.SystemGestures());
+                bottom = Math.Max(bottom, gestures.Bottom);
+                // The cutout stays reported while the system bars are hidden.
+                var cut = insets.GetInsetsIgnoringVisibility(WindowInsets.Type.DisplayCutout());
+                left = Math.Max(left, cut.Left);
+                top = Math.Max(top, cut.Top);
+                right = Math.Max(right, cut.Right);
+                bottom = Math.Max(bottom, cut.Bottom);
+            }
+
+            var cutout = insets.DisplayCutout;
+            if (cutout != null)
+            {
+                left = Math.Max(left, cutout.SafeInsetLeft);
+                top = Math.Max(top, cutout.SafeInsetTop);
+                right = Math.Max(right, cutout.SafeInsetRight);
+                bottom = Math.Max(bottom, cutout.SafeInsetBottom);
+
+                if (left == 0 && top == 0 && right == 0 && cutout.SafeInsetBottom == 0)
+                {
+                    // Some devices fill only the bounding rects. Take the depth of
+                    // the rects that touch a window edge.
+                    var rects = cutout.BoundingRects;
+                    if (rects != null)
+                    {
+                        foreach (var rect in rects)
+                        {
+                            if (rect.Left <= 1)
+                                left = Math.Max(left, rect.Right);
+                            else if (rect.Right >= screenW - 1)
+                                right = Math.Max(right, screenW - rect.Left);
+                            if (rect.Top <= 1)
+                                top = Math.Max(top, rect.Bottom);
+                            else if (rect.Bottom >= screenH - 1)
+                                bottom = Math.Max(bottom, screenH - rect.Top);
+                        }
+                    }
+                }
+            }
+
+            return (left, top, right, bottom);
+        }
+
+        /// <summary>
+        /// Reads the frame from the activity window. RootWindowInsets are what the
+        /// window was laid out with; CurrentWindowMetrics is the fallback for a
+        /// window that has not dispatched insets yet.
+        /// </summary>
+        public static (int Left, int Top, int Right, int Bottom) MeasureWindow(Activity? activity)
+        {
+            var metrics = activity?.Resources?.DisplayMetrics;
+            if (metrics == null || metrics.WidthPixels <= 0 || metrics.HeightPixels <= 0)
+                return (0, 0, 0, 0);
+
+            WindowInsets? insets = null;
+            if (OperatingSystem.IsAndroidVersionAtLeast(28))
+            {
+                insets = activity!.Window?.DecorView?.RootWindowInsets;
+                if (insets == null && OperatingSystem.IsAndroidVersionAtLeast(30))
+                {
+                    var windowManager =
+                        activity.GetSystemService(global::Android.Content.Context.WindowService) as IWindowManager;
+                    insets = windowManager?.CurrentWindowMetrics?.WindowInsets;
+                }
+            }
+
+            return Measure(insets, metrics.WidthPixels, metrics.HeightPixels);
+        }
     }
 }

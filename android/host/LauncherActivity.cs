@@ -137,37 +137,15 @@ public sealed class LauncherActivity : Activity
     /// Full pad layout for the game: the editor's default table merged with the
     /// player's saved changes. The launcher always passes it, so the engine can
     /// never lay the pad out from a stale or different copy of the defaults.
+    /// Centers are clamped to the physical safe frame the editor draws, because
+    /// the engine applies the layout as is and does not clamp it again.
     /// </summary>
-    private static string BuildPadLayout(ISharedPreferences? prefs)
+    private string BuildPadLayout(ISharedPreferences? prefs)
     {
-        var saved = prefs?.GetString("mobile_positions", "") ?? "";
-        var byId = new Dictionary<string, (float Fx, float Fy, float R)>();
-        foreach (var entry in saved.Split(';', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var at = entry.IndexOf('@');
-            if (at <= 0)
-                continue;
-            var coords = entry[(at + 1)..].Split(',');
-            if (coords.Length < 2)
-                continue;
-            if (!float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
-                !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy))
-                continue;
-            if (coords.Length < 3 ||
-                !float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
-                continue;
-            byId[entry[..at]] = (fx, fy, r);
-        }
-
-        var entries = new List<string>();
-        foreach (var (id, _, fx, fy, radius) in PadEditorView.Defaults)
-        {
-            var item = byId.TryGetValue(id, out var savedItem) ? savedItem : (Fx: fx, Fy: fy, R: radius);
-            entries.Add($"{id}@{item.Fx.ToString("F4", CultureInfo.InvariantCulture)}," +
-                        $"{item.Fy.ToString("F4", CultureInfo.InvariantCulture)}," +
-                        $"{item.R.ToString("F4", CultureInfo.InvariantCulture)}");
-        }
-        return string.Join(";", entries);
+        var metrics = Resources?.DisplayMetrics;
+        var screenW = Math.Max(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
+        var screenH = Math.Min(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
+        return PadEditorView.BuildLayout(prefs, screenW, screenH, MobileSafeArea.MeasureWindow(this));
     }
 
     /// <summary>
@@ -238,6 +216,19 @@ public sealed class LauncherActivity : Activity
         ContentDownloadService.DownloadFailed -= OnServiceDownloadFailed;
     }
 
+    /// <summary>
+    /// Assign through the attributes property: a field change on the object in place
+    /// does not reach the window manager once the window is attached.
+    /// </summary>
+    private void SetCutoutMode(LayoutInDisplayCutoutMode mode)
+    {
+        var attributes = Window?.Attributes;
+        if (attributes == null)
+            return;
+        attributes.LayoutInDisplayCutoutMode = mode;
+        Window!.Attributes = attributes;
+    }
+
     private void ApplyImmersiveMode()
     {
         try
@@ -245,10 +236,16 @@ public sealed class LauncherActivity : Activity
             if (Window == null) return;
             if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
             {
+                // Always: the cutout has to be reported in landscape even when the
+                // camera hole is on the long edge. The pad layout is clamped against
+                // these values before launch.
+                SetCutoutMode(LayoutInDisplayCutoutMode.Always);
                 Window.InsetsController?.Hide(WindowInsets.Type.StatusBars() | WindowInsets.Type.NavigationBars());
             }
             else
             {
+                if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+                    SetCutoutMode(LayoutInDisplayCutoutMode.ShortEdges);
 #pragma warning disable CS0618
                 Window.DecorView.SystemUiVisibility = (StatusBarVisibility)(
                     SystemUiFlags.Fullscreen |
@@ -1112,8 +1109,7 @@ public sealed class LauncherActivity : Activity
         button.SetPadding(Dp(10), 0, Dp(10), 0);
         void UpdateLabel()
         {
-            button.Text = key == "gui_scale" ? current.ToString("0.00", CultureInfo.InvariantCulture) + suffix
-                : ((int)Math.Round(current * 100)) + suffix;
+            button.Text = ((int)Math.Round(current * 100)) + suffix;
         }
         UpdateLabel();
         button.Click += (_, _) =>
@@ -2056,6 +2052,19 @@ public sealed class LauncherActivity : Activity
             window.SetBackgroundDrawable(new ColorDrawable(Color.ParseColor("#101014")));
             // The preview must use the same full screen frame as the game,
             // otherwise the status bar inset shifts every control down.
+            if (Build.VERSION.SdkInt >= BuildVersionCodes.P)
+            {
+                var attributes = window.Attributes;
+                if (attributes != null)
+                {
+                    // Always (Android 11+) so the preview shows the camera hole in
+                    // landscape; older releases only have the short edges mode.
+                    attributes.LayoutInDisplayCutoutMode = Build.VERSION.SdkInt >= BuildVersionCodes.R
+                        ? LayoutInDisplayCutoutMode.Always
+                        : LayoutInDisplayCutoutMode.ShortEdges;
+                    window.Attributes = attributes;
+                }
+            }
             if (Build.VERSION.SdkInt >= BuildVersionCodes.R)
             {
                 window.SetDecorFitsSystemWindows(false);
@@ -2066,11 +2075,15 @@ public sealed class LauncherActivity : Activity
                     controller.SystemBarsBehavior = (int)WindowInsetsControllerBehavior.ShowTransientBarsBySwipe;
                 }
             }
+
             if (window.DecorView is View decor)
                 decor.SystemUiVisibility = (StatusBarVisibility)(SystemUiFlags.LayoutStable |
                     SystemUiFlags.LayoutFullscreen | SystemUiFlags.HideNavigation |
                     SystemUiFlags.Fullscreen | SystemUiFlags.ImmersiveSticky);
         }
+
+        // Ask for fresh insets once the window attributes are in place.
+        editor.RequestApplyInsets();
     }
 
     private sealed class PadEditorView : View
@@ -2101,6 +2114,12 @@ public sealed class LauncherActivity : Activity
             ("bag", "BAG", 0.684f, 0.622f, 0.095f),
         };
 
+        // One range for a saved radius and for the resize slider. The engine takes
+        // the radius as is, so a value outside this range would show one size in the
+        // editor and another one in game.
+        private const float MinRadiusFraction = 0.03f;
+        private const float MaxRadiusFraction = 0.26f;
+
         private readonly List<PadItem> _items = new();
         private readonly ISharedPreferences? _prefs;
         private readonly float _density;
@@ -2109,6 +2128,11 @@ public sealed class LauncherActivity : Activity
         private int _screenH;
         private int _originX;
         private int _originY;
+        private int _safeLeft;
+        private int _safeTop;
+        private int _safeRight;
+        private int _safeBottom;
+        private bool _insetsReady;
         private PadItem? _dragging;
         private PadItem? _selected;
         private float _downX;
@@ -2139,7 +2163,7 @@ public sealed class LauncherActivity : Activity
             if (_selected == null)
                 return;
             var radius = DefaultRadius(_selected.Id) * Math.Clamp(scale, 0.4f, 2.8f);
-            _selected.Radius = Math.Clamp(radius, 0.03f, 0.26f);
+            _selected.Radius = Math.Clamp(radius, MinRadiusFraction, MaxRadiusFraction);
             _selected.Resized = true;
             Save();
             Invalidate();
@@ -2171,12 +2195,31 @@ public sealed class LauncherActivity : Activity
                 if (coords.Length >= 3 &&
                     float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
                 {
-                    item.Radius = Math.Clamp(r, 0.04f, 0.24f);
+                    item.Radius = Math.Clamp(r, MinRadiusFraction, MaxRadiusFraction);
                     item.Resized = true;
                 }
             }
             Focusable = true;
             FocusableInTouchMode = true;
+            // The dialog window is laid out edge to edge with the cutout reported,
+            // so it receives the same physical frame the game window gets.
+            SetOnApplyWindowInsetsListener(new SafeInsetsListener((view, insets) =>
+            {
+                UpdateScreenFrame();
+                var (left, top, right, bottom) = MobileSafeArea.Measure(insets, _screenW, _screenH);
+                _safeLeft = left;
+                _safeTop = top;
+                _safeRight = right;
+                _safeBottom = bottom;
+                _insetsReady = true;
+                Invalidate();
+            }));
+        }
+
+        protected override void OnAttachedToWindow()
+        {
+            base.OnAttachedToWindow();
+            RequestApplyInsets();
         }
 
         /// <summary>
@@ -2231,8 +2274,7 @@ public sealed class LauncherActivity : Activity
                 // exactly what the player saw in the editor.
                 UpdateScreenFrame();
                 var radiusPx = item.Radius * _screenH;
-                var isStick = item.Id == "stick" || item.Id == "aim";
-                var center = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx, isStick);
+                var center = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx);
                 var fx = center.X / _screenW;
                 var fy = center.Y / _screenH;
                 // Third field is the radius as a fraction of screen height; the
@@ -2247,29 +2289,96 @@ public sealed class LauncherActivity : Activity
                 .Apply();
         }
 
-        // The pad keeps screen coordinates in game (the overlay cancels the
-        // cutout frame), so the preview maps fractions to the full screen. The
-        // floors keep controls clear of rounded display corners.
-        private (float Left, float Top, float Right, float Bottom) SafeInsets()
+        /// <summary>
+        /// Full pad layout the engine receives: every element, defaults included,
+        /// clamped to the same physical frame the editor draws. The game applies
+        /// the fractions to the whole screen and never clamps the launcher layout
+        /// again, so the clamp has to happen here.
+        /// </summary>
+        public static string BuildLayout(ISharedPreferences? prefs, int screenW, int screenH,
+            (int Left, int Top, int Right, int Bottom) insets)
         {
-            UpdateScreenFrame();
-            var cutout = RootWindowInsets?.DisplayCutout;
-            return (
-                MathF.Max(cutout?.SafeInsetLeft ?? 0, _screenW * 0.02f),
-                MathF.Max(cutout?.SafeInsetTop ?? 0, _screenH * 0.006f),
-                MathF.Max(cutout?.SafeInsetRight ?? 0, _screenW * 0.02f),
-                MathF.Max(cutout?.SafeInsetBottom ?? 0, _screenH * 0.008f));
+            var saved = prefs?.GetString("mobile_positions", "") ?? "";
+            var byId = new Dictionary<string, (float Fx, float Fy, float R)>();
+            foreach (var entry in saved.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var at = entry.IndexOf('@');
+                if (at <= 0)
+                    continue;
+                var coords = entry[(at + 1)..].Split(',');
+                if (coords.Length < 2)
+                    continue;
+                if (!float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
+                    !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy))
+                    continue;
+                if (coords.Length < 3 ||
+                    !float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var r))
+                    continue;
+                byId[entry[..at]] = (fx, fy, r);
+            }
+
+            var hasScreen = screenW > 0 && screenH > 0;
+            var frame = hasScreen
+                ? ClampFrame(screenW, screenH, insets)
+                : (Left: 0f, Top: 0f, Right: 0f, Bottom: 0f);
+            var entries = new List<string>();
+            foreach (var (id, _, fx, fy, radius) in Defaults)
+            {
+                var item = byId.TryGetValue(id, out var savedItem) ? savedItem : (Fx: fx, Fy: fy, R: radius);
+                var outFx = item.Fx;
+                var outFy = item.Fy;
+                if (hasScreen)
+                {
+                    var clamped = ClampCenter(new Vector2(item.Fx * screenW, item.Fy * screenH),
+                        item.R * screenH, screenW, screenH, frame);
+                    outFx = clamped.X / screenW;
+                    outFy = clamped.Y / screenH;
+                }
+
+                entries.Add($"{id}@{outFx.ToString("F4", CultureInfo.InvariantCulture)}," +
+                            $"{outFy.ToString("F4", CultureInfo.InvariantCulture)}," +
+                            $"{item.R.ToString("F4", CultureInfo.InvariantCulture)}");
+            }
+
+            return string.Join(";", entries);
         }
 
-        private Vector2 ClampToSafe(Vector2 center, float radius, bool stick)
+        // Physical safe frame plus the floors the engine uses for its own clamp,
+        // so a control never lands on a rounded corner.
+        private static (float Left, float Top, float Right, float Bottom) ClampFrame(
+            int screenW, int screenH, (int Left, int Top, int Right, int Bottom) raw) => (
+            MathF.Max(raw.Left, screenW * 0.02f),
+            MathF.Max(raw.Top, screenH * 0.006f),
+            MathF.Max(raw.Right, screenW * 0.02f),
+            MathF.Max(raw.Bottom, screenH * 0.008f));
+
+        private static Vector2 ClampCenter(Vector2 center, float radius, int screenW, int screenH,
+            (float Left, float Top, float Right, float Bottom) frame)
         {
-            var safe = SafeInsets();
-            // Sticks carry 20 logical px of padding in game, which is 40 physical
-            // at display.uiScale 2.0.
-            var pad = stick ? radius + 20f : radius;
-            center.X = Math.Clamp(center.X, safe.Left + pad, MathF.Max(safe.Left + pad, _screenW - safe.Right - pad));
-            center.Y = Math.Clamp(center.Y, safe.Top + pad, MathF.Max(safe.Top + pad, _screenH - safe.Bottom - pad));
+            // The visible disc is drawn at the radius, so the pad is the radius.
+            center.X = Math.Clamp(center.X, frame.Left + radius,
+                MathF.Max(frame.Left + radius, screenW - frame.Right - radius));
+            center.Y = Math.Clamp(center.Y, frame.Top + radius,
+                MathF.Max(frame.Top + radius, screenH - frame.Bottom - radius));
             return center;
+        }
+
+        // The cutout frame in physical screen pixels, the same values the game
+        // passes to mobile.safe_area_* without any surface scaling.
+        private (int Left, int Top, int Right, int Bottom) RawSafeInsets()
+        {
+            UpdateScreenFrame();
+            if (_insetsReady)
+                return (_safeLeft, _safeTop, _safeRight, _safeBottom);
+
+            var (left, top, right, bottom) = MobileSafeArea.Measure(RootWindowInsets, _screenW, _screenH);
+            return (left, top, right, bottom);
+        }
+
+        private Vector2 ClampToSafe(Vector2 center, float radius)
+        {
+            var frame = ClampFrame(_screenW, _screenH, RawSafeInsets());
+            return ClampCenter(center, radius, _screenW, _screenH, frame);
         }
 
         protected override void OnDraw(Canvas canvas)
@@ -2282,7 +2391,7 @@ public sealed class LauncherActivity : Activity
             {
                 var radiusPx = item.Radius * _screenH;
                 var isStick = item.Id == "stick" || item.Id == "aim";
-                var clamped = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx, isStick);
+                var clamped = ClampToSafe(new Vector2(item.Fx * _screenW, item.Fy * _screenH), radiusPx);
                 // Screen point to canvas point: the view sits below the status bar.
                 var cx = clamped.X - _originX;
                 var cy = clamped.Y - _originY;
@@ -2295,15 +2404,44 @@ public sealed class LauncherActivity : Activity
             if (_selected != null)
             {
                 var selectedRadius = _selected.Radius * _screenH;
-                var selectedStick = _selected.Id == "stick" || _selected.Id == "aim";
                 var selectedCenter = ClampToSafe(
-                    new Vector2(_selected.Fx * _screenW, _selected.Fy * _screenH), selectedRadius, selectedStick);
+                    new Vector2(_selected.Fx * _screenW, _selected.Fy * _screenH), selectedRadius);
                 _paint.SetStyle(Paint.Style.Stroke);
                 _paint.StrokeWidth = MathF.Max(3f, _density * 2f);
                 _paint.Color = Color.Argb(255, 255, 215, 0);
                 canvas.DrawCircle(selectedCenter.X - _originX, selectedCenter.Y - _originY,
                     selectedRadius + _density * 4f, _paint);
             }
+
+            DrawSafeBands(canvas);
+        }
+
+        /// <summary>
+        /// Cutout and gesture bars in the same physical pixels that go to
+        /// mobile.safe_area_*: the engine scales them to the render surface and
+        /// Android stretches the surface back, so on screen the bar is unchanged.
+        /// </summary>
+        private void DrawSafeBands(Canvas canvas)
+        {
+            var (left, top, right, bottom) = RawSafeInsets();
+            if (left <= 0 && top <= 0 && right <= 0 && bottom <= 0)
+                return;
+
+            _paint.SetStyle(Paint.Style.Fill);
+            _paint.Color = Color.Argb(255, 0, 0, 0);
+
+            var leftEdge = left - _originX;
+            var topEdge = top - _originY;
+            var rightEdge = MathF.Max(0f, (float)(_screenW - _originX - right));
+            var bottomEdge = MathF.Max(0f, (float)(_screenH - _originY - bottom));
+            if (leftEdge > 0)
+                canvas.DrawRect(0, 0, leftEdge, Height, _paint);
+            if (topEdge > 0)
+                canvas.DrawRect(0, 0, Width, topEdge, _paint);
+            if (right > 0)
+                canvas.DrawRect(rightEdge, 0, Width, Height, _paint);
+            if (bottom > 0)
+                canvas.DrawRect(0, bottomEdge, Width, Height, _paint);
         }
 
         private static Color AccentOf(string id) => id switch
@@ -2530,9 +2668,8 @@ public sealed class LauncherActivity : Activity
                     foreach (var item in _items)
                     {
                         var itemRadius = item.Radius * _screenH;
-                        var itemStick = item.Id == "stick" || item.Id == "aim";
                         var itemCenter = ClampToSafe(
-                            new Vector2(item.Fx * _screenW, item.Fy * _screenH), itemRadius, itemStick);
+                            new Vector2(item.Fx * _screenW, item.Fy * _screenH), itemRadius);
                         var dx = touchX - itemCenter.X;
                         var dy = touchY - itemCenter.Y;
                         var dist = MathF.Sqrt(dx * dx + dy * dy);
@@ -2587,7 +2724,7 @@ public sealed class LauncherActivity : Activity
             return true;
         }
     }
-    // [SolomonNumb1] settings dialog: controls scale, opacity, joystick size, FPS limits, and cache management
+    // [SolomonNumb1] settings dialog: opacity, resolution, FPS limits, and cache management
     private void ShowSettingsDialog()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
@@ -2624,52 +2761,6 @@ public sealed class LauncherActivity : Activity
         logsBtn.Click += (_, _) => ShowCrashReporterDialog();
         toolsRow.AddView(logsBtn);
         view.AddView(toolsRow);
-
-        var scaleLabel = new TextView(this)
-        {
-            Text = "Controls Scale:",
-            TextSize = 13,
-            Typeface = global::Android.Graphics.Typeface.DefaultBold
-        };
-        scaleLabel.SetTextColor(LauncherTheme.Foreground);
-        view.AddView(scaleLabel);
-
-        var currentScale = prefs?.GetFloat("mobile_scale", 1.5f) ?? 1.0f;
-        var scaleBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var scales = new (string text, float val)[]
-        {
-            ("100%", 1.0f),
-            ("130%", 1.3f),
-            ("150%", 1.5f),
-            ("170%", 1.7f)
-        };
-
-        var scaleBtnList = new List<Button>();
-        foreach (var (text, val) in scales)
-        {
-            var btn = new Button(this)
-            {
-                Text = text,
-                TextSize = 11
-            };
-            btn.Background = Math.Abs(currentScale - val) < 0.05f 
-                ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) 
-                : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            btn.SetTextColor(LauncherTheme.Foreground);
-            var lp = new LinearLayout.LayoutParams(0, (int)(32 * density), 1f);
-            lp.SetMargins((int)(2 * density), (int)(4 * density), (int)(2 * density), (int)(10 * density));
-            btn.LayoutParameters = lp;
-            btn.Click += (_, _) =>
-            {
-                prefs?.Edit()?.PutFloat("mobile_scale", val)?.Apply();
-                MainActivity.LaunchBuildCVars["mobile.controls_scale"] = val.ToString("F1", CultureInfo.InvariantCulture);
-                foreach (var b in scaleBtnList)
-                    b.Background = (b == btn) ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            };
-            scaleBtnList.Add(btn);
-            scaleBtnsLayout.AddView(btn);
-        }
-        view.AddView(scaleBtnsLayout);
 
         var opacityLabel = new TextView(this)
         {
@@ -2716,106 +2807,6 @@ public sealed class LauncherActivity : Activity
             opacityBtnsLayout.AddView(btn);
         }
         view.AddView(opacityBtnsLayout);
-
-        var stickLabel = new TextView(this)
-        {
-            Text = "Joystick Scale:",
-            TextSize = 13,
-            Typeface = global::Android.Graphics.Typeface.DefaultBold
-        };
-        stickLabel.SetTextColor(LauncherTheme.Foreground);
-        var stickLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
-        stickLp.SetMargins(0, (int)(8 * density), 0, 0);
-        stickLabel.LayoutParameters = stickLp;
-        view.AddView(stickLabel);
-
-        var currentStickScale = prefs?.GetFloat("mobile_stick_scale", 1.1f) ?? 1.0f;
-        var stickBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var stickScales = new (string text, float val)[]
-        {
-            ("90%", 0.9f),
-            ("100%", 1.0f),
-            ("110%", 1.1f),
-            ("130%", 1.3f)
-        };
-
-        var stickBtnList = new List<Button>();
-        foreach (var (text, val) in stickScales)
-        {
-            var btn = new Button(this)
-            {
-                Text = text,
-                TextSize = 11
-            };
-            btn.Background = Math.Abs(currentStickScale - val) < 0.05f 
-                ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) 
-                : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            btn.SetTextColor(LauncherTheme.Foreground);
-            var lp = new LinearLayout.LayoutParams(0, (int)(32 * density), 1f);
-            lp.SetMargins((int)(2 * density), (int)(4 * density), (int)(2 * density), (int)(10 * density));
-            btn.LayoutParameters = lp;
-            btn.Click += (_, _) =>
-            {
-                prefs?.Edit()?.PutFloat("mobile_stick_scale", val)?.Apply();
-                MainActivity.LaunchBuildCVars["mobile.thumbstick_scale"] = val.ToString("F2", CultureInfo.InvariantCulture);
-                foreach (var b in stickBtnList)
-                    b.Background = (b == btn) ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            };
-            stickBtnList.Add(btn);
-            stickBtnsLayout.AddView(btn);
-        }
-        view.AddView(stickBtnsLayout);
-
-        var guiLabel = new TextView(this)
-        {
-            Text = "GUI Scale:",
-            TextSize = 13,
-            Typeface = global::Android.Graphics.Typeface.DefaultBold
-        };
-        guiLabel.SetTextColor(LauncherTheme.Foreground);
-        var guiLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent);
-        guiLp.SetMargins(0, (int)(8 * density), 0, 0);
-        guiLabel.LayoutParameters = guiLp;
-        view.AddView(guiLabel);
-
-        var currentGuiScale = prefs?.GetFloat("gui_scale", 1.5f) ?? 1.5f;
-        var guiBtnsLayout = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var guiScales = new (string text, float val)[]
-        {
-            ("80%", 0.8f),
-            ("100%", 1.0f),
-            ("120%", 1.2f),
-            ("140%", 1.4f),
-            ("175%", 1.75f),
-            ("200%", 2.0f)
-        };
-
-        var guiBtnList = new List<Button>();
-        foreach (var (text, val) in guiScales)
-        {
-            var btn = new Button(this)
-            {
-                Text = text,
-                TextSize = 11
-            };
-            btn.Background = Math.Abs(currentGuiScale - val) < 0.05f 
-                ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) 
-                : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            btn.SetTextColor(LauncherTheme.Foreground);
-            var lp = new LinearLayout.LayoutParams(0, (int)(32 * density), 1f);
-            lp.SetMargins((int)(2 * density), (int)(4 * density), (int)(2 * density), (int)(10 * density));
-            btn.LayoutParameters = lp;
-            btn.Click += (_, _) =>
-            {
-                prefs?.Edit()?.PutFloat("gui_scale", val)?.Apply();
-                MainActivity.LaunchBuildCVars["display.uiScale"] = val.ToString("F2", CultureInfo.InvariantCulture);
-                foreach (var b in guiBtnList)
-                    b.Background = (b == btn) ? LauncherTheme.CreateBox(LauncherTheme.ControlHigh, 3) : LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-            };
-            guiBtnList.Add(btn);
-            guiBtnsLayout.AddView(btn);
-        }
-        view.AddView(guiBtnsLayout);
 
         var resLabel = new TextView(this)
         {
@@ -3419,9 +3410,7 @@ public sealed class LauncherActivity : Activity
         {
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            // UI scale is a client constant now: 200% is the scale the game
-            // itself is tuned for, and the launcher no longer changes it.
-            intent.PutExtra("cvar_build_display.uiScale", "2.25");
+            // display.uiScale is derived from display_resolution in MainActivity.
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
@@ -3640,9 +3629,7 @@ public sealed class LauncherActivity : Activity
         {
             var o = prefs.GetFloat("mobile_opacity", 0.85f);
             intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            // UI scale is a client constant now: 200% is the scale the game
-            // itself is tuned for, and the launcher no longer changes it.
-            intent.PutExtra("cvar_build_display.uiScale", "2.25");
+            // display.uiScale is derived from display_resolution in MainActivity.
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
@@ -3661,7 +3648,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.5";
+    public const string CurrentAppVersion = "v0.8.6";
 
 
     public string GetCurrentAppVersion()

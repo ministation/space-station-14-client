@@ -1184,7 +1184,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..60344e7 100644
+index 73cadae..d9be340 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -40,7 +40,12 @@ namespace Robust.Client.Graphics.Clyde
@@ -1201,13 +1201,39 @@ index 73cadae..60344e7 100644
  
          private ClydeShaderInstance _fovDebugShaderInstance = default!;
  
-@@ -218,9 +223,19 @@ namespace Robust.Client.Graphics.Clyde
+@@ -101,8 +106,16 @@ namespace Robust.Client.Graphics.Clyde
+ 
+         private LightRenderData[] _lightsToRenderList = default!;
+ 
++        // Collect several times more lights than we can draw, then keep the ones
++        // nearest to the camera. The component tree query order is arbitrary, so
++        // capping it in place used to let off-screen lights steal slots from the
++        // lights the player is standing in.
++        private const int LightCollectFactor = 4;
++        private int _maxLightCollect = 32 * LightCollectFactor;
++
+         private LightCapacityComparer _lightCap = new();
+         private ShadowCapacityComparer _shadowCap = new ShadowCapacityComparer();
++        private LightDistanceComparer _lightDistance = new LightDistanceComparer();
+ 
+         // Cached shared occluder edges from ClientOccluderSystem because we have very specific occluder rules.
+         private readonly HashSet<OccluderEdgeKey> _occluderSharedBoundaryEdges = new();
+@@ -117,6 +130,7 @@ namespace Robust.Client.Graphics.Clyde
+         private readonly List<Vector2> _occluderRenderVertices = new();
+         private readonly List<Vector4> _occluderRenderEdges = new();
+         private readonly List<bool> _occluderRenderSharedEdges = new();
++        private readonly List<OccluderCandidate> _occluderCandidates = new();
+ 
+         private float _maxLightRadius;
+ 
+@@ -218,9 +232,19 @@ namespace Robust.Client.Graphics.Clyde
  
              ClydeHandle LoadShaderHandle(string path)
              {
 -                if (_resourceCache.TryGetResource(path, out ShaderSourceResource? resource))
 +                try
-+                {
+                 {
+-                    return resource.ClydeHandle;
 +                    if (_resourceCache.TryGetResource(path, out ShaderSourceResource? resource))
 +                    {
 +                        var handle = resource.ClydeHandle;
@@ -1217,13 +1243,12 @@ index 73cadae..60344e7 100644
 +                    System.Console.WriteLine($"[ClydeLighting] TryGetResource returned false for '{path}'");
 +                }
 +                catch (Exception ex)
-                 {
--                    return resource.ClydeHandle;
++                {
 +                    System.Console.WriteLine($"[ClydeLighting] Exception in LoadShaderHandle for '{path}': {ex}");
                  }
  
                  _clydeSawmill.Warning($"Can't load shader {path}\n");
-@@ -318,15 +333,30 @@ namespace Robust.Client.Graphics.Clyde
+@@ -318,15 +342,30 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              if (_hasGLFloatFramebuffers)
              {
@@ -1257,7 +1282,7 @@ index 73cadae..60344e7 100644
              CheckGlError();
  
              BindVertexArray(_occlusionVao.Handle);
-@@ -453,8 +483,27 @@ namespace Robust.Client.Graphics.Clyde
+@@ -453,8 +492,27 @@ namespace Robust.Client.Graphics.Clyde
  
              ApplyLightingFovToBuffer(viewport, eye);
  
@@ -1287,7 +1312,7 @@ index 73cadae..60344e7 100644
              lightShader.Use();
  
              SetupGlobalUniformsImmediate(lightShader, ShadowTexture);
-@@ -570,14 +619,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -570,14 +628,17 @@ namespace Robust.Client.Graphics.Clyde
              if (_cfg.GetCVar(CVars.LightBlur))
                  BlurRenderTarget(viewport, viewport.LightRenderTarget, viewport.LightBlurTarget, eye, 14f);
  
@@ -1311,7 +1336,16 @@ index 73cadae..60344e7 100644
              }
  
              BindRenderTargetFull(viewport.RenderTarget);
-@@ -617,7 +669,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -601,7 +662,7 @@ namespace Robust.Client.Graphics.Clyde
+             ref var shadowCount = ref state.shadowCastingCount;
+ 
+             // If there are too many lights, exit the query
+-            if (count >= state.clyde._maxLights)
++            if (count >= state.clyde._maxLightCollect)
+                 return false;
+ 
+             var (light, transform) = value;
+@@ -617,7 +678,7 @@ namespace Robust.Client.Graphics.Clyde
              if (!circle.Intersects(state.worldAABB))
                  return true;
  
@@ -1320,16 +1354,67 @@ index 73cadae..60344e7 100644
              {
                  // Shadow-casting lights embedded inside an occluder cannot work consistently.
                  // As such we just disable them! If you want light inside an occluder use non-shadow casting lights!
-@@ -696,7 +748,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -662,6 +723,20 @@ namespace Robust.Client.Graphics.Clyde
+             }
+         }
+ 
++        private readonly struct OccluderCandidate
++        {
++            public readonly OccluderComponent Occluder;
++            public readonly Matrix3x2 Transform;
++            public readonly float DistanceSquared;
++
++            public OccluderCandidate(OccluderComponent occluder, Matrix3x2 transform, float distanceSquared)
++            {
++                Occluder = occluder;
++                Transform = transform;
++                DistanceSquared = distanceSquared;
++            }
++        }
++
+         private sealed class LightCapacityComparer : IComparer<LightRenderData>
+         {
+             public int Compare(LightRenderData x, LightRenderData y)
+@@ -680,6 +755,14 @@ namespace Robust.Client.Graphics.Clyde
+             }
+         }
+ 
++        private sealed class LightDistanceComparer : IComparer<LightRenderData>
++        {
++            public int Compare(LightRenderData x, LightRenderData y)
++            {
++                return x.DistanceSquared.CompareTo(y.DistanceSquared);
++            }
++        }
++
+         private (int count, Box2 expandedBounds) GetLightsToRender(
+             MapId map,
+             in Box2Rotated worldBounds,
+@@ -696,7 +779,22 @@ namespace Robust.Client.Graphics.Clyde
                  comp.Tree.QueryAabb(ref state, LightQuery, bounds);
              }
  
 -            if (state.shadowCastingCount > _maxShadowcastingLights)
++            // Nearest lights win the limited slots, and the query order no longer
++            // matters. This also keeps shadow map rows on the closest lights.
++            if (state.count > 1)
++                Array.Sort(_lightsToRenderList, 0, state.count, _lightDistance);
++
++            if (state.count > _maxLights)
++                state.count = _maxLights;
++
++            state.shadowCastingCount = 0;
++            for (var i = 0; i < state.count; i++)
++            {
++                if (_lightsToRenderList[i].CastShadows)
++                    state.shadowCastingCount++;
++            }
++
 +            if (_maxShadowcastingLights > 0 && state.shadowCastingCount > _maxShadowcastingLights)
              {
                  // There are too many lights casting shadows to fit in the scene.
                  // This check must occur before occluder expansion, or else bad things happen.
-@@ -897,7 +949,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -897,7 +995,10 @@ namespace Robust.Client.Graphics.Clyde
              CalcScreenMatrices(viewport.Size, out var proj, out var view);
              SetProjViewBuffer(proj, view);
  
@@ -1341,7 +1426,7 @@ index 73cadae..60344e7 100644
              shader.Use();
  
              SetupGlobalUniformsImmediate(shader, viewport.LightRenderTarget.Texture);
-@@ -958,7 +1013,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -958,7 +1059,10 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              IsBlending = false;
  
@@ -1353,7 +1438,7 @@ index 73cadae..60344e7 100644
              shader.Use();
  
              var tex = viewport.WallBleedIntermediateRenderTarget2.Texture;
-@@ -990,7 +1048,18 @@ namespace Robust.Client.Graphics.Clyde
+@@ -990,7 +1094,18 @@ namespace Robust.Client.Graphics.Clyde
  
              // Applies FOV to the final framebuffer.
  
@@ -1373,7 +1458,7 @@ index 73cadae..60344e7 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1013,7 +1082,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1013,7 +1128,10 @@ namespace Robust.Client.Graphics.Clyde
          {
              // Applies FOV to the lighting framebuffer.
  
@@ -1385,13 +1470,111 @@ index 73cadae..60344e7 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1945,6 +2017,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1585,6 +1703,7 @@ namespace Robust.Client.Graphics.Clyde
+             _occluderRenderEntries.Clear();
+             _occluderRenderVertices.Clear();
+             _occluderRenderEdges.Clear();
++            _occluderCandidates.Clear();
+             _occluderRenderSharedEdges.Clear();
+ 
+             BuildFrameOccluderGeometry(map, expandedBounds, xforms);
+@@ -1703,46 +1822,57 @@ namespace Robust.Client.Graphics.Clyde
+                             _occluderSharedBoundaryEdges,
+                             _occluderBoundarySegments);
+ 
+-                        if (geometryFull
+-                            || !worldTransform.TransformBox(occluder.LocalBounds).Intersects(expandedBounds))
+-                        {
++                        if (!worldTransform.TransformBox(occluder.LocalBounds).Intersects(expandedBounds))
+                             return true;
+-                        }
+ 
+-                        if (_occluderRenderEntries.Count >= _maxOccluders
+-                            || _occluderRenderVertices.Count + polygon.Length > maxMaskVertices
+-                            || imi + (polygon.Length - 2) * 3 > indexMaskBuffer.Length)
+-                        {
+-                            geometryFull = true;
+-                            return true;
+-                        }
++                        var center = worldTransform.TransformBox(occluder.LocalBounds).Center;
++                        _occluderCandidates.Add(new OccluderCandidate(
++                            occluder,
++                            worldTransform,
++                            (center - expandedBounds.Center).LengthSquared()));
++                        return true;
++                    }, treeBounds);
++                }
+ 
+-                        var vertexOffset = _occluderRenderVertices.Count;
+-                        var clockwise = SignedArea(polygon) < 0f;
+-                        for (var i = 0; i < polygon.Length; i++)
+-                        {
+-                            var sourceIndex = clockwise ? i : polygon.Length - 1 - i;
+-                            var worldVertex = Vector2.Transform(polygon[sourceIndex], worldTransform);
+-                            _occluderRenderVertices.Add(worldVertex);
+-                        }
++            // Nearest walls first: the tree query order is arbitrary, and capping it
++            // in place used to drop the wall next to the player in favour of a far one.
++            _occluderCandidates.Sort(static (a, b) => a.DistanceSquared.CompareTo(b.DistanceSquared));
+ 
+-                        if (!TryWriteMaskPolygon(vertexOffset, polygon.Length))
+-                        {
+-                            geometryFull = true;
+-                            return true;
+-                        }
++            foreach (var candidate in _occluderCandidates)
++            {
++                var polygonSpan = candidate.Occluder.Polygon;
++                if (geometryFull
++                    || _occluderRenderEntries.Count >= _maxOccluders
++                    || _occluderRenderVertices.Count + polygonSpan.Length > maxMaskVertices
++                    || imi + (polygonSpan.Length - 2) * 3 > indexMaskBuffer.Length)
++                {
++                    geometryFull = true;
++                    break;
++                }
+ 
+-                        occluderCount += 1;
++                var vertexOffset = _occluderRenderVertices.Count;
++                var clockwise = SignedArea(polygonSpan) < 0f;
++                for (var i = 0; i < polygonSpan.Length; i++)
++                {
++                    var sourceIndex = clockwise ? i : polygonSpan.Length - 1 - i;
++                    var worldVertex = Vector2.Transform(polygonSpan[sourceIndex], candidate.Transform);
++                    _occluderRenderVertices.Add(worldVertex);
++                }
+ 
+-                        if (!TryCacheDepthEdges(vertexOffset, polygon.Length, occluder.OccludingEdges))
+-                        {
+-                            geometryFull = true;
+-                            return true;
+-                        }
++                if (!TryWriteMaskPolygon(vertexOffset, polygonSpan.Length))
++                {
++                    geometryFull = true;
++                    break;
++                }
+ 
+-                        return true;
+-                    }, treeBounds);
++                occluderCount += 1;
++
++                if (!TryCacheDepthEdges(vertexOffset, polygonSpan.Length, candidate.Occluder.OccludingEdges))
++                {
++                    geometryFull = true;
++                    break;
+                 }
++            }
+ 
+                 _occlusionMaskDataLength = imi;
+ 
+@@ -1945,6 +2075,14 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxShadowcastingLightsChanged(int newValue)
          {
-+            if (OperatingSystem.IsAndroid() && newValue > 24)
++            if (OperatingSystem.IsAndroid() && newValue > 48)
 +            {
-+                newValue = 16;
++                newValue = 48;
 +            }
 +
 +            if (newValue < 0)
@@ -1400,7 +1583,7 @@ index 73cadae..60344e7 100644
              _maxShadowcastingLights = newValue;
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
  
-@@ -1957,8 +2037,8 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1957,8 +2095,8 @@ namespace Robust.Client.Graphics.Clyde
                  DeleteRenderTexture(_shadowRenderTarget.Handle);
              }
  
@@ -1411,7 +1594,7 @@ index 73cadae..60344e7 100644
                  new RenderTargetFormatParameters(
                      _hasGLFloatFramebuffers ? RenderTargetColorFormat.RG32F : RenderTargetColorFormat.Rgba8, true),
                  new TextureSampleParameters { WrapMode = TextureWrapMode.Repeat, Filter = true },
-@@ -1972,11 +2052,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1972,13 +2110,20 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxOccludersChanged(int value)
          {
@@ -1428,8 +1611,12 @@ index 73cadae..60344e7 100644
 +                value = 256;
 +            }
              _maxLights = value;
-             _lightsToRenderList = new LightRenderData[value];
+-            _lightsToRenderList = new LightRenderData[value];
++            _maxLightCollect = Math.Max(value * LightCollectFactor, value);
++            _lightsToRenderList = new LightRenderData[_maxLightCollect];
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
+         }
+     }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
 index 1dc619d..632fd50 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
@@ -2707,10 +2894,10 @@ index 29c54bc..a21a747 100644
  
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..07d0fe3
+index 0000000..a8ecb93
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1484 @@
+@@ -0,0 +1,1491 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -2743,15 +2930,10 @@ index 0000000..07d0fe3
 +    private readonly VirtualThumbstick _thumbstick;
 +    private readonly VirtualThumbstick _aimStick;
 +    public static bool IsSecondaryActive { get; set; }
-+    private static PojavActionButton? _staticSecButton;
 +
 +    public static void ResetSecondaryMode()
 +    {
 +        IsSecondaryActive = false;
-+        if (_staticSecButton != null)
-+        {
-+            _staticSecButton.ResetToggle();
-+        }
 +    }
 +
 +    public static bool IsExamActive { get; set; }
@@ -2790,23 +2972,14 @@ index 0000000..07d0fe3
 +    private readonly PojavActionButton _examButton;
 +
 +    private readonly PojavActionButton _useButton;
-+    private readonly PojavActionButton _interactButton;
-+    private readonly PojavActionButton _secButton;
-+    private readonly PojavActionButton _handButton;
 +    private readonly PojavActionButton _dropButton;
-+    private readonly PojavActionButton _altButton;
 +    private readonly PojavActionButton _bagButton;
-+    private readonly PojavActionButton _inventoryButton;
-+    private readonly PojavActionButton _throwButton;
 +
 +    private readonly Dictionary<long, Control> _claimedTouches = new();
 +
 +
 +
 +    private readonly PojavActionButton _escButton;
-+    private readonly PojavActionButton _keybButton;
-+    private readonly PojavActionButton _editButton;
-+    private readonly PojavActionButton _hideButton;
 +
 +    private readonly Control _clusterContainer;
 +    private readonly Control _topUtilityContainer;
@@ -2917,21 +3090,10 @@ index 0000000..07d0fe3
 +        _staticExamButton = _examButton;
 +
 +        _useButton = CreateButton("USE", Keyboard.Key.Z, id: "use", accent: new Color(0, 180, 216));
-+        _interactButton = CreateButton("INTER", Keyboard.Key.E, id: "inter", accent: new Color(46, 204, 113));
-+        _secButton = CreateButton("SEC", null, PojavSpecialAction.Secondary, id: "sec", accent: new Color(230, 126, 34), isToggle: true);
-+        _secButton.OnPressed = () =>
-+        {
-+            IsSecondaryActive = _secButton.IsToggled;
-+        };
-+        _staticSecButton = _secButton;
-+        _handButton = CreateButton("HAND", Keyboard.Key.X, id: "hand", accent: new Color(243, 156, 18));
 +        _dropButton = CreateButton("DROP", Keyboard.Key.Q, id: "drop", accent: new Color(231, 76, 60));
-+        _altButton = CreateButton("ALT", Keyboard.Key.Alt, id: "alt", accent: new Color(241, 196, 15), isToggle: true);
++        // V opens the backpack storage directly; the old INV key opened the
++        // whole inventory menu and is replaced by BAG.
 +        _bagButton = CreateButton("BAG", Keyboard.Key.V, id: "bag", accent: new Color(26, 188, 156));
-+        // I opens the inventory menu; V only opens the backpack and stayed on BAG.
-+        _inventoryButton = CreateButton("INV", Keyboard.Key.I, id: "inv", accent: new Color(26, 188, 156));
-+        _inventoryButton.Icon = PojavButtonIcon.Backpack;
-+        _throwButton = CreateButton("THROW", null, PojavSpecialAction.Throw, id: "throw", accent: new Color(230, 81, 0));
 +
 +        _defaultButtons.AddRange(_allButtons);
 +
@@ -3004,23 +3166,12 @@ index 0000000..07d0fe3
 +
 +        _escButton = CreateUtilityButton("ESC", Keyboard.Key.Escape, id: "esc");
 +
-+        // ALT and EXAM are modifier toggles, so they live in the top bar instead
-+        // of the stick rings (four buttons per stick stay free for actions).
-+        _clusterContainer.RemoveChild(_altButton);
++        // EXAM is a modifier toggle, so it lives in the top bar instead of the
++        // stick rings (the action keys keep those free).
 +        _clusterContainer.RemoveChild(_examButton);
-+        _allButtons.Remove(_altButton);
 +        _allButtons.Remove(_examButton);
-+        _defaultButtons.Remove(_altButton);
 +        _defaultButtons.Remove(_examButton);
-+        _topUtilityContainer.AddChild(_altButton);
 +        _topUtilityContainer.AddChild(_examButton);
-+        _keybButton = CreateUtilityButton("KEYB", null, PojavSpecialAction.KeyboardToggle, id: "keyb");
-+        
-+        _editButton = CreateUtilityButton("EDIT", null, PojavSpecialAction.Custom, id: "edit");
-+        _editButton.OnPressed = ToggleEditMode;
-+
-+        _hideButton = CreateUtilityButton("HIDE", null, PojavSpecialAction.Custom, id: "hide");
-+        _hideButton.OnPressed = ToggleControlsVisibility;
 +
 +        AddChild(_modalOverlay);
 +
@@ -3132,7 +3283,9 @@ index 0000000..07d0fe3
 +        _saveBtn.OnPressed += _ => SaveButtonFromDialog();
 +        actionsRow.AddChild(_saveBtn);
 +
-+        LoadSavedLayout();
++        // Legacy in-game layouts are no longer applied: the launcher editor now
++        // owns the pad positions (mobile.controls_positions).
++        // LoadSavedLayout();
 +        UpdateStyling();
 +        DumpMobileDebugInfo();
 +    }
@@ -3146,7 +3299,9 @@ index 0000000..07d0fe3
 +        Color? accent = null,
 +        bool isToggle = false)
 +    {
-+        var display = isCustom ? text : KeySymbol(actionKey, special, text);
++        // Labels match the launcher editor (USE, DROP, BAG, ...) instead of key
++        // names, so what the editor draws is what the player sees in game.
++        var display = text;
 +        var btn = new PojavActionButton(display, actionKey, special, id, isCustom)
 +        {
 +            AccentColor = accent ?? new Color(210, 210, 210),
@@ -3288,7 +3443,7 @@ index 0000000..07d0fe3
 +            return;
 +
 +        var btn = _currentEditingButton;
-+        if (btn == _editButton || btn == _hideButton || btn == _escButton || btn == _keybButton)
++        if (btn == _escButton)
 +            return;
 +
 +        _deletedButtonIds.Add(btn.Id);
@@ -3419,7 +3574,6 @@ index 0000000..07d0fe3
 +        _clusterContainer.Visible = _inGameplay && !_controlsHidden;
 +        _topUtilityContainer.Visible = _inGameplay;
 +        _editorBarContainer.Visible = _inGameplay && IsEditMode;
-+        _editButton.Visible = !_controlsHidden;
 +    }
 +
 +    private void ToggleEditMode()
@@ -3427,7 +3581,6 @@ index 0000000..07d0fe3
 +        IsEditMode = !IsEditMode;
 +        System.Console.WriteLine($"[MobileEdit] ToggleEditMode now={IsEditMode} buttons={_allButtons.Count}");
 +        MouseFilter = IsEditMode ? MouseFilterMode.Stop : MouseFilterMode.Ignore;
-+        _editButton.Text = IsEditMode ? "DONE" : "EDIT";
 +        ApplyVisibility();
 +
 +        _thumbstick.IsEditMode = IsEditMode;
@@ -3490,23 +3643,6 @@ index 0000000..07d0fe3
 +        InvalidateArrange();
 +    }
 +
-+    private void ToggleControlsVisibility()
-+    {
-+        _controlsHidden = !_controlsHidden;
-+        _hideButton.Text = _controlsHidden ? "SHOW" : "HIDE";
-+        ApplyVisibility();
-+
-+        if (_controlsHidden)
-+        {
-+            _thumbstick.ReleaseStick();
-+            _aimStick.ReleaseStick();
-+            foreach (var btn in _allButtons)
-+            {
-+                btn.Release();
-+            }
-+        }
-+    }
-+
 +    public bool HandleTouch(TouchFingerEventArgs args)
 +    {
 +        if (!VisibleInTree)
@@ -3548,7 +3684,7 @@ index 0000000..07d0fe3
 +                    return true;
 +                }
 +
-+                PojavActionButton[] topBtns = [_editButton, _hideButton, _escButton, _keybButton, _altButton, _examButton];
++                PojavActionButton[] topBtns = [_escButton, _examButton, _bagButton, _pullButton];
 +                foreach (var btn in topBtns)
 +                {
 +                    var btnPos = args.Coordinates.Position / btn.UIScale - btn.GlobalPosition;
@@ -3650,7 +3786,7 @@ index 0000000..07d0fe3
 +            if (parts[0] == "del" && parts.Length >= 2)
 +            {
 +                var delId = parts[1];
-+                if (delId != "edit" && delId != "hide" && delId != "esc" && delId != "keyb")
++                if (delId != "esc")
 +                {
 +                    _deletedButtonIds.Add(delId);
 +                }
@@ -3720,10 +3856,7 @@ index 0000000..07d0fe3
 +            }
 +        }
 +
-+        _deletedButtonIds.Remove("edit");
-+        _deletedButtonIds.Remove("hide");
 +        _deletedButtonIds.Remove("esc");
-+        _deletedButtonIds.Remove("keyb");
 +
 +        for (int i = _allButtons.Count - 1; i >= 0; i--)
 +        {
@@ -3762,14 +3895,14 @@ index 0000000..07d0fe3
 +
 +        foreach (var delId in _deletedButtonIds)
 +        {
-+            if (delId == "edit" || delId == "hide" || delId == "esc" || delId == "keyb")
++            if (delId == "esc")
 +                continue;
 +            parts.Add($"del:{delId}");
 +        }
 +
 +        foreach (var btn in _allButtons)
 +        {
-+            if (btn == _editButton || btn == _hideButton || btn == _escButton || btn == _keybButton)
++            if (btn == _escButton)
 +                continue;
 +
 +            var posX = btn.CustomPosition?.X ?? btn.DefaultPosition.X;
@@ -3797,13 +3930,15 @@ index 0000000..07d0fe3
 +    /// can pick it up (separate process, same files dir). Proves the overlay
 +    /// constructed and shows exact positions/scales.
 +    /// </summary>
-+    private void DumpMobileDebugInfo()
++    private void DumpMobileDebugInfo(Vector2? layoutSize = null)
 +    {
 +        try
 +        {
 +            var dir = ProgramShared.PathOffset;
 +            if (string.IsNullOrEmpty(dir))
 +                return;
++            static string V(Vector2 v) =>
++                $"{v.X.ToString("F1", CultureInfo.InvariantCulture)},{v.Y.ToString("F1", CultureInfo.InvariantCulture)}";
 +            var sb = new System.Text.StringBuilder();
 +            sb.AppendLine($"utc={DateTime.UtcNow:O}");
 +            sb.AppendLine($"overlay_constructed=true");
@@ -3812,8 +3947,8 @@ index 0000000..07d0fe3
 +            sb.AppendLine($"mobile.controls_opacity={_cfg.GetCVar(CVars.MobileControlsOpacity).ToString(CultureInfo.InvariantCulture)}");
 +            sb.AppendLine($"mobile.controls_layout={_cfg.GetCVar(CVars.MobileControlsLayout)}");
 +            sb.AppendLine($"display.uiScale={_cfg.GetCVar(CVars.DisplayUIScale).ToString(CultureInfo.InvariantCulture)}");
-+            sb.AppendLine($"stick_default={_thumbstick.DefaultPosition} stick_custom={_thumbstick.CustomPosition?.ToString() ?? "<none>"}");
-+            sb.AppendLine($"stick_size={_thumbstick.Size} overlay_size={Size} overlay_visible={Visible}");
++            sb.AppendLine($"stick_default={V(_thumbstick.DefaultPosition)} stick_custom={(_thumbstick.CustomPosition is { } cp ? V(cp) : "<none>")}");
++            sb.AppendLine($"stick_size={V(_thumbstick.Size)} overlay_size={V(layoutSize ?? Size)} overlay_visible={Visible}");
 +
 +            // Root paint order proves the pad sits under game windows.
 +            var root = UserInterfaceManager.RootControl;
@@ -3826,12 +3961,85 @@ index 0000000..07d0fe3
 +            }
 +            sb.AppendLine($"root_order={rootOrder}");
 +
-+            sb.AppendLine($"move_stick={_thumbstick.Position}:{_thumbstick.Size} aim_stick={_aimStick.Position}:{_aimStick.Size}");
++            sb.AppendLine($"move_stick={V(_thumbstick.Position)}:{V(_thumbstick.Size)} aim_stick={V(_aimStick.Position)}:{V(_aimStick.Size)}");
 +            foreach (var btn in _allButtons)
 +                sb.AppendLine($"btn:{btn.Id}={btn.Position.X.ToString("F1", CultureInfo.InvariantCulture)},{btn.Position.Y.ToString("F1", CultureInfo.InvariantCulture)}:{btn.Size.X.ToString("F0", CultureInfo.InvariantCulture)}:{(btn.CustomPosition.HasValue ? "custom" : "auto")}");
 +            File.WriteAllText(Path.Combine(dir, "mobile-controls-debug.txt"), sb.ToString());
 +        }
 +        catch { }
++    }
++
++    /// <summary>
++    /// Launcher-edited positions: id@x,y fractions of the overlay, applied on
++    /// top of the default pad. Unknown ids and out-of-range values are ignored.
++    /// </summary>
++    private void ApplyPositionOverrides(Vector2 finalSize)
++    {
++        var serialized = _cfg.GetCVar(CVars.MobileControlsPositions);
++        if (string.IsNullOrWhiteSpace(serialized))
++            return;
++
++        foreach (var entry in serialized.Split(';', StringSplitOptions.RemoveEmptyEntries))
++        {
++            var at = entry.IndexOf('@');
++            if (at <= 0)
++                continue;
++            var coords = entry[(at + 1)..].Split(',');
++            if (coords.Length < 2)
++                continue;
++            if (!float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
++                !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy))
++                continue;
++            if (fx < 0f || fx > 1f || fy < 0f || fy > 1f)
++                continue;
++            // Optional radius fraction of screen height, set by the launcher
++            // editor when the player resizes an element.
++            float? radiusFraction = null;
++            if (coords.Length >= 3 &&
++                float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var rParsed) &&
++                rParsed >= 0.02f && rParsed <= 0.4f)
++                radiusFraction = rParsed;
++
++            var id = entry[..at];
++            // ESC and EXAM live in the top utility container and are not part of
++            // _allButtons, but the launcher editor still moves and resizes them.
++            Control? target = id switch
++            {
++                "stick" => _thumbstick,
++                "aim" => _aimStick,
++                "esc" => _escButton,
++                "exam" => _examButton,
++                _ => _allButtons.Find(b => b.Id == id),
++            };
++            if (target == null || target.Size.X <= 0f)
++                continue;
++
++            var center = new Vector2(fx * finalSize.X, fy * finalSize.Y);
++            var size = target.Size;
++            if (radiusFraction is { } rf)
++            {
++                var radius = rf * finalSize.Y;
++                if (target == _thumbstick || target == _aimStick)
++                {
++                    var stick = target == _thumbstick ? _thumbstick : _aimStick;
++                    stick.Radius = radius;
++                    stick.KnobRadius = radius * 0.30f;
++                    stick.Deadzone = radius * 0.11f;
++                    size = new Vector2(radius * 2f + 20f, radius * 2f + 20f);
++                }
++                else
++                {
++                    size = new Vector2(radius * 2f, radius * 2f);
++                }
++            }
++
++            target.Arrange(new UIBox2(center - size / 2f, center + size / 2f));
++        }
++
++        // Touch hit-testing for sticks follows the size override.
++        _stickDiscs.Clear();
++        _stickDiscs.Add((_thumbstick.Position + _thumbstick.Size / 2f, _thumbstick.Radius));
++        _stickDiscs.Add((_aimStick.Position + _aimStick.Size / 2f, _aimStick.Radius));
 +    }
 +
 +    private void ArrangeChild(Control control, Vector2 defaultPos, Vector2 defaultSize, Vector2 viewport)
@@ -4053,130 +4261,116 @@ index 0000000..07d0fe3
 +        ArrangeChild(control, pos, size, viewport);
 +    }
 +
-+    private bool _dumpedLayout;
++    private Vector2 _lastDumpedSize = new(-1f, -1f);
 +
 +    protected override Vector2 ArrangeOverride(Vector2 finalSize)
 +    {
 +        _clusterContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
 +        _topUtilityContainer.Arrange(new UIBox2(Vector2.Zero, finalSize));
 +
-+        // Side frame: rounded screen corners and a camera cutout eat the edges,
-+        // so nothing on the pad sits closer than this to a border. The host
-+        // reports the real cutout in physical pixels; percentages are the floor.
-+        var uiScale = Math.Clamp(_cfg.GetCVar(CVars.DisplayUIScale), 0.5f, 4f);
++        // Fixed fraction table, shared with the launcher editor
++        // (PadEditorView.Defaults). The same fractions everywhere make the
++        // editor, the game and every phone show identical controls; no size
++        // cvar scales the pad any more.
++        var stickRadius = finalSize.Y * 0.18f;
++        var useSize = finalSize.Y * 0.215f;
++        var utilSize = finalSize.Y * 0.19f;
++        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.81f);
++        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.81f);
 +
-+        // The pad is tuned in physical pixels: a phone at display.uiScale 1.5
-+        // gets twice the logical room, and a pad that ignored that would shrink
-+        // under the thumb. Sizes below are logical, so fold uiScale back in.
-+        var scale = Math.Clamp(_cfg.GetCVar(CVars.MobileControlsScale), 0.6f, 3.0f) *
-+                    MathF.Min(2f / uiScale, 2f);
-+        var stickScale = Math.Clamp(_cfg.GetCVar(CVars.MobileThumbstickScale), 0.5f, 2.0f);
-+        var cutLeft = _cfg.GetCVar(CVars.MobileSafeAreaLeft) / uiScale;
-+        var cutRight = _cfg.GetCVar(CVars.MobileSafeAreaRight) / uiScale;
-+        var cutTop = _cfg.GetCVar(CVars.MobileSafeAreaTop) / uiScale;
-+        var cutBottom = _cfg.GetCVar(CVars.MobileSafeAreaBottom) / uiScale;
-+        var safeX = MathF.Max(MathF.Max(10f * scale, finalSize.X * 0.02f), MathF.Max(cutLeft, cutRight));
-+        var safeTop = MathF.Max(MathF.Max(6f * scale, finalSize.Y * 0.006f), cutTop);
-+        var safeBottom = MathF.Max(MathF.Max(6f * scale, finalSize.Y * 0.008f), cutBottom);
-+        // Sticks ride lower than the frame: thumbs rest on the bottom of the phone.
-+        var margin = MathF.Max(24f * scale, finalSize.X * 0.02f);
-+        var gap = 8f * scale;
-+
-+        // Scale to the shorter physical side: on a phone in landscape that is the
-+        // height, and it is what decides how much room the thumbs really get.
-+        var physical = finalSize * uiScale;
-+        var fit = Math.Clamp(MathF.Min(physical.X, physical.Y) / 1440f, 0.5f, 1.3f);
-+
-+        var topBtnH = 50f * scale;
-+        var topY = MathF.Max(safeTop, 6f * scale);
-+        var topGap = 8f * scale;
-+        // Seven utility cells share the top bar: four engine keys plus the two
-+        // rare inventory keys that used to crowd the move stick.
-+        var topBtnW = MathF.Min(70f * scale,
-+            MathF.Max(24f * scale, (finalSize.X - 2f * safeX - 10f * scale - 6f * topGap) / 7f));
-+
-+        var useSize = 130f * scale * fit;
-+        var interSize = 118f * scale * fit;
-+        var utilSize = 102f * scale * fit;
-+        // Negative gap: buttons bite into the stick rim instead of sitting off it.
-+        var stickGap = -12f * scale * fit;
-+
-+        // Thumbstick sits in the bottom left corner where a left thumb rests naturally.
-+        var stickRadius = 127f * scale * stickScale * fit;
-+        var maxStickRadius = MathF.Max(40f, (finalSize.X - 2f * margin - 20f) / 4f);
-+        // Keep room above the sticks for the button ring and the top bar.
-+        maxStickRadius = MathF.Min(maxStickRadius,
-+            MathF.Max(40f, (finalSize.Y - safeBottom - topY - topBtnH - utilSize - 3f * gap) / 2.15f));
-+        if (stickRadius > maxStickRadius)
-+            stickRadius = maxStickRadius;
 +        _thumbstick.Radius = stickRadius;
 +        _thumbstick.KnobRadius = stickRadius * 0.30f;
 +        _thumbstick.Deadzone = stickRadius * 0.11f;
-+
 +        var stickSize = new Vector2(stickRadius * 2f + 20f, stickRadius * 2f + 20f);
-+        var stickPos = new Vector2(margin, finalSize.Y - safeBottom - stickRadius * 2f - 10f);
-+        ArrangeChild(_thumbstick, stickPos, stickSize, finalSize);
++        ArrangeChild(_thumbstick, moveCenter - stickSize / 2f, stickSize, finalSize);
 +
 +        _aimStick.Radius = stickRadius;
 +        _aimStick.KnobRadius = stickRadius * 0.30f;
 +        _aimStick.Deadzone = stickRadius * 0.11f;
-+        var aimPos = new Vector2(finalSize.X - margin - stickRadius * 2f - 10f, finalSize.Y - safeBottom - stickRadius * 2f - 10f);
-+        ArrangeChild(_aimStick, aimPos, stickSize, finalSize);
++        ArrangeChild(_aimStick, aimCenter - stickSize / 2f, stickSize, finalSize);
 +
-+        var moveCenter = new Vector2(margin + stickRadius, finalSize.Y - safeBottom - stickRadius);
-+        var aimCenter = new Vector2(finalSize.X - margin - stickRadius, finalSize.Y - safeBottom - stickRadius);
++        // Safe area: display cutout plus a floor for rounded display corners.
++        // The launcher editor applies the same clamp, so the preview stays 1:1.
++        var uiScale = Math.Clamp(_cfg.GetCVar(CVars.DisplayUIScale), 0.5f, 4f);
++        var safeLeft = MathF.Max(_cfg.GetCVar(CVars.MobileSafeAreaLeft) / uiScale, finalSize.X * 0.02f);
++        var safeRight = MathF.Max(_cfg.GetCVar(CVars.MobileSafeAreaRight) / uiScale, finalSize.X * 0.02f);
++        var safeTop = MathF.Max(_cfg.GetCVar(CVars.MobileSafeAreaTop) / uiScale, finalSize.Y * 0.006f);
++        var safeBottom = MathF.Max(_cfg.GetCVar(CVars.MobileSafeAreaBottom) / uiScale, finalSize.Y * 0.008f);
 +
-+        // Playfield: top bar first, then every ring button claims the first free
-+        // slot around its stick. This is what keeps the pad off the content HUD.
++        void ClampToSafe(Control control)
++        {
++            var size = control.Size;
++            var pos = control.Position;
++            var maxX = finalSize.X - safeRight - size.X;
++            var maxY = finalSize.Y - safeBottom - size.Y;
++            pos.X = MathF.Min(MathF.Max(pos.X, safeLeft), MathF.Max(safeLeft, maxX));
++            pos.Y = MathF.Min(MathF.Max(pos.Y, safeTop), MathF.Max(safeTop, maxY));
++            control.Arrange(new UIBox2(pos, pos + size));
++        }
++
 +        _occupiedDiscs.Clear();
 +        _stickDiscs.Clear();
 +        _stickDiscs.Add((moveCenter, stickRadius));
 +        _stickDiscs.Add((aimCenter, stickRadius));
 +
-+        var topCell = new Vector2(topBtnW, topBtnH);
-+        var topPitch = topBtnW + topGap;
-+        var topRow = new[]
++        void PlaceAt(Control control, float fx, float fy, float size)
 +        {
-+            _escButton, _editButton, _keybButton, _altButton, _examButton, _inventoryButton, _pullButton,
-+        };
-+        for (var i = 0; i < topRow.Length; i++)
-+        {
-+            ArrangeChild(topRow[i], new Vector2(safeX + i * topPitch, topY), topCell, finalSize);
-+            ReserveControl(topRow[i]);
++            var center = new Vector2(finalSize.X * fx, finalSize.Y * fy);
++            ArrangeChild(control, center - new Vector2(size) / 2f, new Vector2(size, size), finalSize);
 +        }
 +
-+        var hideW = 72f * scale;
-+        var hideH = 40f * scale;
-+        ArrangeChild(_hideButton, new Vector2((finalSize.X - hideW) / 2f, topY + topBtnH + 8f * scale), new Vector2(hideW, hideH), finalSize);
-+        ReserveControl(_hideButton);
++        PlaceAt(_escButton, 0.104f, 0.622f, utilSize);
++        PlaceAt(_pullButton, 0.21f, 0.544f, utilSize);
++        PlaceAt(_dropButton, 0.316f, 0.622f, utilSize);
++        PlaceAt(_bagButton, 0.684f, 0.622f, utilSize);
++        PlaceAt(_examButton, 0.79f, 0.544f, utilSize);
++        PlaceAt(_useButton, 0.896f, 0.622f, useSize);
 +
-+        var frameMin = new Vector2(safeX, safeTop);
-+        var frameMax = finalSize - new Vector2(safeX, safeBottom);
-+
-+        // Buttons ring the stick on every side that fits: the fan spans the
-+        // widest arc the screen edge leaves, instead of hugging one side.
-+        PlaceCluster(
-+            new[] { _useButton, _interactButton, _secButton, _throwButton },
-+            new[] { useSize, interSize, utilSize, utilSize },
-+            new[] { 68f, 114f, 160f, 204f },
-+            aimCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
-+
-+        // Move side fan: the three keys a moving thumb still needs.
-+        PlaceCluster(
-+            new[] { _handButton, _dropButton, _bagButton },
-+            new[] { utilSize, utilSize, utilSize },
-+            new[] { 43f, 110f, -24f },
-+            moveCenter, stickRadius, stickGap, finalSize, frameMin, frameMax);
-+
-+        if (!_dumpedLayout && finalSize.X > 0f)
++        // User-made buttons keep their saved place.
++        foreach (var btn in _allButtons)
 +        {
-+            _dumpedLayout = true;
-+            DumpMobileDebugInfo();
++            if (!btn.CustomPosition.HasValue)
++                continue;
++            if (btn == _useButton || btn == _dropButton || btn == _pullButton ||
++                btn == _escButton || btn == _examButton || btn == _bagButton)
++                continue;
++            var customSize = btn.CustomSize ?? utilSize;
++            ArrangeChild(btn, btn.CustomPosition.Value, new Vector2(customSize, customSize), finalSize);
++        }
++
++        ApplyPositionOverrides(finalSize);
++
++        // The launcher always sends the complete layout and its editor already
++        // applied the safe area clamp. Re-clamping here would move controls away
++        // from what the player saw in the editor, so only clamp when running
++        // without a launcher layout.
++        if (string.IsNullOrWhiteSpace(_cfg.GetCVar(CVars.MobileControlsPositions)))
++        {
++            ClampToSafe(_thumbstick);
++            ClampToSafe(_aimStick);
++            foreach (var btn in _allButtons)
++            {
++                if (btn == _useButton || btn == _dropButton || btn == _pullButton ||
++                    btn == _escButton || btn == _examButton || btn == _bagButton ||
++                    btn.CustomPosition.HasValue)
++                    ClampToSafe(btn);
++            }
++        }
++
++        // Hit testing follows the clamped stick positions.
++        _stickDiscs.Clear();
++        _stickDiscs.Add((_thumbstick.Position + _thumbstick.Size / 2f, _thumbstick.Radius));
++        _stickDiscs.Add((_aimStick.Position + _aimStick.Size / 2f, _aimStick.Radius));
++
++        if (finalSize.X > 0f && finalSize != _lastDumpedSize)
++        {
++            _lastDumpedSize = finalSize;
++            DumpMobileDebugInfo(finalSize);
 +        }
 +
 +        if (_editorBarContainer.Visible)
 +        {
-+            var barW = MathF.Min(finalSize.X - 260f * scale, 750f);
++            var barW = MathF.Min(finalSize.X - 260f, 750f);
 +            var barH = 50f;
 +            var barX = (finalSize.X - barW) / 2f;
 +            _editorBarContainer.Arrange(new UIBox2(barX, 10f, barX + barW, 10f + barH));
@@ -4197,10 +4391,10 @@ index 0000000..07d0fe3
 +}
 diff --git a/Robust.Client/UserInterface/Mobile/PojavActionButton.cs b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
 new file mode 100644
-index 0000000..c15a109
+index 0000000..ab3df7c
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/PojavActionButton.cs
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,653 @@
 +using System;
 +using System.Numerics;
 +using System.Collections.Generic;
@@ -4619,15 +4813,15 @@ index 0000000..c15a109
 +        {
 +            var badge = unit * 2.5f;
 +            var badgePos = center + new Vector2(radius * 0.55f, -radius * 0.55f) - new Vector2(badge / 2f, badge / 2f);
-+            handle.DrawRect(UIBox2.FromDimensions(badgePos, new Vector2(badge, badge)), new Color(10, 14, 10, 220));
++            handle.DrawRect(UIBox2.FromDimensions(badgePos, new Vector2(badge, badge)), PixelKit.ToLinear(new Color(10, 14, 10, 220)));
 +            handle.DrawRect(UIBox2.FromDimensions(badgePos + new Vector2(unit, unit), new Vector2(badge - unit * 2f, badge - unit * 2f)),
-+                new Color(120, 235, 150, 255));
++                PixelKit.ToLinear(new Color(120, 235, 150, 255)));
 +        }
 +
 +        if (IsEditMode)
 +        {
 +            var box = UIBox2.FromDimensions(Vector2.Zero, Size);
-+            handle.DrawRect(box, new Color(255, 215, 0, 160), false);
++            handle.DrawRect(box, PixelKit.ToLinear(new Color(255, 215, 0, 160)), false);
 +        }
 +    }
 +
@@ -4692,6 +4886,21 @@ index 0000000..c15a109
 +/// </summary>
 +internal static class PixelKit
 +{
++    /// <summary>
++    /// UI colours are authored as sRGB in the launcher editor, but Clyde blends
++    /// in linear space, so the same numbers would come out washed out on screen.
++    /// Alpha stays as authored: the editor composites with straight alpha too,
++    /// so translucent controls keep exactly the editor's opacity.
++    /// </summary>
++    public static Color ToLinear(Color c) => new(Linear(Norm(c.R)), Linear(Norm(c.G)), Linear(Norm(c.B)), c.A);
++
++    // A ternary argument makes the compiler pick Color(float...), so byte
++    // authors can arrive as 0..255; scale those back before gamma conversion.
++    private static float Norm(float channel) => channel > 1f ? channel / 255f : channel;
++
++    private static float Linear(float channel) =>
++        channel <= 0.04045f ? channel / 12.92f : MathF.Pow((channel + 0.055f) / 1.055f, 2.4f);
++
 +    // 3x5 pixel font, one row per entry, 3 bits per row (bit 2 is the left column).
 +    private static readonly Dictionary<char, int[]> Glyphs = new()
 +    {
@@ -4762,6 +4971,7 @@ index 0000000..c15a109
 +
 +    public static void DrawText(DrawingHandleScreen handle, string text, Vector2 topLeft, float unit, Color color, Color shadow)
 +    {
++        color = ToLinear(color);
 +        var x = topLeft.X;
 +        foreach (var ch in text)
 +        {
@@ -4796,6 +5006,10 @@ index 0000000..c15a109
 +
 +    public static void DrawDisc(DrawingHandleScreen handle, Vector2 center, float radius, Color face, Color light, Color dark, Color border, float unit, bool pressed)
 +    {
++        face = ToLinear(face);
++        light = ToLinear(light);
++        dark = ToLinear(dark);
++        border = ToLinear(border);
 +        var rows = Math.Max(2, (int)MathF.Ceiling(radius / unit) * 2);
 +        var rowHeight = radius * 2f / rows;
 +        var topColor = pressed ? dark : light;
@@ -4836,10 +5050,10 @@ index 0000000..c15a109
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..1eac166
+index 0000000..4160612
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,430 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -4892,7 +5106,9 @@ index 0000000..1eac166
 +    {
 +        IoCManager.InjectDependencies(this);
 +        MouseFilter = MouseFilterMode.Stop;
-+        SetSize = new Vector2(Radius * 2f + 20f, Radius * 2f + 20f);
++        // Size comes from the overlay's Arrange: SetSize would pin it at the
++        // constructor's default radius and break both the disc centre and the
++        // safe area clamp once the radius changes.
 +    }
 +
 +    private long? _activeFingerId;
@@ -5175,17 +5391,17 @@ index 0000000..1eac166
 +
 +        // Terraria style: chunky pixel ring with a dark translucent face.
 +        PixelKit.DrawDisc(handle, center, Radius,
-+            new Color(9, 11, 14, 44),
-+            new Color(190, 195, 202, 8),
-+            new Color(0, 0, 0, 30),
-+            new Color(132, 139, 150, pressed ? 64 : 40),
++            new Color(9, 11, 14, 110),
++            new Color(190, 195, 202, 14),
++            new Color(0, 0, 0, 90),
++            new Color(132, 139, 150, pressed ? 190 : 150),
 +            unit, pressed);
 +
 +        PixelKit.DrawDisc(handle, center, Radius * 0.6f,
-+            new Color(0, 0, 0, 16),
-+            new Color(200, 205, 212, 3),
-+            new Color(0, 0, 0, 12),
-+            new Color(0, 0, 0, 20),
++            new Color(0, 0, 0, 30),
++            new Color(200, 205, 212, 5),
++            new Color(0, 0, 0, 30),
++            new Color(0, 0, 0, 40),
 +            MathF.Max(2f, unit * 0.8f), pressed);
 +
 +        var block = MathF.Max(2f, MathF.Round(Radius * 0.11f));
@@ -5193,7 +5409,7 @@ index 0000000..1eac166
 +        if (IsAimStick)
 +        {
 +            var arm = Radius * 0.42f;
-+            var crossColor = new Color(168, 174, 184, pressed ? 92 : 62);
++            var crossColor = PixelKit.ToLinear(new Color(168, 174, 184, pressed ? 92 : 62));
 +            void PixelBlock(Vector2 at, Color color)
 +            {
 +                handle.DrawRect(UIBox2.FromDimensions(center + at - new Vector2(block / 2f, block / 2f), new Vector2(block, block)), color);
@@ -5210,7 +5426,7 @@ index 0000000..1eac166
 +            var arrowRadius = Radius * 0.7f;
 +            void Chevron(Vector2 at, char dir, bool active)
 +            {
-+                var color = active ? activeColor : idleColor;
++                var color = PixelKit.ToLinear(active ? activeColor : idleColor);
 +                var s = block * 1.3f;
 +                Vector2 d1, d2, d3;
 +                switch (dir)
@@ -5250,19 +5466,16 @@ index 0000000..1eac166
 +            Chevron(new Vector2(arrowRadius, 0), 'R', _activeKeys.Contains(Keyboard.Key.D));
 +        }
 +
-+        // Knob: pixel disc with a light bevel, reads on any background.
++        // Knob: same dark pixel disc as the editor, so the idle stick is a dark
++        // ring instead of a bright dot.
 +        var knobCenter = center + _knobOffset;
 +        var knobUnit = MathF.Max(2f, MathF.Round(KnobRadius / 5f));
 +        PixelKit.DrawDisc(handle, knobCenter, KnobRadius,
-+            new Color(96, 102, 114, 104),
-+            new Color(172, 178, 187, 62),
-+            new Color(38, 42, 50, 104),
-+            new Color(14, 16, 20, 110),
++            new Color(0, 0, 0, 40),
++            new Color(200, 205, 212, 8),
++            new Color(0, 0, 0, 30),
++            new Color(14, 16, 20, 70),
 +            knobUnit, pressed);
-+
-+        handle.DrawRect(UIBox2.FromDimensions(
-+            knobCenter + new Vector2(-KnobRadius * 0.38f, -KnobRadius * 0.38f),
-+            new Vector2(knobUnit * 1.6f, knobUnit * 1.6f)), new Color(212, 216, 222, 24));
 +
 +        if (IsEditMode)
 +        {
@@ -5461,6 +5674,78 @@ index 274aa2a..f8a5fe9 100644
 +        }
 +    }
  }
+diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
+index 32083c3..a944336 100644
+--- a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
++++ b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
+@@ -3,6 +3,7 @@ using System.Collections.Generic;
+ using System.Numerics;
+ using Robust.Client.Graphics;
+ using Robust.Client.UserInterface.Controls;
++using Robust.Shared;
+ using Robust.Client.UserInterface.CustomControls;
+ using Robust.Shared.Localization;
+ using Robust.Shared.Maths;
+@@ -14,6 +15,43 @@ internal sealed partial class UserInterfaceManager
+ {
+     private readonly List<Control> _modalStack = new();
+ 
++        /// <summary>
++        /// Insets the whole UI root by the display cutout, so the game view and
++        /// every window stay clear of the camera hole. The CVars are physical
++        /// render pixels, the UI root works in logical units.
++        /// </summary>
++        private void ApplyMobileSafeArea(WindowRoot root)
++        {
++            var scale = root.UIScale <= 0f ? 1f : root.UIScale;
++            var logicalSize = (Vector2) root.Window.RenderTarget.Size / scale;
++            var margin = new Thickness(
++                _configurationManager.GetCVar(CVars.MobileSafeAreaLeft),
++                _configurationManager.GetCVar(CVars.MobileSafeAreaTop),
++                _configurationManager.GetCVar(CVars.MobileSafeAreaRight),
++                _configurationManager.GetCVar(CVars.MobileSafeAreaBottom)).Scale(1f / scale);
++
++            // A broken inset must never eat the whole screen.
++            margin.Left = Math.Clamp(margin.Left, 0f, logicalSize.X * 0.45f);
++            margin.Right = Math.Clamp(margin.Right, 0f, logicalSize.X * 0.45f);
++            margin.Top = Math.Clamp(margin.Top, 0f, logicalSize.Y * 0.45f);
++            margin.Bottom = Math.Clamp(margin.Bottom, 0f, logicalSize.Y * 0.45f);
++
++            if (!root.Margin.Equals(margin))
++                root.Margin = margin;
++
++            // The pad keeps full screen coordinates: the launcher editor previews
++            // it on the whole screen, and its buttons never sit where the camera
++            // is anyway. Expanding the overlay by the same insets keeps the two
++            // frames identical.
++            var pad = MobileOverlay;
++            if (pad != null)
++            {
++                var padMargin = new Thickness(-margin.Left, -margin.Top, -margin.Right, -margin.Bottom);
++                if (!pad.Margin.Equals(padMargin))
++                    pad.Margin = padMargin;
++            }
++        }
++
+         private void RunMeasure(Control control)
+         {
+             if (control.IsMeasureValid || !control.IsInsideTree)
+@@ -26,6 +64,7 @@ internal sealed partial class UserInterfaceManager
+ 
+             if (control is WindowRoot root)
+             {
++                ApplyMobileSafeArea(root);
+                 control.Measure(root.Window.RenderTarget.Size / root.UIScale);
+             }
+             else if (control.PreviousMeasure.HasValue)
+@@ -46,6 +85,7 @@ internal sealed partial class UserInterfaceManager
+ 
+             if (control is WindowRoot root)
+             {
++                ApplyMobileSafeArea(root);
+                 control.Arrange(UIBox2.FromDimensions(Vector2.Zero, root.Window.RenderTarget.Size / root.UIScale));
+             }
+             else if (control.PreviousArrange.HasValue)
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.cs b/Robust.Client/UserInterface/UserInterfaceManager.cs
 index 57c86c3..ffe3c98 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.cs
@@ -5606,7 +5891,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..ad04e05 100644
+index 5267fc7..2e87f24 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,46 @@ namespace Robust.Shared
@@ -5614,7 +5899,7 @@ index 5267fc7..ad04e05 100644
          /// </summary>
          public static readonly CVarDef<int> MaxLightCount =
 -            CVarDef.Create("light.max_light_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 72 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_light_count", OperatingSystem.IsAndroid() ? 32 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
 -        /// Maximum number of occluders that the client will draw. Values below 1024 have no effect.
@@ -5623,7 +5908,7 @@ index 5267fc7..ad04e05 100644
          /// </summary>
          public static readonly CVarDef<int> MaxOccluderCount =
 -            CVarDef.Create("light.max_occluder_count", 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 96 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_occluder_count", OperatingSystem.IsAndroid() ? 80 : 2048, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Scale used to modify the horizontal and vertical resolution of lighting framebuffers,
@@ -5631,7 +5916,7 @@ index 5267fc7..ad04e05 100644
          /// </summary>
          public static readonly CVarDef<float> LightResolutionScale =
 -            CVarDef.Create("light.resolution_scale", 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.15f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.resolution_scale", OperatingSystem.IsAndroid() ? 0.12f : 0.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Maximum amount of shadow-casting lights that can be rendered in a single viewport at once.
@@ -5639,13 +5924,13 @@ index 5267fc7..ad04e05 100644
          /// </summary>
          public static readonly CVarDef<int> MaxShadowcastingLights =
 -            CVarDef.Create("light.max_shadowcasting_lights", 128, CVar.CLIENTONLY | CVar.ARCHIVE);
-+            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 0 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 32 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).
 +        /// </summary>
 +        public static readonly CVarDef<bool> LightWallBleed =
-+            CVarDef.Create("light.wall_bleed", true, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("light.wall_bleed", !OperatingSystem.IsAndroid(), CVar.CLIENTONLY | CVar.ARCHIVE);
  
          /// <summary>
          /// Whether to give shadows a soft edge when rendering.
@@ -5672,7 +5957,7 @@ index 5267fc7..ad04e05 100644
  
          // Clyde related enums are in Clyde.Constants.cs.
  
-@@ -1357,6 +1365,52 @@ namespace Robust.Shared
+@@ -1357,6 +1365,60 @@ namespace Robust.Shared
          public static readonly CVarDef<bool> DisplayWin32Experience =
              CVarDef.Create("display.win32_experience", false, CVar.CLIENTONLY);
  
@@ -5692,13 +5977,21 @@ index 5267fc7..ad04e05 100644
 +        /// Scale multiplier for on-screen touch controls.
 +        /// </summary>
 +        public static readonly CVarDef<float> MobileControlsScale =
-+            CVarDef.Create("mobile.controls_scale", 1.5f, CVar.CLIENTONLY | CVar.ARCHIVE);
++            CVarDef.Create("mobile.controls_scale", 2.25f, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
 +        /// Persistent custom layout positions for on-screen touch controls.
 +        /// </summary>
 +        public static readonly CVarDef<string> MobileControlsLayout =
 +            CVarDef.Create("mobile.controls_layout", "", CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
++        /// Launcher-made positions as fractions of the overlay: id@x,y with x and
++        /// y in 0..1. Applied after the default pad layout, so the launcher editor
++        /// never needs to know the engine's pixel sizes.
++        /// </summary>
++        public static readonly CVarDef<string> MobileControlsPositions =
++            CVarDef.Create("mobile.controls_positions", "", CVar.CLIENTONLY);
 +
 +        /// <summary>
 +        /// Additional scale multiplier specifically for the on-screen virtual thumbstick.
@@ -6537,6 +6830,84 @@ index 5e7a70c..f2b7222 100644
          }
  
          /// <inheritdoc />
+diff --git a/Robust.Shared/Graphics/Eye.cs b/Robust.Shared/Graphics/Eye.cs
+index d41e07f..1458bba 100644
+--- a/Robust.Shared/Graphics/Eye.cs
++++ b/Robust.Shared/Graphics/Eye.cs
+@@ -1,5 +1,6 @@
+ #nullable enable
+ 
++using System;
+ using System.Numerics;
+ using Robust.Shared.Map;
+ using Robust.Shared.Maths;
+@@ -11,6 +12,15 @@ namespace Robust.Shared.Graphics
+     [Virtual]
+     public class Eye : IEye
+     {
++        /// <summary>
++        ///     Extra scale applied on top of the content-controlled eye zoom. The Android port hardcodes it to 1.5
++        ///     (= one content viewport ZoomIn step, ZoomMod = 1.5) so the world is drawn closer without touching content.
++        ///     It is applied in <see cref="Zoom"/>/<see cref="Scale"/> and all view matrices, so rendering, lighting,
++        ///     culling and screen-to-world input conversion stay consistent. <see cref="_scale"/> itself is never
++        ///     multiplied, so content setting EyeComponent.Zoom does not overwrite it.
++        /// </summary>
++        public static Vector2 GlobalScale = OperatingSystem.IsAndroid() ? new Vector2(1.5f) : Vector2.One;
++
+         private Vector2 _scale = Vector2.One / 2f;
+         private Angle _rotation = Angle.Zero;
+         private MapCoordinates _coords;
+@@ -49,7 +59,7 @@ namespace Robust.Shared.Graphics
+         [ViewVariables(VVAccess.ReadWrite)]
+         public Vector2 Zoom
+         {
+-            get => new(1 / _scale.X, 1 / _scale.Y);
++            get => Vector2.One / (_scale * GlobalScale);
+             set => _scale = new Vector2(1 / value.X, 1 / value.Y);
+         }
+ 
+@@ -57,7 +67,7 @@ namespace Robust.Shared.Graphics
+         [ViewVariables(VVAccess.ReadWrite)]
+         public Vector2 Scale
+         {
+-            get => _scale;
++            get => _scale * GlobalScale;
+             set => _scale = value;
+         }
+ 
+@@ -68,8 +78,8 @@ namespace Robust.Shared.Graphics
+                 _coords.Position.X + Offset.X,
+                 _coords.Position.Y + Offset.Y,
+                 (float)-Rotation.Theta,
+-                1 / (_scale.X * renderScale.X),
+-                1 / (_scale.Y * renderScale.Y));
++                1 / (Scale.X * renderScale.X),
++                1 / (Scale.Y * renderScale.Y));
+         }
+ 
+         public void GetViewMatrixNoOffset(out Matrix3x2 viewMatrix, Vector2 renderScale)
+@@ -78,8 +88,8 @@ namespace Robust.Shared.Graphics
+                 _coords.Position.X,
+                 _coords.Position.Y,
+                 (float)-Rotation.Theta,
+-                1 / (_scale.X * renderScale.X),
+-                1 / (_scale.Y * renderScale.Y));
++                1 / (Scale.X * renderScale.X),
++                1 / (Scale.Y * renderScale.Y));
+         }
+ 
+         /// <inheritdoc />
+@@ -89,8 +99,8 @@ namespace Robust.Shared.Graphics
+                 _coords.Position.X + Offset.X,
+                 _coords.Position.Y + Offset.Y,
+                 (float)-Rotation.Theta,
+-                1 / (_scale.X * renderScale.X),
+-                1 / (_scale.Y * renderScale.Y));
++                1 / (Scale.X * renderScale.X),
++                1 / (Scale.Y * renderScale.Y));
+         }
+     }
+ }
 diff --git a/Robust.Shared/IoC/DependencyCollection.cs b/Robust.Shared/IoC/DependencyCollection.cs
 index 8e53bf3..0376646 100644
 --- a/Robust.Shared/IoC/DependencyCollection.cs
