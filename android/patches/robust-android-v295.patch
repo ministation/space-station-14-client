@@ -1692,18 +1692,37 @@ index 73cadae..d9be340 100644
          }
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
-index 1dc619d..632fd50 100644
+index 1dc619d..8709c2e 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
-@@ -213,6 +213,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -212,7 +212,6 @@ namespace Robust.Client.Graphics.Clyde
+ 
                      versionHeader += "#define NO_ARRAY_PRECISION\n";
                  }
- 
-+                versionHeader += "#ifdef FRAGMENT_SHADER\n#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n#endif\n";
+-
              }
  
              if (_hasGLStandardDerivatives)
-@@ -255,9 +256,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -244,8 +243,17 @@ namespace Robust.Client.Graphics.Clyde
+             }
+ 
+             var lib = includeLib ? _shaderLibrary : "";
++
++            // GLSL ES fragment shaders have no default float precision. The FRAGMENT_SHADER
++            // define below comes after the version header, so the old precision block in
++            // that header never applied: content shaders that rely on the default (array
++            // constructors, for example) failed to compile on mobile drivers.
++            var fragmentPrecision = _isGLES
++                ? "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
++                : "";
++
+             vertexSource = versionHeader + "#define VERTEX_SHADER\n" + lib + vertexSource;
+-            fragmentSource = versionHeader + "#define FRAGMENT_SHADER\n" + lib + fragmentSource;
++            fragmentSource = versionHeader + "#define FRAGMENT_SHADER\n" + fragmentPrecision + lib + fragmentSource;
+ 
+             try
+             {
+@@ -255,9 +263,10 @@ namespace Robust.Client.Graphics.Clyde
                  }
                  catch (ShaderCompilationException e)
                  {
@@ -1716,7 +1735,7 @@ index 1dc619d..632fd50 100644
                  }
  
                  try
-@@ -266,9 +268,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -266,9 +275,10 @@ namespace Robust.Client.Graphics.Clyde
                  }
                  catch (ShaderCompilationException e)
                  {
@@ -1729,7 +1748,7 @@ index 1dc619d..632fd50 100644
                  }
  
                  var program = new GLShaderProgram(this, name);
-@@ -282,8 +285,8 @@ namespace Robust.Client.Graphics.Clyde
+@@ -282,8 +292,8 @@ namespace Robust.Client.Graphics.Clyde
                  catch (ShaderCompilationException e)
                  {
                      program.Delete();
