@@ -759,12 +759,8 @@ namespace Content.Android
                     return;
                 }
 
-                var metrics = Resources?.DisplayMetrics;
-                if (metrics == null) return;
-
-                var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
-                var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
-                if (screenH <= 0) return;
+                var (screenW, screenH) = MobileSafeArea.ScreenSize(this);
+                if (screenW <= 0 || screenH <= 0) return;
                 var aspect = (float)screenW / screenH;
 
                 if (targetH < screenH)
@@ -1195,13 +1191,13 @@ namespace Content.Android
                 // Full-screen view size: the engine converts normalized touch
                 // coordinates back to physical pixels with it, because the render
                 // surface can be smaller than the view when the resolution is set.
-                var metricsForView = Resources?.DisplayMetrics;
-                if (metricsForView != null)
+                var (viewW, viewH) = MobileSafeArea.ScreenSize(this);
+                if (viewW > 0 && viewH > 0)
                 {
                     args.Add("--cvar");
-                    args.Add($"mobile.view_width={metricsForView.WidthPixels}");
+                    args.Add($"mobile.view_width={viewW}");
                     args.Add("--cvar");
-                    args.Add($"mobile.view_height={metricsForView.HeightPixels}");
+                    args.Add($"mobile.view_height={viewH}");
                 }
 
                 var gcType = robustClient.GetType("Robust.Client.GameController");
@@ -1269,10 +1265,7 @@ namespace Content.Android
     {
         try
         {
-            var metrics = Resources?.DisplayMetrics;
-            if (metrics == null)
-                return 1f;
-            var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+            var (_, screenH) = MobileSafeArea.ScreenSize(this);
             if (screenH <= 0)
                 return 1f;
             var targetH = RenderHeightForResolution(Intent?.GetStringExtra("display_resolution"));
@@ -1318,7 +1311,7 @@ namespace Content.Android
     {
         try
         {
-            ApplySafeArea(insets, Resources?.DisplayMetrics);
+            ApplySafeArea(insets);
         }
         catch
         {
@@ -1344,13 +1337,12 @@ namespace Content.Android
             $"passed l={SafeInset(_safeAreaLeft)} t={SafeInset(_safeAreaTop)} r={SafeInset(_safeAreaRight)} b={SafeInset(_safeAreaBottom)}");
     }
 
-    private void ApplySafeArea(WindowInsets? insets, global::Android.Util.DisplayMetrics? metrics)
+    private void ApplySafeArea(WindowInsets? insets)
     {
-        if (metrics == null || metrics.WidthPixels <= 0 || metrics.HeightPixels <= 0)
+        var (screenW, screenH) = MobileSafeArea.ScreenSize(this);
+        if (screenW <= 0 || screenH <= 0)
             return;
 
-        var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
-        var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
         var (left, top, right, bottom) = MobileSafeArea.Measure(insets, screenW, screenH, _frameMode, _frameScale);
 
         _safeAreaLeft = left;
@@ -1421,6 +1413,7 @@ namespace Content.Android
         // The gesture inset alone reads as a thick black bar, keep it 2.5x thinner.
         private const float BottomFrameFraction = 0.015f;
         private const float BottomGestureDivisor = 2.5f;
+        private static bool _screenSizeLogged;
 
         public static string NormalizeMode(string? mode)
         {
@@ -1450,6 +1443,74 @@ namespace Content.Android
             var prefs = context?.GetSharedPreferences("ss14_mobile_config",
                 global::Android.Content.FileCreationMode.Private);
             return (ReadMode(prefs), ReadScale(prefs));
+        }
+
+        /// <summary>
+        /// Physical screen size in the current orientation. Pad fractions are
+        /// fractions of this size, so the launcher preview, the launcher layout
+        /// and the game surface must use the same numbers. Resources.DisplayMetrics
+        /// is the usable window area on some devices, while CurrentWindowMetrics
+        /// is the surface Android hands to the game window.
+        /// </summary>
+        public static (int Width, int Height) ScreenSize(global::Android.Content.Context? context)
+        {
+            var width = 0;
+            var height = 0;
+            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            {
+                try
+                {
+                    var windowManager =
+                        context?.GetSystemService(global::Android.Content.Context.WindowService) as IWindowManager;
+                    var bounds = windowManager?.CurrentWindowMetrics?.Bounds;
+                    if (bounds != null)
+                    {
+                        width = bounds.Width();
+                        height = bounds.Height();
+                    }
+                }
+                catch { }
+            }
+
+            if (width <= 0 || height <= 0)
+            {
+                try
+                {
+#pragma warning disable CS0618
+                    var windowManager =
+                        context?.GetSystemService(global::Android.Content.Context.WindowService) as IWindowManager;
+                    var display = windowManager?.DefaultDisplay;
+                    if (display != null)
+                    {
+                        var real = new global::Android.Util.DisplayMetrics();
+                        display.GetRealMetrics(real);
+                        width = real.WidthPixels;
+                        height = real.HeightPixels;
+                    }
+#pragma warning restore CS0618
+                }
+                catch { }
+            }
+
+            if (width <= 0 || height <= 0)
+            {
+                var metrics = context?.Resources?.DisplayMetrics;
+                width = metrics?.WidthPixels ?? 0;
+                height = metrics?.HeightPixels ?? 0;
+            }
+
+            if (!_screenSizeLogged)
+            {
+                _screenSizeLogged = true;
+                // One line in logcat proves which source the pad geometry used:
+                // if window and display differ on a device, that difference was
+                // exactly the editor-vs-game offset before 0.8.15.
+                var display = context?.Resources?.DisplayMetrics;
+                global::Android.Util.Log.Info("SS14Launch",
+                    $"[ScreenSize] window={width}x{height} display={display?.WidthPixels}x{display?.HeightPixels}");
+            }
+
+            return (Math.Max(width, height), Math.Min(width, height));
         }
 
         public static (int Left, int Top, int Right, int Bottom) Measure(
@@ -1548,8 +1609,8 @@ namespace Content.Android
         public static (int Left, int Top, int Right, int Bottom) MeasureWindow(
             Activity? activity, string? mode = DefaultMode, int scale = DefaultScale)
         {
-            var metrics = activity?.Resources?.DisplayMetrics;
-            if (metrics == null || metrics.WidthPixels <= 0 || metrics.HeightPixels <= 0)
+            var (screenW, screenH) = ScreenSize(activity);
+            if (screenW <= 0 || screenH <= 0)
                 return (0, 0, 0, 0);
 
             WindowInsets? insets = null;
@@ -1564,7 +1625,7 @@ namespace Content.Android
                 }
             }
 
-            return Measure(insets, metrics.WidthPixels, metrics.HeightPixels, mode, scale);
+            return Measure(insets, screenW, screenH, mode, scale);
         }
     }
 }

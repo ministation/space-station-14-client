@@ -142,9 +142,7 @@ public sealed class LauncherActivity : Activity
     /// </summary>
     private string BuildPadLayout(ISharedPreferences? prefs)
     {
-        var metrics = Resources?.DisplayMetrics;
-        var screenW = Math.Max(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
-        var screenH = Math.Min(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
+        var (screenW, screenH) = MobileSafeArea.ScreenSize(this);
         var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(this);
         return PadEditorView.BuildLayout(prefs, screenW, screenH,
             MobileSafeArea.MeasureWindow(this, frameMode, frameScale));
@@ -2240,11 +2238,11 @@ public sealed class LauncherActivity : Activity
         /// </summary>
         private void UpdateScreenFrame()
         {
-            var metrics = Resources?.DisplayMetrics;
-            if (metrics != null && metrics.WidthPixels > 0 && metrics.HeightPixels > 0)
+            var (width, height) = MobileSafeArea.ScreenSize(Context);
+            if (width > 0 && height > 0)
             {
-                _screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
-                _screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
+                _screenW = width;
+                _screenH = height;
             }
             if (_screenW <= 0)
             {
@@ -3665,7 +3663,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.14";
+    public const string CurrentAppVersion = "v0.8.15";
 
 
     public string GetCurrentAppVersion()
