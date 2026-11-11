@@ -572,6 +572,8 @@ namespace Content.Android
                 LaunchToken = Intent?.GetStringExtra("token") ?? LaunchToken;
                 LaunchUserId = Intent?.GetStringExtra("userid") ?? LaunchUserId;
                 LaunchPubKey = Intent?.GetStringExtra("pubkey") ?? LaunchPubKey;
+                _frameMode = MobileSafeArea.NormalizeMode(Intent?.GetStringExtra("frame_mode") ?? _frameMode);
+                _frameScale = MobileSafeArea.ParseScale(Intent?.GetStringExtra("frame_scale") ?? null);
 
                 LaunchBuildCVars.Clear();
 
@@ -1219,6 +1221,8 @@ namespace Content.Android
     private int _safeAreaTop;
     private int _safeAreaBottom;
     private volatile bool _safeAreaReady;
+    private string _frameMode = MobileSafeArea.DefaultMode;
+    private int _frameScale = MobileSafeArea.DefaultScale;
 
     /// <summary>
     /// UI scale per render resolution. A smaller render target is stretched to the
@@ -1335,7 +1339,7 @@ namespace Content.Android
 
         var screenW = Math.Max(metrics.WidthPixels, metrics.HeightPixels);
         var screenH = Math.Min(metrics.WidthPixels, metrics.HeightPixels);
-        var (left, top, right, bottom) = MobileSafeArea.Measure(insets, screenW, screenH);
+        var (left, top, right, bottom) = MobileSafeArea.Measure(insets, screenW, screenH, _frameMode, _frameScale);
 
         _safeAreaLeft = left;
         _safeAreaTop = top;
@@ -1355,7 +1359,7 @@ namespace Content.Android
     {
         try
         {
-            var (left, top, right, bottom) = MobileSafeArea.MeasureWindow(this);
+            var (left, top, right, bottom) = MobileSafeArea.MeasureWindow(this, _frameMode, _frameScale);
             _safeAreaLeft = left;
             _safeAreaTop = top;
             _safeAreaRight = right;
@@ -1389,19 +1393,52 @@ namespace Content.Android
     /// </summary>
     internal static class MobileSafeArea
     {
+        // One frame all around: covers the camera whichever edge Android reports
+        // it on and keeps the UI and the pad centered instead of shifting them.
+        public const string FrameAllSides = "all sides";
+        public const string FrameCamera = "camera";
+        public const string FrameOff = "off";
+        public const string DefaultMode = FrameAllSides;
+        public const int DefaultScale = 1;
+
         // Even when Android reports no inset, the gesture strip and the rounded
         // corners live in the bottom strip; keep a thin frame there.
         private const float BottomFrameFraction = 0.015f;
 
-        // The player asked for a camera frame three times wider than the cutout:
-        // the reported inset reads as a narrow black line.
-        private const float FrameMultiplier = 3f;
+        public static string NormalizeMode(string? mode)
+        {
+            return mode == FrameCamera || mode == FrameOff ? mode : DefaultMode;
+        }
+
+        public static int NormalizeScale(int scale) => Math.Clamp(scale, 1, 4);
+
+        public static int ParseScale(string? raw)
+        {
+            if (raw != null && raw.Length > 1 && int.TryParse(raw.AsSpan(1), out var scale))
+                return NormalizeScale(scale);
+            return DefaultScale;
+        }
+
+        public static string ReadMode(global::Android.Content.ISharedPreferences? prefs) =>
+            NormalizeMode(prefs?.GetString("frame_mode", DefaultMode));
+
+        public static int ReadScale(global::Android.Content.ISharedPreferences? prefs) =>
+            ParseScale(prefs?.GetString("frame_scale", "x1"));
+
+        public static (string Mode, int Scale) ReadPrefs(global::Android.Content.Context? context)
+        {
+            var prefs = context?.GetSharedPreferences("ss14_mobile_config",
+                global::Android.Content.FileCreationMode.Private);
+            return (ReadMode(prefs), ReadScale(prefs));
+        }
 
         public static (int Left, int Top, int Right, int Bottom) Measure(
-            WindowInsets? insets, int screenWidth, int screenHeight)
+            WindowInsets? insets, int screenWidth, int screenHeight,
+            string? mode = DefaultMode, int scale = DefaultScale)
         {
             var screenW = Math.Max(screenWidth, screenHeight);
             var screenH = Math.Min(screenWidth, screenHeight);
+            var minimum = (int)Math.Round(screenH * BottomFrameFraction);
 
             var left = 0;
             var top = 0;
@@ -1451,17 +1488,26 @@ namespace Content.Android
                 }
             }
 
-            // Only the camera gets the multiplier. The gesture strip is already wide
-            // and tripling it put a huge black bar over the bottom of the screen.
-            var bottom = Math.Max(
-                (int)Math.Round(cameraBottom * FrameMultiplier),
-                Math.Max(gestureBottom, (int)Math.Round(screenH * BottomFrameFraction)));
+            mode = NormalizeMode(mode);
+            if (mode == FrameOff)
+                return (0, 0, 0, 0);
 
-            return (
-                (int)Math.Round(left * FrameMultiplier),
-                (int)Math.Round(top * FrameMultiplier),
-                (int)Math.Round(right * FrameMultiplier),
-                bottom);
+            scale = NormalizeScale(scale);
+            if (mode == FrameCamera)
+            {
+                // Only the camera gets the multiplier: the gesture strip is already
+                // wide enough and scaling it covers the game view.
+                return (
+                    left * scale,
+                    top * scale,
+                    right * scale,
+                    Math.Max(cameraBottom * scale, Math.Max(gestureBottom, minimum)));
+            }
+
+            var frame = Math.Max(
+                Math.Max(Math.Max(left, top), Math.Max(right, cameraBottom)),
+                Math.Max(gestureBottom, minimum)) * scale;
+            return (frame, frame, frame, frame);
         }
 
         /// <summary>
@@ -1469,7 +1515,8 @@ namespace Content.Android
         /// window was laid out with; CurrentWindowMetrics is the fallback for a
         /// window that has not dispatched insets yet.
         /// </summary>
-        public static (int Left, int Top, int Right, int Bottom) MeasureWindow(Activity? activity)
+        public static (int Left, int Top, int Right, int Bottom) MeasureWindow(
+            Activity? activity, string? mode = DefaultMode, int scale = DefaultScale)
         {
             var metrics = activity?.Resources?.DisplayMetrics;
             if (metrics == null || metrics.WidthPixels <= 0 || metrics.HeightPixels <= 0)
@@ -1487,7 +1534,7 @@ namespace Content.Android
                 }
             }
 
-            return Measure(insets, metrics.WidthPixels, metrics.HeightPixels);
+            return Measure(insets, metrics.WidthPixels, metrics.HeightPixels, mode, scale);
         }
     }
 }

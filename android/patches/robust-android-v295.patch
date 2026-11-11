@@ -601,7 +601,7 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..ea0dbec 100644
+index a6bc6a0..e65425d 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
 @@ -1,3 +1,4 @@
@@ -609,7 +609,7 @@ index a6bc6a0..ea0dbec 100644
  using Robust.Client.Input;
  
  namespace Robust.Client
-@@ -49,5 +50,51 @@ namespace Robust.Client
+@@ -49,5 +50,50 @@ namespace Robust.Client
                  return;
              }
          }
@@ -622,7 +622,6 @@ index a6bc6a0..ea0dbec 100644
 +
 +        public void TouchFinger(TouchFingerEventArgs touchEvent)
 +        {
-+
 +            if (_userInterfaceManager.TouchFinger(touchEvent))
 +                return;
 +
@@ -5639,7 +5638,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..9557126 100644
+index 274aa2a..5a0203e 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -5774,7 +5773,7 @@ index 274aa2a..9557126 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,47 @@ internal partial class UserInterfaceManager
+@@ -583,4 +687,75 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -5791,26 +5790,54 @@ index 274aa2a..9557126 100644
 +    }
 +
 +    private Control? _touchClickControl;
++    private Vector2 _touchClickRelative;
 +
++    /// <summary>
++    /// Dispatches a touch press to the control under the finger. Touch does not
++    /// go through the mouse move path, so the control has to be hit tested here
++    /// and receives the position relative to itself. BaseButton checks the press
++    /// against its own global position, so the pointer location must be built
++    /// from the hit test result, not from the raw screen coordinates.
++    /// </summary>
 +    public bool InjectTouchClick(ScreenCoordinates pointerLocation, bool down)
 +    {
-+        var control = down ? MouseGetControl(pointerLocation) : _touchClickControl;
-+        if (!down)
++        Control? control;
++        Vector2 relativePixel;
++
++        if (down)
++        {
++            var hit = MouseGetControlAndRel(pointerLocation);
++            if (hit == null || !hit.Value.control.VisibleInTree)
++                return false;
++
++            control = hit.Value.control;
++            relativePixel = hit.Value.rel;
++        }
++        else
++        {
++            control = _touchClickControl;
++            relativePixel = _touchClickRelative;
 +            _touchClickControl = null;
++        }
 +
 +        if (control == null || !control.VisibleInTree)
 +            return false;
 +
 +        if (down)
++        {
 +            _touchClickControl = control;
++            _touchClickRelative = relativePixel;
++        }
 +
++        var pointer = new ScreenCoordinates((Vector2) control.GlobalPixelPosition + relativePixel,
++            pointerLocation.Window);
 +        var guiArgs = new GUIBoundKeyEventArgs(
 +            EngineKeyFunctions.UIClick,
 +            down ? BoundKeyState.Down : BoundKeyState.Up,
-+            pointerLocation,
++            pointer,
 +            true,
-+            pointerLocation.Position / control.UIScale - control.GlobalPosition,
-+            pointerLocation.Position - control.GlobalPixelPosition);
++            relativePixel / control.UIScale,
++            relativePixel);
 +
 +        _doGuiInput(control, guiArgs, (c, ev) =>
 +        {

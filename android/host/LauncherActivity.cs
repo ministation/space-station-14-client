@@ -145,7 +145,9 @@ public sealed class LauncherActivity : Activity
         var metrics = Resources?.DisplayMetrics;
         var screenW = Math.Max(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
         var screenH = Math.Min(metrics?.WidthPixels ?? 0, metrics?.HeightPixels ?? 0);
-        return PadEditorView.BuildLayout(prefs, screenW, screenH, MobileSafeArea.MeasureWindow(this));
+        var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(this);
+        return PadEditorView.BuildLayout(prefs, screenW, screenH,
+            MobileSafeArea.MeasureWindow(this, frameMode, frameScale));
     }
 
     /// <summary>
@@ -1079,6 +1081,9 @@ public sealed class LauncherActivity : Activity
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "native", new[] { "native", "1080p", "900p", "720p" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
+        AddChoiceRow(list, "Screen frame", prefs, "frame_mode", MobileSafeArea.DefaultMode,
+            new[] { MobileSafeArea.FrameAllSides, MobileSafeArea.FrameCamera, MobileSafeArea.FrameOff });
+        AddChoiceRow(list, "Frame size", prefs, "frame_scale", "x1", new[] { "x1", "x2", "x3" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
 
@@ -2206,7 +2211,9 @@ public sealed class LauncherActivity : Activity
             SetOnApplyWindowInsetsListener(new SafeInsetsListener((view, insets) =>
             {
                 UpdateScreenFrame();
-                var (left, top, right, bottom) = MobileSafeArea.Measure(insets, _screenW, _screenH);
+                var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(Context);
+                var (left, top, right, bottom) =
+                    MobileSafeArea.Measure(insets, _screenW, _screenH, frameMode, frameScale);
                 _safeLeft = left;
                 _safeTop = top;
                 _safeRight = right;
@@ -2371,7 +2378,9 @@ public sealed class LauncherActivity : Activity
             if (_insetsReady)
                 return (_safeLeft, _safeTop, _safeRight, _safeBottom);
 
-            var (left, top, right, bottom) = MobileSafeArea.Measure(RootWindowInsets, _screenW, _screenH);
+            var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(Context);
+            var (left, top, right, bottom) =
+                MobileSafeArea.Measure(RootWindowInsets, _screenW, _screenH, frameMode, frameScale);
             return (left, top, right, bottom);
         }
 
@@ -3414,6 +3423,8 @@ public sealed class LauncherActivity : Activity
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
+            intent.PutExtra("frame_mode", MobileSafeArea.ReadMode(prefs));
+            intent.PutExtra("frame_scale", "x" + MobileSafeArea.ReadScale(prefs));
             ApplyGraphicsExtras(intent, prefs);
         }
 
@@ -3633,6 +3644,8 @@ public sealed class LauncherActivity : Activity
             var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
             intent.PutExtra("display_resolution", dispRes);
             intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
+            intent.PutExtra("frame_mode", MobileSafeArea.ReadMode(prefs));
+            intent.PutExtra("frame_scale", "x" + MobileSafeArea.ReadScale(prefs));
             ApplyGraphicsExtras(intent, prefs);
         }
         StartActivity(intent);
@@ -3648,7 +3661,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.8";
+    public const string CurrentAppVersion = "v0.8.9";
 
 
     public string GetCurrentAppVersion()
