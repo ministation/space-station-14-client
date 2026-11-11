@@ -37,6 +37,9 @@ dotnet build "$PROJECT" \
 
 APK=$(ls -t "$ROOT/android/host/bin/$CONFIG/net10.0-android/"*-Signed.apk 2>/dev/null | head -n 1)
 [ -n "$APK" ] || { echo "APK not found" >&2; exit 1; }
+# Re-sign with v1 + v2 + v3: some sideload installers refuse APKs that only
+# carry the v2/v3 signature and report a missing certificate.
+ANDROID_HOME="$ANDROID_HOME" bash "$ROOT/android/scripts/sign-apk.sh" "$APK"
 
 # Проверка, что в движок не уехала FREEDESKTOP-ветка.
 if strings "$ROOT/android/host/bin/$CONFIG/net10.0-android/Robust.Client.dll" 2>/dev/null | grep -q SystemFontManagerFontconfig; then
