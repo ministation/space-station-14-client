@@ -1914,14 +1914,15 @@ index 75211d3..a0f5bee 100644
  void main()
  {
 diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
-index da4d28f..7ee104a 100644
+index da4d28f..bdbe4fd 100644
 --- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
 +++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
-@@ -1,9 +1,10 @@
+@@ -1,9 +1,11 @@
 -﻿using System;
 +using System;
  using System.Numerics;
  using Robust.Client.Input;
++using Robust.Shared;
  using Robust.Shared.Map;
  using SDL3;
  using Key = Robust.Client.Input.Keyboard.Key;
@@ -1929,7 +1930,7 @@ index da4d28f..7ee104a 100644
  using ET = SDL3.SDL.SDL_EventType;
  using SDL_Keymod = SDL3.SDL.SDL_Keymod;
  
-@@ -15,8 +16,45 @@ internal partial class Clyde
+@@ -15,8 +17,45 @@ internal partial class Clyde
      {
          public void ProcessEvents(bool single = false)
          {
@@ -1975,7 +1976,7 @@ index da4d28f..7ee104a 100644
                  try
                  {
                      ProcessEvent(ev);
-@@ -29,6 +67,8 @@ internal partial class Clyde
+@@ -29,6 +68,8 @@ internal partial class Clyde
                  if (single)
                      break;
              }
@@ -1984,7 +1985,7 @@ index da4d28f..7ee104a 100644
          }
  
          // Block waiting on the windowing -> game thread channel.
-@@ -69,6 +109,9 @@ internal partial class Clyde
+@@ -69,6 +110,9 @@ internal partial class Clyde
                  case EventMouseButton ev:
                      ProcessEventMouseButton(ev);
                      break;
@@ -1994,7 +1995,7 @@ index da4d28f..7ee104a 100644
                  case EventWheel ev:
                      ProcessEventWheel(ev);
                      break;
-@@ -162,18 +205,45 @@ internal partial class Clyde
+@@ -162,18 +206,54 @@ internal partial class Clyde
                  return;
  
              var button = ConvertSdl3Button(ev.Button);
@@ -2016,7 +2017,16 @@ index da4d28f..7ee104a 100644
 +            if (fb.X <= 0) fb.X = 1;
 +            if (fb.Y <= 0) fb.Y = 1;
 +
-+            var pixelPos = new Vector2(ev.X * fb.X, ev.Y * fb.Y);
++            // SDL normalizes touch by the window size it knows, which on Android is
++            // the render surface, while touches come from the full-screen view.
++            // Convert view pixels to surface pixels, else the hit test at a
++            // downscaled render resolution lands beside the button.
++            var viewW = _cfg.GetCVar(CVars.MobileViewWidth);
++            var viewH = _cfg.GetCVar(CVars.MobileViewHeight);
++            var pixelPos = viewW > 0 && viewH > 0
++                ? new Vector2(ev.X * windowReg.WindowSize.X * fb.X / viewW,
++                    ev.Y * windowReg.WindowSize.Y * fb.Y / viewH)
++                : new Vector2(ev.X * fb.X, ev.Y * fb.Y);
 +            TouchFingerAction action = ev.Type switch
 +            {
 +                ET.SDL_EVENT_FINGER_DOWN => TouchFingerAction.Down,
@@ -6066,7 +6076,7 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..2e87f24 100644
+index 5267fc7..208627c 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
 @@ -992,38 +992,46 @@ namespace Robust.Shared
@@ -6132,7 +6142,7 @@ index 5267fc7..2e87f24 100644
  
          // Clyde related enums are in Clyde.Constants.cs.
  
-@@ -1357,6 +1365,60 @@ namespace Robust.Shared
+@@ -1357,6 +1365,71 @@ namespace Robust.Shared
          public static readonly CVarDef<bool> DisplayWin32Experience =
              CVarDef.Create("display.win32_experience", false, CVar.CLIENTONLY);
  
@@ -6186,6 +6196,17 @@ index 5267fc7..2e87f24 100644
 +
 +        public static readonly CVarDef<int> MobileSafeAreaBottom =
 +            CVarDef.Create("mobile.safe_area_bottom", 0, CVar.CLIENTONLY);
++
++        /// <summary>
++        /// Full-screen view size in physical pixels reported by the host. Touch
++        /// events are normalized against the render surface, which the host may
++        /// shrink for a lower render resolution, so the engine needs both sizes.
++        /// </summary>
++        public static readonly CVarDef<int> MobileViewWidth =
++            CVarDef.Create("mobile.view_width", 0, CVar.CLIENTONLY);
++
++        public static readonly CVarDef<int> MobileViewHeight =
++            CVarDef.Create("mobile.view_height", 0, CVar.CLIENTONLY);
 +
 +        public static readonly CVarDef<float> MobileThumbstickScale =
 +            CVarDef.Create("mobile.thumbstick_scale", 1.1f, CVar.CLIENTONLY | CVar.ARCHIVE);

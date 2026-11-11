@@ -1192,6 +1192,18 @@ namespace Content.Android
                 args.Add("--cvar");
                 args.Add($"mobile.safe_area_bottom={SafeInset(_safeAreaBottom)}");
 
+                // Full-screen view size: the engine converts normalized touch
+                // coordinates back to physical pixels with it, because the render
+                // surface can be smaller than the view when the resolution is set.
+                var metricsForView = Resources?.DisplayMetrics;
+                if (metricsForView != null)
+                {
+                    args.Add("--cvar");
+                    args.Add($"mobile.view_width={metricsForView.WidthPixels}");
+                    args.Add("--cvar");
+                    args.Add($"mobile.view_height={metricsForView.HeightPixels}");
+                }
+
                 var gcType = robustClient.GetType("Robust.Client.GameController");
                 if (gcType == null) throw new Exception("Robust.Client.GameController type is null");
                 var startMethod = gcType.GetMethod("Start", BindingFlags.Public | BindingFlags.Static);
