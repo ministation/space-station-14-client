@@ -601,17 +601,45 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..42ecf99 100644
+index a6bc6a0..6e6497a 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
-@@ -49,5 +49,10 @@ namespace Robust.Client
+@@ -1,3 +1,4 @@
++using System;
+ using Robust.Client.Input;
+ 
+ namespace Robust.Client
+@@ -49,5 +50,33 @@ namespace Robust.Client
                  return;
              }
          }
 +
++        // The finger that currently drives the synthetic mouse, if any.
++        private long? _touchMouseFinger;
++
 +        public void TouchFinger(TouchFingerEventArgs touchEvent)
 +        {
-+            _userInterfaceManager.TouchFinger(touchEvent);
++
++            if (_userInterfaceManager.TouchFinger(touchEvent))
++                return;
++
++            // The pad did not claim this finger, so it is a normal click on the UI or
++            // the world. SDL's touch-to-mouse emulation is off on Android (see
++            // Sdl3WindowingImpl.InitSdl3), otherwise every tap would fire twice.
++            if (!OperatingSystem.IsAndroid())
++                return;
++
++            switch (touchEvent.Action)
++            {
++                case TouchFingerAction.Down when _touchMouseFinger == null:
++                    _touchMouseFinger = touchEvent.FingerId;
++                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
++                    break;
++                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchMouseFinger == touchEvent.FingerId:
++                    _touchMouseFinger = null;
++                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, false);
++                    break;
++            }
 +        }
      }
  }
@@ -1098,7 +1126,7 @@ index c3ca7a2..dd1e34d 100644
  
      /// <summary>
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Events.cs b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
-index 029d12c..efa1e5c 100644
+index 029d12c..62f1f9c 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 @@ -1,14 +1,17 @@
@@ -1130,7 +1158,7 @@ index 029d12c..efa1e5c 100644
              }
          }
  
-@@ -148,6 +154,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -148,6 +154,49 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventTextEditing(ev));
          }
  
@@ -1148,10 +1176,39 @@ index 029d12c..efa1e5c 100644
 +            SendMouseMove(new MouseMoveEventArgs(delta, new ScreenCoordinates(newPos, window.Id)));
 +        }
 +
++        /// <summary>
++        /// Inject a left mouse press or release at an absolute framebuffer position.
++        /// The mobile client turns a finger into a mouse click with this, because
++        /// SDL's own touch-to-mouse emulation is off (see Sdl3WindowingImpl.InitSdl3).
++        /// </summary>
++        public void InjectMouseClick(Vector2 position, bool down)
++        {
++            var window = _mainWindow;
++            if (window == null || window.IsDisposed || window.FramebufferSize.X <= 0 || window.FramebufferSize.Y <= 0)
++                return;
++
++            position.X = Math.Clamp(position.X, 0f, window.FramebufferSize.X);
++            position.Y = Math.Clamp(position.Y, 0f, window.FramebufferSize.Y);
++
++            var delta = position - window.LastMousePos;
++            window.LastMousePos = position;
++            _currentHoveredWindow = window;
++            SendMouseMove(new MouseMoveEventArgs(delta, new ScreenCoordinates(position, window.Id)));
++
++            var ev = new KeyEventArgs(
++                Mouse.MouseButtonToKey(Mouse.Button.Left),
++                false, false, false, false, false, 0, 0, false);
++
++            if (down)
++                SendKeyDown(ev);
++            else
++                SendKeyUp(ev);
++        }
++
          private void SendMouseMove(MouseMoveEventArgs ev)
          {
              _eventDispatchQueue.Enqueue(new DEventMouseMove(ev));
-@@ -163,9 +183,16 @@ namespace Robust.Client.Graphics.Clyde
+@@ -163,9 +212,16 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventInputModeChanged());
          }
  
@@ -1685,10 +1742,10 @@ index c77add4..221d034 100644
          public event Action<WindowDestroyedEventArgs>? DestroyWindow;
          public event Action<WindowContentScaleEventArgs>? OnWindowScaleChanged;
 diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-index c0e01b4..454b48b 100644
+index c0e01b4..1332590 100644
 --- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 +++ b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-@@ -32,6 +32,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -32,6 +32,14 @@ namespace Robust.Client.Graphics.Clyde
          public Vector2i ScreenSize => (1280, 720);
          public IEnumerable<IClydeWindow> AllWindows => _windows;
          public Vector2 DefaultWindowScale => new Vector2(1, 1);
@@ -1696,10 +1753,14 @@ index c0e01b4..454b48b 100644
 +        public void InjectMouseMove(Vector2 delta)
 +        {
 +        }
++
++        public void InjectMouseClick(Vector2 position, bool down)
++        {
++        }
          public bool IsFocused => true;
          private readonly List<IClydeWindow> _windows = new();
          private int _nextWindowId = 2;
-@@ -64,6 +68,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -64,6 +72,7 @@ namespace Robust.Client.Graphics.Clyde
          public event Action<KeyEventArgs>? KeyUp { add { } remove { } }
          public event Action<KeyEventArgs>? KeyDown { add { } remove { } }
          public event Action<MouseWheelEventArgs>? MouseWheel { add { } remove { } }
@@ -2179,7 +2240,7 @@ index 70fa5ed..51b6061 100644
          }
  
 diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
-index a02709b..d57ddf6 100644
+index a02709b..3cd3261 100644
 --- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
 +++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
 @@ -1,4 +1,4 @@
@@ -2188,7 +2249,20 @@ index a02709b..d57ddf6 100644
  using System.Runtime.CompilerServices;
  using System.Runtime.InteropServices;
  using System.Threading;
-@@ -65,6 +65,7 @@ internal partial class Clyde
+@@ -56,6 +56,12 @@ internal partial class Clyde
+             SDL.SDL_SetHint(SDL.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+             SDL.SDL_SetHint(SDL.SDL_HINT_IME_IMPLEMENTED_UI, "composition");
+ 
++            // A finger becomes a left click in GameController.TouchFinger, which lets
++            // the pad claim its own touches first. SDL's own emulation would click
++            // twice and does not work on our Android SDL3 build anyway.
++            if (OperatingSystem.IsAndroid())
++                SDL.SDL_SetHint("SDL_TOUCH_MOUSE_EVENTS", "0");
++
+             // SDL3's GameInput support is currently broken and leaving it on
+             // causes a "that operation is not supported" error to be logged on startup.
+             // https://github.com/libsdl-org/SDL/issues/11813
+@@ -65,6 +71,7 @@ internal partial class Clyde
              SDL.SDL_SetHint(SDL.SDL_HINT_MAC_OPENGL_ASYNC_DISPATCH, "1");
  #endif
  
@@ -2211,10 +2285,16 @@ index a829bb9..1d752b5 100644
          {
              var advanceTotal = Vector2.Zero;
 diff --git a/Robust.Client/Graphics/IClyde.cs b/Robust.Client/Graphics/IClyde.cs
-index 329a9ca..138e156 100644
+index 329a9ca..15f6e3c 100644
 --- a/Robust.Client/Graphics/IClyde.cs
 +++ b/Robust.Client/Graphics/IClyde.cs
-@@ -35,6 +35,11 @@ namespace Robust.Client.Graphics
+@@ -1,4 +1,4 @@
+-﻿using System;
++using System;
+ using System.Collections.Generic;
+ using System.Diagnostics.Contracts;
+ using System.IO;
+@@ -35,6 +35,16 @@ namespace Robust.Client.Graphics
          /// </summary>
          Vector2 DefaultWindowScale { get; }
  
@@ -2222,6 +2302,11 @@ index 329a9ca..138e156 100644
 +        /// Inject a relative mouse movement, used by the mobile aim stick.
 +        /// </summary>
 +        void InjectMouseMove(Vector2 delta);
++
++        /// <summary>
++        /// Inject a left mouse press or release at an absolute framebuffer position.
++        /// </summary>
++        void InjectMouseClick(Vector2 position, bool down);
 +
          void SetWindowTitle(string title);
          void SetWindowMonitor(IClydeMonitor monitor);
@@ -2881,17 +2966,19 @@ index 5be710c..b09d7bd 100644
                  mode = DragMode.Move;
              }
 diff --git a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-index 29c54bc..a21a747 100644
+index 29c54bc..2ecdf14 100644
 --- a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
 +++ b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-@@ -29,6 +29,7 @@ namespace Robust.Client.UserInterface
-         void MouseMove(MouseMoveEventArgs mouseMoveEventArgs);
+@@ -30,6 +30,9 @@ namespace Robust.Client.UserInterface
  
          void MouseWheel(MouseWheelEventArgs args);
-+        void TouchFinger(TouchFingerEventArgs args);
  
++        /// <returns>True if the mobile pad claimed the finger.</returns>
++        bool TouchFinger(TouchFingerEventArgs args);
++
          void TextEntered(TextEnteredEventArgs textEnteredEvent);
  
+         void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
 index 0000000..a8ecb93
@@ -5526,7 +5613,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..f8a5fe9 100644
+index 274aa2a..5fb38c5 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -5661,17 +5748,20 @@ index 274aa2a..f8a5fe9 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,12 @@ internal partial class UserInterfaceManager
+@@ -583,4 +687,15 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
 +
-+    public void TouchFinger(TouchFingerEventArgs args)
++    public bool TouchFinger(TouchFingerEventArgs args)
 +    {
 +        if (MobileOverlay != null && MobileOverlay.VisibleInTree)
 +        {
-+            MobileOverlay.HandleTouch(args);
++            var claimed = MobileOverlay.HandleTouch(args);
++            return claimed;
 +        }
++
++        return false;
 +    }
  }
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs

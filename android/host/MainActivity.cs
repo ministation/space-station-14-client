@@ -1393,6 +1393,10 @@ namespace Content.Android
         // corners live in the bottom strip; keep a thin frame there.
         private const float BottomFrameFraction = 0.015f;
 
+        // The player asked for a frame three times wider than the raw insets:
+        // the reported cutout and gesture strips read as a narrow black line.
+        private const float FrameMultiplier = 3f;
+
         public static (int Left, int Top, int Right, int Bottom) Measure(
             WindowInsets? insets, int screenWidth, int screenHeight)
         {
@@ -1405,7 +1409,7 @@ namespace Content.Android
             var bottom = (int)Math.Round(screenH * BottomFrameFraction);
 
             if (insets == null || !OperatingSystem.IsAndroidVersionAtLeast(28))
-                return (left, top, right, bottom);
+                return ScaleFrame(left, top, right, bottom);
 
             if (OperatingSystem.IsAndroidVersionAtLeast(30))
             {
@@ -1450,7 +1454,17 @@ namespace Content.Android
                 }
             }
 
-            return (left, top, right, bottom);
+            return ScaleFrame(left, top, right, bottom);
+        }
+
+        private static (int Left, int Top, int Right, int Bottom) ScaleFrame(
+            int left, int top, int right, int bottom)
+        {
+            return (
+                (int)Math.Round(left * FrameMultiplier),
+                (int)Math.Round(top * FrameMultiplier),
+                (int)Math.Round(right * FrameMultiplier),
+                (int)Math.Round(bottom * FrameMultiplier));
         }
 
         /// <summary>
