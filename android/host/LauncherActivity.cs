@@ -972,9 +972,6 @@ public sealed class LauncherActivity : Activity
         var direct = CreateAngleButton("Direct Connect", 30, 130);
         direct.Click += (_, _) => ShowDirectConnectDialog();
         footer.AddView(direct, new LinearLayout.LayoutParams(Dp(130), Dp(30)) { RightMargin = Dp(6) });
-        var sandbox = CreateAngleButton("Offline Sandbox", 30, 140);
-        sandbox.Click += (_, _) => LaunchOfflineSandbox();
-        footer.AddView(sandbox, new LinearLayout.LayoutParams(Dp(140), Dp(30)));
         page.AddView(footer);
 
         RenderServerList();
@@ -1094,30 +1091,12 @@ public sealed class LauncherActivity : Activity
             MobileSafeArea.FrameTop, MobileSafeArea.FrameBottom, MobileSafeArea.FrameAllSides,
             MobileSafeArea.FrameOff,
         });
-        AddChoiceRow(list, "Frame size", prefs, "frame_scale", "x1", new[] { "x1", "x2", "x3" });
 
-        var padPreview = new PadPreviewView(this, prefs);
-        list.AddView(padPreview, new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
-        {
-            TopMargin = Dp(6)
-        });
-        var padPreviewHint = new TextView(this)
-        {
-            Text = "The pad as it looks in game. Tap to adjust it.",
-            TextSize = 11f
-        };
-        padPreviewHint.SetTextColor(LauncherTheme.SubText);
-        padPreviewHint.SetPadding(Dp(6), 0, Dp(6), Dp(4));
-        list.AddView(padPreviewHint);
-        padPreview.Click += (_, _) => ShowControlsEditor(padPreview.Refresh);
-
-        AddActionRow(list, "Customize controls", () => ShowControlsEditor(padPreview.Refresh));
+        AddActionRow(list, "Customize controls", () => ShowControlsEditor());
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
         AddActionRow(list, "Logs", () => ShowCrashReporterDialog());
-        AddActionRow(list, "Offline sandbox", () => LaunchOfflineSandbox());
         AddActionRow(list, "Check for updates", () => _ = CheckForUpdatesAsync(true));
         AddActionRow(list, "Website", () => OpenUrl("https://spacestation14.com/"));
         AddActionRow(list, "GitHub", () => OpenUrl("https://github.com/ministation/space-station-14-client"));
@@ -1228,18 +1207,20 @@ public sealed class LauncherActivity : Activity
 
     private void AddActionRow(LinearLayout list, string label, Action action)
     {
+        // The row itself is the target: a repeated "Open" button on every line
+        // made the list look like a wall of buttons.
         var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         row.SetGravity(GravityFlags.CenterVertical);
-        row.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        row.SetPadding(Dp(4), 0, Dp(4), 0);
+        row.Clickable = true;
+        row.Click += (_, _) => action();
         var text = new TextView(this) { Text = label, TextSize = 12f };
         text.SetTextColor(LauncherTheme.Foreground);
-        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(30), 1f));
-        var button = new Button(this) { Text = "Open", TextSize = 11f };
-        button.SetTextColor(LauncherTheme.Foreground);
-        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
-        button.SetPadding(Dp(10), 0, Dp(10), 0);
-        button.Click += (_, _) => action();
-        row.AddView(button, new LinearLayout.LayoutParams(Dp(76), Dp(30)));
+        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(34), 1f));
+        var chevron = new TextView(this) { Text = ">", TextSize = 12f };
+        chevron.SetTextColor(LauncherTheme.SubText);
+        chevron.Gravity = GravityFlags.CenterVertical;
+        row.AddView(chevron, new LinearLayout.LayoutParams(Dp(18), Dp(34)));
         list.AddView(row);
     }
 
@@ -2147,7 +2128,8 @@ public sealed class LauncherActivity : Activity
             ("drop", "DROP", 0.316f, 0.622f, 0.095f),
             ("pull", "PULL", 0.21f, 0.544f, 0.095f),
             ("esc", "ESC", 0.104f, 0.622f, 0.095f),
-            ("use", "USE", 0.896f, 0.622f, 0.1075f),
+            ("run", "RUN", 0.578f, 0.622f, 0.09f),
+            ("z", "Z", 0.896f, 0.622f, 0.095f),
             ("exam", "EXAM", 0.79f, 0.544f, 0.095f),
             ("bag", "BAG", 0.684f, 0.622f, 0.095f),
         };
@@ -2496,7 +2478,8 @@ public sealed class LauncherActivity : Activity
         {
             "pull" => Color.Argb(255, 155, 89, 182),
             "exam" => Color.Argb(255, 52, 152, 219),
-            "use" => Color.Argb(255, 0, 180, 216),
+            "run" => Color.Argb(255, 230, 180, 60),
+            "z" => Color.Argb(255, 0, 180, 216),
             "drop" => Color.Argb(255, 231, 76, 60),
             "bag" => Color.Argb(255, 26, 188, 156),
             _ => Color.Argb(255, 210, 210, 210),
@@ -2773,132 +2756,6 @@ public sealed class LauncherActivity : Activity
         }
     }
     // [SolomonNumb1] settings dialog: opacity, resolution, FPS limits, and cache management
-    /// <summary>
-    /// Whole game screen in miniature with the pad on it, drawn from the exact
-    /// layout string the game receives. Tap opens the editor.
-    /// </summary>
-    private sealed class PadPreviewView : View
-    {
-        private readonly ISharedPreferences _prefs;
-        private readonly Paint _paint = new(PaintFlags.AntiAlias);
-        private readonly List<(string Id, string Label, float Fx, float Fy, float Radius)> _items = new();
-        private float _aspect = 2f;
-        private float _safeLeft;
-        private float _safeTop;
-        private float _safeRight;
-        private float _safeBottom;
-
-        public PadPreviewView(Context context, ISharedPreferences prefs) : base(context)
-        {
-            _prefs = prefs;
-            Clickable = true;
-            Refresh();
-        }
-
-        public void Refresh()
-        {
-            var (screenW, screenH) = MobileSafeArea.ScreenSize(Context);
-            if (screenW <= 0 || screenH <= 0)
-            {
-                screenW = 2400;
-                screenH = 1080;
-            }
-
-            var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(Context);
-            var insets = Context is Activity activity
-                ? MobileSafeArea.MeasureWindow(activity, frameMode, frameScale)
-                : (Left: 0, Top: 0, Right: 0, Bottom: 0);
-            _safeLeft = insets.Left / (float)screenW;
-            _safeRight = insets.Right / (float)screenW;
-            _safeTop = insets.Top / (float)screenH;
-            _safeBottom = insets.Bottom / (float)screenH;
-            _aspect = (float)screenW / screenH;
-
-            _items.Clear();
-            var layout = PadEditorView.BuildLayout(_prefs, screenW, screenH, insets);
-            foreach (var entry in layout.Split(';', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var at = entry.IndexOf('@');
-                if (at <= 0)
-                    continue;
-                var coords = entry[(at + 1)..].Split(',');
-                if (coords.Length < 3 ||
-                    !float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
-                    !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy) ||
-                    !float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var radius))
-                {
-                    continue;
-                }
-
-                var id = entry[..at];
-                _items.Add((id, LabelOf(id), fx, fy, radius));
-            }
-
-            Invalidate();
-        }
-
-        private static string LabelOf(string id)
-        {
-            foreach (var item in PadEditorView.Defaults)
-            {
-                if (item.id == id)
-                    return item.label;
-            }
-
-            return id.ToUpperInvariant();
-        }
-
-        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
-        {
-            var width = MeasureSpec.GetSize(widthMeasureSpec);
-            if (width <= 0)
-                width = Resources?.DisplayMetrics?.WidthPixels ?? 0;
-            SetMeasuredDimension(width, (int)(width / MathF.Max(0.2f, _aspect)));
-        }
-
-        protected override void OnDraw(Canvas canvas)
-        {
-            base.OnDraw(canvas);
-            var width = Width;
-            var height = Height;
-            if (width <= 0 || height <= 0)
-                return;
-
-            // Screen backdrop, cutout frame bands, then the pad at its real
-            // fractions of this screen, the same numbers the game uses.
-            _paint.SetStyle(Paint.Style.Fill);
-            _paint.Color = Color.Argb(255, 18, 20, 27);
-            canvas.DrawRect(0, 0, width, height, _paint);
-
-            _paint.Color = Color.Black;
-            if (_safeLeft > 0f)
-                canvas.DrawRect(0, 0, _safeLeft * width, height, _paint);
-            if (_safeRight > 0f)
-                canvas.DrawRect((1f - _safeRight) * width, 0, width, height, _paint);
-            if (_safeTop > 0f)
-                canvas.DrawRect(0, 0, width, _safeTop * height, _paint);
-            if (_safeBottom > 0f)
-                canvas.DrawRect(0, (1f - _safeBottom) * height, width, height, _paint);
-
-            foreach (var item in _items)
-            {
-                var cx = item.Fx * width;
-                var cy = item.Fy * height;
-                var radius = item.Radius * height;
-                if (item.Id == "stick" || item.Id == "aim")
-                    PadEditorView.DrawStick(canvas, _paint, cx, cy, radius, item.Id == "aim");
-                else
-                    PadEditorView.DrawButton(canvas, cx, cy, radius, item.Label, PadEditorView.AccentOf(item.Id));
-            }
-
-            // The outline is the display edge: this preview is the whole screen.
-            _paint.SetStyle(Paint.Style.Stroke);
-            _paint.StrokeWidth = MathF.Max(1f, height * 0.004f);
-            _paint.Color = Color.Argb(170, 87, 91, 127);
-            canvas.DrawRect(0, 0, width, height, _paint);
-        }
-    }
-
     private void ShowSettingsDialog()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
@@ -2916,15 +2773,6 @@ public sealed class LauncherActivity : Activity
         scrollView.AddView(view);
 
         var toolsRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var sandboxBtn = new Button(this) { Text = "Offline Sandbox", TextSize = 11 };
-        sandboxBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
-        sandboxBtn.SetTextColor(LauncherTheme.Foreground);
-        var sandboxLp = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f);
-        sandboxLp.SetMargins(0, 0, (int)(6 * density), (int)(8 * density));
-        sandboxBtn.LayoutParameters = sandboxLp;
-        sandboxBtn.Click += (_, _) => LaunchOfflineSandbox();
-        toolsRow.AddView(sandboxBtn);
-
         var logsBtn = new Button(this) { Text = "Logs", TextSize = 11 };
         logsBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
         logsBtn.SetTextColor(LauncherTheme.Foreground);
@@ -3876,25 +3724,6 @@ public sealed class LauncherActivity : Activity
 
     #endregion
 
-    private void LaunchOfflineSandbox()
-    {
-        var intent = new Intent(this, typeof(MainActivity));
-        var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs != null)
-        {
-            var o = prefs.GetFloat("mobile_opacity", 0.85f);
-            intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            // display.uiScale is derived from display_resolution in MainActivity.
-            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
-            intent.PutExtra("display_resolution", dispRes);
-            intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
-            intent.PutExtra("frame_mode", MobileSafeArea.ReadMode(prefs));
-            intent.PutExtra("frame_scale", "x" + MobileSafeArea.ReadScale(prefs));
-            ApplyGraphicsExtras(intent, prefs);
-        }
-        StartActivity(intent);
-    }
-
     private void OpenUrl(string url)
     {
         try
@@ -3905,7 +3734,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.9.2";
+    public const string CurrentAppVersion = "v0.9.3";
 
 
     public string GetCurrentAppVersion()
