@@ -1444,7 +1444,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..99dfd2a 100644
+index 73cadae..f6b0e46 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -1,4 +1,4 @@
@@ -1814,14 +1814,15 @@ index 73cadae..99dfd2a 100644
              _occluderRenderSharedEdges.Clear();
  
              BuildFrameOccluderGeometry(map, expandedBounds, xforms);
-@@ -1703,46 +1846,57 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1703,46 +1846,58 @@ namespace Robust.Client.Graphics.Clyde
                              _occluderSharedBoundaryEdges,
                              _occluderBoundarySegments);
  
 -                        if (geometryFull
 -                            || !worldTransform.TransformBox(occluder.LocalBounds).Intersects(expandedBounds))
 -                        {
-+                        if (!worldTransform.TransformBox(occluder.LocalBounds).Intersects(expandedBounds))
++                        var worldBox = worldTransform.TransformBox(occluder.LocalBounds);
++                        if (!worldBox.Intersects(expandedBounds))
                              return true;
 -                        }
  
@@ -1832,7 +1833,7 @@ index 73cadae..99dfd2a 100644
 -                            geometryFull = true;
 -                            return true;
 -                        }
-+                        var center = worldTransform.TransformBox(occluder.LocalBounds).Center;
++                        var center = worldBox.Center;
 +                        _occluderCandidates.Add(new OccluderCandidate(
 +                            occluder,
 +                            worldTransform,
@@ -1904,7 +1905,7 @@ index 73cadae..99dfd2a 100644
  
                  _occlusionMaskDataLength = imi;
  
-@@ -1945,6 +2099,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1945,6 +2100,14 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxShadowcastingLightsChanged(int newValue)
          {
@@ -1919,7 +1920,7 @@ index 73cadae..99dfd2a 100644
              _maxShadowcastingLights = newValue;
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
  
-@@ -1957,8 +2119,8 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1957,8 +2120,8 @@ namespace Robust.Client.Graphics.Clyde
                  DeleteRenderTexture(_shadowRenderTarget.Handle);
              }
  
@@ -1930,7 +1931,7 @@ index 73cadae..99dfd2a 100644
                  new RenderTargetFormatParameters(
                      _hasGLFloatFramebuffers ? RenderTargetColorFormat.RG32F : RenderTargetColorFormat.Rgba8, true),
                  new TextureSampleParameters { WrapMode = TextureWrapMode.Repeat, Filter = true },
-@@ -1972,13 +2134,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1972,13 +2135,20 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxOccludersChanged(int value)
          {
@@ -1955,10 +1956,10 @@ index 73cadae..99dfd2a 100644
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
 new file mode 100644
-index 0000000..8392320
+index 0000000..7d46888
 --- /dev/null
 +++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
-@@ -0,0 +1,660 @@
+@@ -0,0 +1,665 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -2108,25 +2109,30 @@ index 0000000..8392320
 +            _occluderTrees.Clear();
 +            _occluderSystem.GetIntersectingTrees(map, queryBounds, ref _occluderTrees);
 +
++            var state = (this, xforms);
 +            foreach (var (uid, comp) in _occluderTrees)
 +            {
 +                var treeBounds = _transformSystem.GetInvWorldMatrix(uid, xforms).TransformBox(queryBounds);
-+
-+                comp.Tree.QueryAabb((in ComponentTreeEntry<OccluderComponent> entry) =>
-+                {
-+                    var occluder = entry.Component;
-+                    if (!occluder.Enabled)
-+                        return true;
-+
-+                    var polygon = occluder.Polygon;
-+                    if (polygon.Length < 3)
-+                        return true;
-+
-+                    var worldTransform = _transformSystem.GetWorldMatrix(entry.Transform, xforms);
-+                    RasterizeMobileLightmapOccluder(polygon, worldTransform);
-+                    return true;
-+                }, treeBounds);
++                comp.Tree.QueryAabb(ref state, MobileLightmapOccluderQuery, treeBounds);
 +            }
++        }
++
++        // Static with explicit state so the per-tree query allocates no closure or delegate.
++        private static bool MobileLightmapOccluderQuery(
++            ref (Clyde clyde, EntityQuery<TransformComponent> xforms) state,
++            in ComponentTreeEntry<OccluderComponent> entry)
++        {
++            var occluder = entry.Component;
++            if (!occluder.Enabled)
++                return true;
++
++            var polygon = occluder.Polygon;
++            if (polygon.Length < 3)
++                return true;
++
++            var worldTransform = state.clyde._transformSystem.GetWorldMatrix(entry.Transform, state.xforms);
++            state.clyde.RasterizeMobileLightmapOccluder(polygon, worldTransform);
++            return true;
 +        }
 +
 +        // The CPU part of the lightmap below has no engine dependencies, so
@@ -2877,15 +2883,14 @@ index 75211d3..a0f5bee 100644
  void main()
  {
 diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
-index da4d28f..bdbe4fd 100644
+index da4d28f..1346fdc 100644
 --- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
 +++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Event.cs
-@@ -1,9 +1,11 @@
+@@ -1,9 +1,10 @@
 -﻿using System;
 +using System;
  using System.Numerics;
  using Robust.Client.Input;
-+using Robust.Shared;
  using Robust.Shared.Map;
  using SDL3;
  using Key = Robust.Client.Input.Keyboard.Key;
@@ -2893,7 +2898,7 @@ index da4d28f..bdbe4fd 100644
  using ET = SDL3.SDL.SDL_EventType;
  using SDL_Keymod = SDL3.SDL.SDL_Keymod;
  
-@@ -15,8 +17,45 @@ internal partial class Clyde
+@@ -15,8 +16,45 @@ internal partial class Clyde
      {
          public void ProcessEvents(bool single = false)
          {
@@ -2939,7 +2944,7 @@ index da4d28f..bdbe4fd 100644
                  try
                  {
                      ProcessEvent(ev);
-@@ -29,6 +68,8 @@ internal partial class Clyde
+@@ -29,6 +67,8 @@ internal partial class Clyde
                  if (single)
                      break;
              }
@@ -2948,7 +2953,7 @@ index da4d28f..bdbe4fd 100644
          }
  
          // Block waiting on the windowing -> game thread channel.
-@@ -69,6 +110,9 @@ internal partial class Clyde
+@@ -69,6 +109,9 @@ internal partial class Clyde
                  case EventMouseButton ev:
                      ProcessEventMouseButton(ev);
                      break;
@@ -2958,7 +2963,7 @@ index da4d28f..bdbe4fd 100644
                  case EventWheel ev:
                      ProcessEventWheel(ev);
                      break;
-@@ -162,18 +206,54 @@ internal partial class Clyde
+@@ -162,18 +205,61 @@ internal partial class Clyde
                  return;
  
              var button = ConvertSdl3Button(ev.Button);
@@ -2968,6 +2973,13 @@ index da4d28f..bdbe4fd 100644
          }
  
 -        private void ProcessEventMouseMotion(EventMouseMotion ev)
++        // Cached because every touch event needs them.
++        private int _mobileViewWidth;
++        private int _mobileViewHeight;
++
++        private void MobileViewWidthChanged(int value) => _mobileViewWidth = value;
++        private void MobileViewHeightChanged(int value) => _mobileViewHeight = value;
++
 +        private void ProcessEventTouchFinger(EventTouchFinger ev)
 +        {
 +            var windowReg = FindWindow(ev.WindowId) ?? _clyde._mainWindow;
@@ -2984,8 +2996,8 @@ index da4d28f..bdbe4fd 100644
 +            // the render surface, while touches come from the full-screen view.
 +            // Convert view pixels to surface pixels, else the hit test at a
 +            // downscaled render resolution lands beside the button.
-+            var viewW = _cfg.GetCVar(CVars.MobileViewWidth);
-+            var viewH = _cfg.GetCVar(CVars.MobileViewHeight);
++            var viewW = _mobileViewWidth;
++            var viewH = _mobileViewHeight;
 +            var pixelPos = viewW > 0 && viewH > 0
 +                ? new Vector2(ev.X * windowReg.WindowSize.X * fb.X / viewW,
 +                    ev.Y * windowReg.WindowSize.Y * fb.Y / viewH)
@@ -3238,16 +3250,30 @@ index 70fa5ed..fedecab 100644
          }
  
 diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
-index a02709b..3cd3261 100644
+index a02709b..5e27aa8 100644
 --- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
 +++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.cs
-@@ -1,4 +1,4 @@
+@@ -1,7 +1,8 @@
 -﻿using System;
 +using System;
  using System.Runtime.CompilerServices;
  using System.Runtime.InteropServices;
  using System.Threading;
-@@ -56,6 +56,12 @@ internal partial class Clyde
++using Robust.Shared;
+ using Robust.Shared.Configuration;
+ using Robust.Shared.IoC;
+ using Robust.Shared.Log;
+@@ -32,6 +33,9 @@ internal partial class Clyde
+ 
+             _sawmill = _logManager.GetSawmill("clyde.win");
+             _sawmillSdl3 = _logManager.GetSawmill("clyde.win.sdl3");
++
++            _cfg.OnValueChanged(CVars.MobileViewWidth, MobileViewWidthChanged, true);
++            _cfg.OnValueChanged(CVars.MobileViewHeight, MobileViewHeightChanged, true);
+         }
+ 
+         public bool Init()
+@@ -56,6 +60,12 @@ internal partial class Clyde
              SDL.SDL_SetHint(SDL.SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
              SDL.SDL_SetHint(SDL.SDL_HINT_IME_IMPLEMENTED_UI, "composition");
  
@@ -3260,7 +3286,7 @@ index a02709b..3cd3261 100644
              // SDL3's GameInput support is currently broken and leaving it on
              // causes a "that operation is not supported" error to be logged on startup.
              // https://github.com/libsdl-org/SDL/issues/11813
-@@ -65,6 +71,7 @@ internal partial class Clyde
+@@ -65,6 +75,7 @@ internal partial class Clyde
              SDL.SDL_SetHint(SDL.SDL_HINT_MAC_OPENGL_ASYNC_DISPATCH, "1");
  #endif
  
@@ -3268,6 +3294,16 @@ index a02709b..3cd3261 100644
              var res = SDL.SDL_Init(SDL.SDL_InitFlags.SDL_INIT_VIDEO | SDL.SDL_InitFlags.SDL_INIT_EVENTS);
              if (!res)
              {
+@@ -118,6 +129,9 @@ internal partial class Clyde
+ 
+         public unsafe void Shutdown()
+         {
++            _cfg.UnsubValueChanged(CVars.MobileViewWidth, MobileViewWidthChanged);
++            _cfg.UnsubValueChanged(CVars.MobileViewHeight, MobileViewHeightChanged);
++
+             if (_selfGCHandle != default)
+             {
+                 SDL.SDL_RemoveEventWatch(&EventWatch, (void*) GCHandle.ToIntPtr(_selfGCHandle));
 diff --git a/Robust.Client/Graphics/Drawing/DrawingHandleScreen.cs b/Robust.Client/Graphics/Drawing/DrawingHandleScreen.cs
 index a829bb9..1d752b5 100644
 --- a/Robust.Client/Graphics/Drawing/DrawingHandleScreen.cs
@@ -3663,6 +3699,91 @@ index 2199b86..43f96c7 100644
              _tileRegions = tileRegs.ToFrozenDictionary();
              _tileTextureAtlas = Texture.LoadFromImage(sheet, "Tile Atlas");
              _sawmill.Debug($"Tile atlas took {sw.Elapsed} to build");
+diff --git a/Robust.Client/ResourceManagement/ResourceCache.LoaderApi.cs b/Robust.Client/ResourceManagement/ResourceCache.LoaderApi.cs
+index ca60ad6..cdfd455 100644
+--- a/Robust.Client/ResourceManagement/ResourceCache.LoaderApi.cs
++++ b/Robust.Client/ResourceManagement/ResourceCache.LoaderApi.cs
+@@ -44,7 +44,11 @@ namespace Robust.Client.ResourceManagement
+ 
+             public bool FileExists(ResPath relPath)
+             {
+-                return _api.TryOpen($"{_prefix}{relPath}", out _);
++                if (!_api.TryOpen($"{_prefix}{relPath}", out var stream))
++                    return false;
++
++                stream.Dispose();
++                return true;
+             }
+ 
+             public IEnumerable<ResPath> FindFiles(ResPath path)
+diff --git a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
+index c025681..13d1751 100644
+--- a/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
++++ b/Robust.Client/ResourceManagement/ResourceCache.Preload.cs
+@@ -18,6 +18,7 @@ using Robust.Shared.Graphics;
+ using Robust.Shared.IoC;
+ using Robust.Shared.Log;
+ using Robust.Shared.Maths;
++using Robust.Shared.Utility;
+ using SixLabors.ImageSharp;
+ using SixLabors.ImageSharp.PixelFormats;
+ 
+@@ -39,14 +40,17 @@ namespace Robust.Client.ResourceManagement
+         {
+             var sawmill = _logManager.GetSawmill("res.preload");
+ 
+-            PreloadRsis(sawmill);
++            // Both passes below filter the same /Textures/ listing; walk the directory tree once.
++            var textureFiles = _manager.ContentFindFiles("/Textures/").ToArray();
++
++            PreloadRsis(sawmill, textureFiles);
+             if (!_configurationManager.GetCVar(CVars.ResTexturePreloadingEnabled))
+             {
+                 sawmill.Debug($"Skipping texture preloading due to CVar value.");
+                 return;
+             }
+ 
+-            PreloadTextures(sawmill);
++            PreloadTextures(sawmill, textureFiles);
+         }
+ 
+         public void AddToDeserialize(SpriteComponent component)
+@@ -93,13 +97,13 @@ namespace Robust.Client.ResourceManagement
+ 			}
+         }
+ 
+-        private void PreloadTextures(ISawmill sawmill)
++        private void PreloadTextures(ISawmill sawmill, ResPath[] textureFiles)
+         {
+             sawmill.Debug("Preloading textures...");
+             var sw = Stopwatch.StartNew();
+             var resList = GetTypeData<TextureResource>().Resources;
+ 
+-            var texList = _manager.ContentFindFiles("/Textures/")
++            var texList = textureFiles
+                 // Skip PNG files inside RSIs.
+                 .Where(p => p.Extension == "png" && !p.ToString().Contains(".rsi/") && !resList.ContainsKey(p))
+                 .Select(p => new TextureResource.LoadStepData {Path = p})
+@@ -181,16 +185,16 @@ namespace Robust.Client.ResourceManagement
+                 sw.Elapsed);
+         }
+ 
+-        private void PreloadRsis(ISawmill sawmill)
++        private void PreloadRsis(ISawmill sawmill, ResPath[] textureFiles)
+         {
+             var sw = Stopwatch.StartNew();
+             var resList = GetTypeData<RSIResource>().Resources;
+ 
+-            var foundRsiList = _manager.ContentFindFiles("/Textures/")
++            var foundRsiList = textureFiles
+                 .Where(p => p.ToString().EndsWith(".rsi/meta.json"))
+                 .Select(c => c.Directory);
+ 
+-            var foundRsicList = _manager.ContentFindFiles("/Textures/")
++            var foundRsicList = textureFiles
+                 .Where(p => p.Extension == "rsic")
+                 .Select(c => c.WithExtension("rsi"));
+ 
 diff --git a/Robust.Client/Robust.Client.csproj b/Robust.Client/Robust.Client.csproj
 index a69bfe2..421af2c 100644
 --- a/Robust.Client/Robust.Client.csproj
@@ -3992,10 +4113,10 @@ index 29c54bc..0ac4d9d 100644
          void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..3b62df0
+index 0000000..59a0af2
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1514 @@
+@@ -0,0 +1,1519 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -4021,6 +4142,7 @@ index 0000000..3b62df0
 +{
 +    [Dependency] private readonly IConfigurationManager _cfg = default!;
 +    [Dependency] private readonly IStateManager _stateManager = default!;
++    [Dependency] private IInputManager _inputManager = default!;
 +
 +
 +    public static bool IsEditMode { get; private set; }
@@ -4079,6 +4201,9 @@ index 0000000..3b62df0
 +
 +
 +    private readonly PojavActionButton _escButton;
++
++    // Hit-test order for touches that miss the clusters and sticks.
++    private readonly PojavActionButton[] _topButtons;
 +
 +    private readonly Control _clusterContainer;
 +    private readonly Control _topUtilityContainer;
@@ -4155,7 +4280,7 @@ index 0000000..3b62df0
 +        _thumbstick.OnPositionChanged += SaveLayout;
 +        _thumbstick.OnStickSteering += () =>
 +        {
-+            if (IsExamActive || IoCManager.Resolve<IInputManager>().IsKeyDown(Keyboard.Key.Shift))
++            if (IsExamActive || _inputManager.IsKeyDown(Keyboard.Key.Shift))
 +            {
 +                ResetExamMode();
 +            }
@@ -4273,6 +4398,8 @@ index 0000000..3b62df0
 +        _allButtons.Remove(_examButton);
 +        _defaultButtons.Remove(_examButton);
 +        _topUtilityContainer.AddChild(_examButton);
++
++        _topButtons = [_escButton, _examButton, _bagButton, _pullButton];
 +
 +        AddChild(_modalOverlay);
 +
@@ -4804,8 +4931,7 @@ index 0000000..3b62df0
 +                    return true;
 +                }
 +
-+                PojavActionButton[] topBtns = [_escButton, _examButton, _bagButton, _pullButton];
-+                foreach (var btn in topBtns)
++                foreach (var btn in _topButtons)
 +                {
 +                    var btnPos = args.Coordinates.Position / btn.UIScale - btn.GlobalPosition;
 +                    if (btn.VisibleInTree && btn.HasPoint(btnPos))
@@ -6171,10 +6297,10 @@ index 0000000..ab3df7c
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..83069c7
+index 0000000..ca2f0fd
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,444 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -6222,6 +6348,8 @@ index 0000000..83069c7
 +    private const float AttackThreshold = 0.45f;
 +    private Vector2? _dragTouchOffset;
 +    private readonly HashSet<Keyboard.Key> _activeKeys = new();
++    // Reused by UpdateMovementKeys, which runs on every touch move.
++    private readonly HashSet<Keyboard.Key> _newKeys = new();
 +
 +    public VirtualThumbstick()
 +    {
@@ -6448,7 +6576,8 @@ index 0000000..83069c7
 +
 +    private void UpdateMovementKeys(Vector2 dir, float dist)
 +    {
-+        var newKeys = new HashSet<Keyboard.Key>();
++        var newKeys = _newKeys;
++        newKeys.Clear();
 +
 +        if (!IsAimStick && dist >= Deadzone)
 +        {
@@ -6581,7 +6710,11 @@ index 0000000..83069c7
 +                        break;
 +                }
 +
-+                foreach (var d in new[] { d1, d2, d3 })
++                ChevronBlock(d1);
++                ChevronBlock(d2);
++                ChevronBlock(d3);
++
++                void ChevronBlock(Vector2 d)
 +                {
 +                    var pos = center + at + d - new Vector2(s / 2f, s / 2f);
 +                    handle.DrawRect(UIBox2.FromDimensions(pos, new Vector2(s, s)), color);
@@ -6654,7 +6787,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..4500653 100644
+index 274aa2a..4253e06 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -6789,7 +6922,7 @@ index 274aa2a..4500653 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,86 @@ internal partial class UserInterfaceManager
+@@ -583,4 +687,83 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -6866,18 +6999,15 @@ index 274aa2a..4500653 100644
 +            relativePixel / control.UIScale,
 +            relativePixel);
 +
-+        _doGuiInput(control, guiArgs, (c, ev) =>
-+        {
-+            if (down)
-+                c.KeyBindDown(ev);
-+            else
-+                c.KeyBindUp(ev);
-+        });
++        if (down)
++            _doGuiInput(control, guiArgs, (c, ev) => c.KeyBindDown(ev));
++        else
++            _doGuiInput(control, guiArgs, (c, ev) => c.KeyBindUp(ev));
 +        return true;
 +    }
  }
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
-index 32083c3..e300652 100644
+index 32083c3..11715a9 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Layout.cs
 @@ -3,6 +3,7 @@ using System.Collections.Generic;
@@ -6888,10 +7018,24 @@ index 32083c3..e300652 100644
  using Robust.Client.UserInterface.CustomControls;
  using Robust.Shared.Localization;
  using Robust.Shared.Maths;
-@@ -14,6 +15,42 @@ internal sealed partial class UserInterfaceManager
+@@ -14,6 +15,56 @@ internal sealed partial class UserInterfaceManager
  {
      private readonly List<Control> _modalStack = new();
  
++        // Cached: ApplyMobileSafeArea runs on every root measure and arrange pass.
++        private int _mobileSafeAreaLeft;
++        private int _mobileSafeAreaTop;
++        private int _mobileSafeAreaRight;
++        private int _mobileSafeAreaBottom;
++
++        private void InitMobileSafeArea()
++        {
++            _configurationManager.OnValueChanged(CVars.MobileSafeAreaLeft, v => _mobileSafeAreaLeft = v, true);
++            _configurationManager.OnValueChanged(CVars.MobileSafeAreaTop, v => _mobileSafeAreaTop = v, true);
++            _configurationManager.OnValueChanged(CVars.MobileSafeAreaRight, v => _mobileSafeAreaRight = v, true);
++            _configurationManager.OnValueChanged(CVars.MobileSafeAreaBottom, v => _mobileSafeAreaBottom = v, true);
++        }
++
 +        /// <summary>
 +        /// Insets the UI root's children by the display cutout, so the game view
 +        /// and every window stay clear of the camera hole. The CVars are physical
@@ -6902,10 +7046,10 @@ index 32083c3..e300652 100644
 +            var scale = root.UIScale <= 0f ? 1f : root.UIScale;
 +            var logicalSize = (Vector2) root.Window.RenderTarget.Size / scale;
 +            var margin = new Thickness(
-+                _configurationManager.GetCVar(CVars.MobileSafeAreaLeft),
-+                _configurationManager.GetCVar(CVars.MobileSafeAreaTop),
-+                _configurationManager.GetCVar(CVars.MobileSafeAreaRight),
-+                _configurationManager.GetCVar(CVars.MobileSafeAreaBottom)).Scale(1f / scale);
++                _mobileSafeAreaLeft,
++                _mobileSafeAreaTop,
++                _mobileSafeAreaRight,
++                _mobileSafeAreaBottom).Scale(1f / scale);
 +
 +            // A broken inset must never eat the whole screen.
 +            margin.Left = Math.Clamp(margin.Left, 0f, logicalSize.X * 0.45f);
@@ -6931,7 +7075,7 @@ index 32083c3..e300652 100644
          private void RunMeasure(Control control)
          {
              if (control.IsMeasureValid || !control.IsInsideTree)
-@@ -26,6 +63,7 @@ internal sealed partial class UserInterfaceManager
+@@ -26,6 +77,7 @@ internal sealed partial class UserInterfaceManager
  
              if (control is WindowRoot root)
              {
@@ -6939,7 +7083,7 @@ index 32083c3..e300652 100644
                  control.Measure(root.Window.RenderTarget.Size / root.UIScale);
              }
              else if (control.PreviousMeasure.HasValue)
-@@ -46,6 +84,7 @@ internal sealed partial class UserInterfaceManager
+@@ -46,6 +98,7 @@ internal sealed partial class UserInterfaceManager
  
              if (control is WindowRoot root)
              {
@@ -6948,7 +7092,7 @@ index 32083c3..e300652 100644
              }
              else if (control.PreviousArrange.HasValue)
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.cs b/Robust.Client/UserInterface/UserInterfaceManager.cs
-index 57c86c3..ffe3c98 100644
+index 57c86c3..c61fa7f 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.cs
 @@ -52,6 +52,7 @@ namespace Robust.Client.UserInterface
@@ -6959,7 +7103,16 @@ index 57c86c3..ffe3c98 100644
  
          private IAudioSource? _clickSource;
          private IAudioSource? _hoverSource;
-@@ -181,6 +182,17 @@ namespace Robust.Client.UserInterface
+@@ -158,6 +159,8 @@ namespace Robust.Client.UserInterface
+         }
+         private void _initializeCommon()
+         {
++            InitMobileSafeArea();
++
+             _sawmillUI = _logManager.GetSawmill("ui");
+             ControlSawmill = _logManager.GetSawmill("ctrl");
+ 
+@@ -181,6 +184,17 @@ namespace Robust.Client.UserInterface
              };
              RootControl.AddChild(StateRoot);
  
@@ -7387,7 +7540,7 @@ index 93a6d1a..4163d2a 100644
  
          public bool IsContentAssembly(Assembly typeAssembly)
 diff --git a/Robust.Shared/ContentPack/DirLoader.cs b/Robust.Shared/ContentPack/DirLoader.cs
-index 2524f06..416ccbd 100644
+index 2524f06..ee4c1ac 100644
 --- a/Robust.Shared/ContentPack/DirLoader.cs
 +++ b/Robust.Shared/ContentPack/DirLoader.cs
 @@ -1,4 +1,4 @@
@@ -7396,7 +7549,7 @@ index 2524f06..416ccbd 100644
  using System.Collections.Generic;
  using System.Diagnostics;
  using System.Diagnostics.CodeAnalysis;
-@@ -41,12 +41,12 @@ namespace Robust.Shared.ContentPack
+@@ -41,7 +41,6 @@ namespace Robust.Shared.ContentPack
                  // Nothing to check here since the ResourceManager handles checking permissions.
              }
  
@@ -7404,13 +7557,16 @@ index 2524f06..416ccbd 100644
              public bool TryGetFile(ResPath relPath, [NotNullWhen(true)] out Stream? stream)
              {
                  var path = GetPath(relPath);
-                 CheckPathCasing(relPath);
+@@ -55,6 +54,8 @@ namespace Robust.Shared.ContentPack
+             public bool FileExists(ResPath relPath)
+             {
+                 var path = GetPath(relPath);
++                CheckPathCasing(relPath);
++
+                 return File.Exists(path);
+             }
  
-+                var exists = File.Exists(path);
-                 var ret = FileHelper.TryOpenFileRead(path, out var fStream);
-                 stream = fStream;
-                 return ret;
-@@ -63,7 +63,6 @@ namespace Robust.Shared.ContentPack
+@@ -63,7 +64,6 @@ namespace Robust.Shared.ContentPack
                  return PathHelpers.SafeGetResourcePath(_directory.FullName, relPath);
              }
  
@@ -7418,7 +7574,7 @@ index 2524f06..416ccbd 100644
              public IEnumerable<ResPath> FindFiles(ResPath path)
              {
                  var fullPath = GetPath(path);
-@@ -72,7 +71,17 @@ namespace Robust.Shared.ContentPack
+@@ -72,7 +72,17 @@ namespace Robust.Shared.ContentPack
                      yield break;
                  }
  
@@ -7481,7 +7637,7 @@ index 3ccce3e..3aa3a83 100644
          /// <summary>
          ///     Adds a directory to search inside of to the VFS. The directory is relative to
 diff --git a/Robust.Shared/ContentPack/PackLoader.cs b/Robust.Shared/ContentPack/PackLoader.cs
-index 2c3244b..dc82bab 100644
+index 2c3244b..bb2de49 100644
 --- a/Robust.Shared/ContentPack/PackLoader.cs
 +++ b/Robust.Shared/ContentPack/PackLoader.cs
 @@ -1,4 +1,5 @@
@@ -7550,16 +7706,18 @@ index 2c3244b..dc82bab 100644
              }
  
              /// <inheritdoc />
-@@ -96,6 +112,9 @@ namespace Robust.Shared.ContentPack
+@@ -96,7 +112,10 @@ namespace Robust.Shared.ContentPack
                          continue;
                      }
  
+-                    if (entry.FullName.StartsWith(rootPath))
 +                    if (_filter != null && !_filter(entry.FullName))
 +                        continue;
 +
-                     if (entry.FullName.StartsWith(rootPath))
++                    if (entry.FullName.StartsWith(rootPath, StringComparison.Ordinal))
                      {
                          yield return new ResPath(entry.FullName).ToRelativePath();
+                     }
 @@ -113,6 +132,9 @@ namespace Robust.Shared.ContentPack
                          continue;
                      }
@@ -7571,7 +7729,7 @@ index 2c3244b..dc82bab 100644
                  }
              }
 diff --git a/Robust.Shared/ContentPack/PathHelpers.cs b/Robust.Shared/ContentPack/PathHelpers.cs
-index 64ffaee..0cabecb 100644
+index 64ffaee..9bf3e15 100644
 --- a/Robust.Shared/ContentPack/PathHelpers.cs
 +++ b/Robust.Shared/ContentPack/PathHelpers.cs
 @@ -1,4 +1,4 @@
@@ -7607,8 +7765,17 @@ index 64ffaee..0cabecb 100644
              }
              return Path.GetDirectoryName(location)!;
          }
+@@ -79,7 +87,7 @@ namespace Robust.Shared.ContentPack
+ 
+             var retPath = Path.GetFullPath(Path.Join(baseDir, relSysPath));
+             // better safe than sorry check
+-            if (!retPath.StartsWith(baseDir))
++            if (!retPath.StartsWith(baseDir, StringComparison.Ordinal))
+             {
+                 // Allow path to match if it's just missing the directory separator at the end.
+                 if (retPath != baseDir.TrimEnd(Path.DirectorySeparatorChar))
 diff --git a/Robust.Shared/ContentPack/ResourceManager.cs b/Robust.Shared/ContentPack/ResourceManager.cs
-index b58f22e..1cd67d0 100644
+index b58f22e..ffa6293 100644
 --- a/Robust.Shared/ContentPack/ResourceManager.cs
 +++ b/Robust.Shared/ContentPack/ResourceManager.cs
 @@ -1,4 +1,4 @@
@@ -7656,7 +7823,49 @@ index b58f22e..1cd67d0 100644
                  if (!path.Value.TryRelativeTo(prefix, out var relative))
                  {
                      continue;
-@@ -327,8 +328,9 @@ namespace Robust.Shared.ContentPack
+@@ -256,10 +257,38 @@ namespace Robust.Shared.ContentPack
+         /// <inheritdoc />
+         public bool ContentFileExists(ResPath path)
+         {
+-            if (TryContentFileRead(path, out var stream))
++            // Same lookup as TryContentFileRead, but asks the roots directly instead of opening
++            // (or, for zip roots, decompressing) the file just to throw the stream away.
++            if (!path.IsRooted)
+             {
+-                stream.Dispose();
+-                return true;
++                throw new ArgumentException($"Path '{path}' must be rooted", nameof(path));
++            }
++#if DEBUG
++            if (!IsPathValid(path))
++            {
++                throw new FileNotFoundException($"Path '{path}' contains invalid characters/filenames.");
++            }
++#endif
++
++            if (path.CanonPath.EndsWith(ResPath.Separator))
++            {
++                // This is a folder, not a file.
++                return false;
++            }
++
++            var roots = _contentRoots;
++            for (var i = roots.Length - 1; i >= 0; i--)
++            {
++                var (prefix, root) = roots[i];
++                if (!path.TryRelativeTo(prefix, out var relative))
++                {
++                    continue;
++                }
++
++                if (root.FileExists(relative.Value))
++                {
++                    return true;
++                }
+             }
+ 
+             return false;
+@@ -327,8 +356,9 @@ namespace Robust.Shared.ContentPack
  
              var alreadyReturnedFiles = new HashSet<ResPath>();
  
@@ -8412,7 +8621,7 @@ index 69e28e8..c6c1096 100644
          {
              /*
 diff --git a/Robust.Shared/Log/ConsoleLogHandler.cs b/Robust.Shared/Log/ConsoleLogHandler.cs
-index 2633b8e..aca421a 100644
+index 2633b8e..60c25a2 100644
 --- a/Robust.Shared/Log/ConsoleLogHandler.cs
 +++ b/Robust.Shared/Log/ConsoleLogHandler.cs
 @@ -1,4 +1,4 @@
@@ -8421,11 +8630,24 @@ index 2633b8e..aca421a 100644
  using System.Diagnostics;
  using System.IO;
  using System.Text;
-@@ -113,6 +113,21 @@ namespace Robust.Shared.Log
+@@ -49,6 +49,12 @@ namespace Robust.Shared.Log
+ 
+         private bool _disposed;
+ 
++        // The hardcoded path below belongs to another package id. When it cannot be written
++        // (the app is installed under a different id), every log line would throw and
++        // swallow an exception, so stop trying after the first failure. The Android host
++        // already redirects the console into the real game.log.
++        private bool _androidLogFileFailed;
++
+         static ConsoleLogHandler()
+         {
+             WriteAnsiColors = !System.Console.IsOutputRedirected;
+@@ -113,6 +119,24 @@ namespace Robust.Shared.Log
                      _line.AppendLine(message.Exception.ToString());
                  }
  
-+                if (OperatingSystem.IsAndroid())
++                if (OperatingSystem.IsAndroid() && !_androidLogFileFailed)
 +                {
 +                    try
 +                    {
@@ -8437,7 +8659,10 @@ index 2633b8e..aca421a 100644
 +                        }
 +                        System.IO.File.AppendAllText(logPath, _line.ToString());
 +                    }
-+                    catch { }
++                    catch
++                    {
++                        _androidLogFileFailed = true;
++                    }
 +                }
 +
                  if (System.Console.OutputEncoding.CodePage == WindowsConsole.NativeMethods.CodePageUtf8)
