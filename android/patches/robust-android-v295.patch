@@ -630,18 +630,19 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..e0480c8 100644
+index a6bc6a0..d651e69 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
-@@ -1,4 +1,7 @@
+@@ -1,4 +1,8 @@
 +using System;
 +using System.Numerics;
  using Robust.Client.Input;
++using Robust.Client.UserInterface.CustomControls;
 +using Robust.Shared.Map;
  
  namespace Robust.Client
  {
-@@ -49,5 +52,172 @@ namespace Robust.Client
+@@ -49,5 +53,178 @@ namespace Robust.Client
                  return;
              }
          }
@@ -803,10 +804,16 @@ index a6bc6a0..e0480c8 100644
 +
 +        private bool TouchHitsWindow(ScreenCoordinates coordinates)
 +        {
++            // WindowRoot only holds the floating windows. With control.static_storage_ui
++            // (the default) the storage window is added to the hotbar widget instead, so
++            // looking for WindowRoot alone missed the backpack: a tap became a bare
++            // UIClick on the item grid, which content ignores, and the long press never
++            // armed. BaseWindow is the engine class every content window derives from,
++            // so matching it catches the bag regardless of where it is parented.
 +            var control = _userInterfaceManager.MouseGetControl(coordinates);
 +            for (; control != null; control = control.Parent)
 +            {
-+                if (control == _userInterfaceManager.WindowRoot)
++                if (control == _userInterfaceManager.WindowRoot || control is BaseWindow)
 +                    return true;
 +            }
 +
@@ -4319,10 +4326,10 @@ index 29c54bc..8d720ce 100644
          void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..59a0af2
+index 0000000..b2c6df3
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1519 @@
+@@ -0,0 +1,1522 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -5079,10 +5086,13 @@ index 0000000..59a0af2
 +
 +    private bool TouchHitsWindow(ScreenCoordinates coordinates)
 +    {
++        // Same rule as GameController.TouchHitsWindow: the static storage window lives
++        // in the hotbar widget, not under WindowRoot, and it must reach the mouse path
++        // instead of being claimed by a pad button that happens to sit under it.
 +        var control = UserInterfaceManager.MouseGetControl(coordinates);
 +        for (; control != null; control = control.Parent)
 +        {
-+            if (control == UserInterfaceManager.WindowRoot)
++            if (control == UserInterfaceManager.WindowRoot || control is BaseWindow)
 +                return true;
 +        }
 +
