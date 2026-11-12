@@ -202,7 +202,9 @@ android-v0.7.1 и на CDN в путях latest и 0.7.1. В README добавл
 
 ### 0.8.17: замер кадра перед переделкой графики
 
-Собрано 12 ноября 2026, versionCode 58, versionName 0.8.17. В движке появился файл
+Выпущено 12 ноября 2026: тег android-v0.8.17, APK на GitHub и на CDN в путях android/latest и
+android/0.8.17, sha256 e07a66695ae62c332bccd74b6fa5783eb98581282818e432d77f0a5b90d38928, versionCode 58.
+В движке появился файл
 `Robust.Client/GameController/GameController.Perf.cs`, поэтому патч
 `robust-android-v295.patch` перегенерирован: 117 файлов, 9637 строк, sha256 17ef2591...14d25,
 проверен `git apply --check` на чистом v295.0.2.
