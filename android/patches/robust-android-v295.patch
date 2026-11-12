@@ -1931,11 +1931,12 @@ index 73cadae..99dfd2a 100644
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
 new file mode 100644
-index 0000000..e506fbc
+index 0000000..8392320
 --- /dev/null
 +++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,660 @@
 +using System;
++using System.Collections.Generic;
 +using System.Numerics;
 +using OpenToolkit.Graphics.OpenGL4;
 +using Robust.Shared.GameObjects;
@@ -1958,14 +1959,6 @@ index 0000000..e506fbc
 +    // handful of content lights use them. Upgrade when a masked light must look right.
 +    internal sealed partial class Clyde
 +    {
-+        private const float MobileLightmapCellSize = 1f;
-+
-+        // Hard cap on grid cells. The grid is the visible world rect plus light centers,
-+        // so on phones it stays around 100x100 cells.
-+        private const int MobileLightmapMaxCells = 96 * 1024;
-+
-+        private const int MobileLightmapFalloffSteps = 256;
-+
 +        private bool _mobileLightmap;
 +        private ClydeHandle _mobileLightmapShaderHandle;
 +
@@ -1973,21 +1966,8 @@ index 0000000..e506fbc
 +        private int _mobileLightmapTextureWidth;
 +        private int _mobileLightmapTextureHeight;
 +
-+        private float[] _mobileLightmapAccum = Array.Empty<float>();
-+        private Rgba32[] _mobileLightmapPixels = Array.Empty<Rgba32>();
-+        private int[] _mobileLightmapSeen = Array.Empty<int>();
-+        private bool[] _mobileLightmapSolid = Array.Empty<bool>();
-+        private int[] _mobileLightmapQueue = Array.Empty<int>();
-+        private readonly float[] _mobileLightmapFalloff = new float[MobileLightmapFalloffSteps];
-+
-+        private int _mobileLightmapCapacity;
-+        private int _mobileLightmapWidth;
-+        private int _mobileLightmapHeight;
-+        private Vector2 _mobileLightmapMin;
-+        private float _mobileLightmapCell = MobileLightmapCellSize;
-+        private int _mobileLightmapStamp;
-+
 +        private bool _mobileLightmapFaulted;
++        private bool _mobileLightmapWarned;
 +
 +        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count)
 +        {
@@ -2018,18 +1998,11 @@ index 0000000..e506fbc
 +            }
 +        }
 +
-+        private bool _mobileLightmapWarned;
-+
 +        private bool DrawMobileLightmapInner(MapId map, Box2 expandedBounds, int count,
 +            LoadedShader loadedShader)
 +        {
-+
 +            SetUpMobileLightmapGrid(expandedBounds, out var cells);
-+
-+            var accum = _mobileLightmapAccum;
-+            var solid = _mobileLightmapSolid;
-+            Array.Clear(accum, 0, cells * 3);
-+            Array.Clear(solid, 0, cells);
++            ClearMobileLightmap(cells);
 +
 +            var occlude = _lightManager.DrawShadows;
 +            if (occlude)
@@ -2041,26 +2014,12 @@ index 0000000..e506fbc
 +                AddMobileLightmapLight(ref lightData, occlude && lightData.Light.CastShadows);
 +            }
 +
++            FillMobileLightmapPixels();
++
 +            var width = _mobileLightmapWidth;
 +            var height = _mobileLightmapHeight;
-+
-+            // Grid row 0 is the world bottom, but SetSubImage takes image-space rows
-+            // (top first) and flips them for OpenGL, so write the rows upside down.
 +            var pixels = _mobileLightmapPixels;
-+            for (var y = 0; y < height; y++)
-+            {
-+                var sourceRow = y * width;
-+                var targetRow = (height - 1 - y) * width;
-+                for (var x = 0; x < width; x++)
-+                {
-+                    var index = (sourceRow + x) * 3;
-+                    pixels[targetRow + x] = new Rgba32(
-+                        ToByte(accum[index]),
-+                        ToByte(accum[index + 1]),
-+                        ToByte(accum[index + 2]),
-+                        (byte) 255);
-+                }
-+            }
++
 +            if (_mobileLightmapTexture == null ||
 +                _mobileLightmapTextureWidth != width ||
 +                _mobileLightmapTextureHeight != height)
@@ -2117,52 +2076,6 @@ index 0000000..e506fbc
 +            _mobileLightmapCapacity = 0;
 +        }
 +
-+        private static byte ToByte(float value)
-+        {
-+            if (value <= 0f)
-+                return 0;
-+            if (value >= 1f)
-+                return 255;
-+            return (byte) (value * 255f);
-+        }
-+
-+        private void SetUpMobileLightmapGrid(Box2 bounds, out int cells)
-+        {
-+            var cell = MobileLightmapCellSize;
-+            var width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
-+            var height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
-+
-+            while (width * height > MobileLightmapMaxCells)
-+            {
-+                cell *= 2f;
-+                width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
-+                height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
-+            }
-+
-+            // Round up to 16: the bounds follow the camera by less than a cell per
-+            // frame, so an exact size would recreate the GPU texture constantly.
-+            // Extra cells are just lit black, the quad covers them too.
-+            width = (width + 15) & ~15;
-+            height = (height + 15) & ~15;
-+
-+            _mobileLightmapCell = cell;
-+            _mobileLightmapWidth = width;
-+            _mobileLightmapHeight = height;
-+            _mobileLightmapMin = bounds.BottomLeft;
-+            cells = width * height;
-+
-+            if (cells <= _mobileLightmapCapacity)
-+                return;
-+
-+            _mobileLightmapCapacity = cells;
-+            _mobileLightmapAccum = new float[cells * 3];
-+            _mobileLightmapPixels = new Rgba32[cells];
-+            _mobileLightmapSeen = new int[cells];
-+            _mobileLightmapSolid = new bool[cells];
-+            _mobileLightmapQueue = new int[cells];
-+            _mobileLightmapStamp = 0;
-+        }
-+
 +        private void RasterizeMobileLightmapOccluders(MapId map, Box2 bounds)
 +        {
 +            var xforms = _entityManager.GetEntityQuery<TransformComponent>();
@@ -2192,6 +2105,126 @@ index 0000000..e506fbc
 +            }
 +        }
 +
++        // The CPU part of the lightmap below has no engine dependencies, so
++        // tools/LightmapBench compiles this exact block and checks it against the
++        // previous implementation bit for bit. Keep the markers.
++        // mobile-lightmap-cpu-core: begin
++        private const float MobileLightmapCellSize = 1f;
++
++        // Hard cap on grid cells. The grid is the visible world rect plus light centers,
++        // so on phones it stays around 100x100 cells.
++        private const int MobileLightmapMaxCells = 96 * 1024;
++
++        private const int MobileLightmapFalloffSteps = 256;
++
++        // Lights come in a handful of (curve, falloff) pairs, so the falloff table is
++        // built once per pair instead of 256 square roots per light per frame. Energy
++        // is not part of the key (it flickers): it is applied per cell.
++        private const int MobileLightmapFalloffCacheLimit = 64;
++
++        private float[] _mobileLightmapAccum = Array.Empty<float>();
++        private Rgba32[] _mobileLightmapPixels = Array.Empty<Rgba32>();
++        private int[] _mobileLightmapSeen = Array.Empty<int>();
++        private bool[] _mobileLightmapSolid = Array.Empty<bool>();
++        // Flood fill queue of (x, y) pairs, so cells never need a division to find their column.
++        private int[] _mobileLightmapQueue = Array.Empty<int>();
++        // Squared distance from the current light to every column and row center.
++        private float[] _mobileLightmapColumnDistance = Array.Empty<float>();
++        private float[] _mobileLightmapRowDistance = Array.Empty<float>();
++
++        private readonly Dictionary<(float Curve, float Falloff), float[]> _mobileLightmapFalloffCache = new();
++        private float _mobileLightmapLastCurve = float.NaN;
++        private float _mobileLightmapLastFalloff = float.NaN;
++        private float[]? _mobileLightmapLastFalloffLut;
++
++        private int _mobileLightmapCapacity;
++        private int _mobileLightmapWidth;
++        private int _mobileLightmapHeight;
++        private Vector2 _mobileLightmapMin;
++        private float _mobileLightmapCell = MobileLightmapCellSize;
++        private int _mobileLightmapStamp;
++
++        private void SetUpMobileLightmapGrid(Box2 bounds, out int cells)
++        {
++            var cell = MobileLightmapCellSize;
++            var width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
++            var height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++
++            while (width * height > MobileLightmapMaxCells)
++            {
++                cell *= 2f;
++                width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
++                height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++            }
++
++            // Round up to 16: the bounds follow the camera by less than a cell per
++            // frame, so an exact size would recreate the GPU texture constantly.
++            // Extra cells are just lit black, the quad covers them too.
++            width = (width + 15) & ~15;
++            height = (height + 15) & ~15;
++
++            _mobileLightmapCell = cell;
++            _mobileLightmapWidth = width;
++            _mobileLightmapHeight = height;
++            _mobileLightmapMin = bounds.BottomLeft;
++            cells = width * height;
++
++            if (_mobileLightmapColumnDistance.Length < width)
++                _mobileLightmapColumnDistance = new float[width];
++            if (_mobileLightmapRowDistance.Length < height)
++                _mobileLightmapRowDistance = new float[height];
++
++            if (cells <= _mobileLightmapCapacity)
++                return;
++
++            _mobileLightmapCapacity = cells;
++            _mobileLightmapAccum = new float[cells * 3];
++            _mobileLightmapPixels = new Rgba32[cells];
++            _mobileLightmapSeen = new int[cells];
++            _mobileLightmapSolid = new bool[cells];
++            _mobileLightmapQueue = new int[cells * 2];
++            _mobileLightmapStamp = 0;
++        }
++
++        private void ClearMobileLightmap(int cells)
++        {
++            Array.Clear(_mobileLightmapAccum, 0, cells * 3);
++            Array.Clear(_mobileLightmapSolid, 0, cells);
++        }
++
++        private void FillMobileLightmapPixels()
++        {
++            var width = _mobileLightmapWidth;
++            var height = _mobileLightmapHeight;
++            var accum = _mobileLightmapAccum;
++            var pixels = _mobileLightmapPixels;
++
++            // Grid row 0 is the world bottom, but SetSubImage takes image-space rows
++            // (top first) and flips them for OpenGL, so write the rows upside down.
++            for (var y = 0; y < height; y++)
++            {
++                var source = y * width * 3;
++                var target = (height - 1 - y) * width;
++                for (var x = 0; x < width; x++, source += 3)
++                {
++                    pixels[target + x] = new Rgba32(
++                        ToByte(accum[source]),
++                        ToByte(accum[source + 1]),
++                        ToByte(accum[source + 2]),
++                        (byte) 255);
++                }
++            }
++        }
++
++        private static byte ToByte(float value)
++        {
++            if (value <= 0f)
++                return 0;
++            if (value >= 1f)
++                return 255;
++            return (byte) (value * 255f);
++        }
++
 +        private void RasterizeMobileLightmapOccluder(ReadOnlySpan<Vector2> polygon, Matrix3x2 transform)
 +        {
 +            if (polygon.Length > 32)
@@ -2212,6 +2245,7 @@ index 0000000..e506fbc
 +            var width = _mobileLightmapWidth;
 +            var height = _mobileLightmapHeight;
 +            var origin = _mobileLightmapMin;
++            var solid = _mobileLightmapSolid;
 +
 +            var x0 = Math.Max(0, (int) MathF.Floor((min.X - origin.X) / cell));
 +            var y0 = Math.Max(0, (int) MathF.Floor((min.Y - origin.Y) / cell));
@@ -2225,8 +2259,7 @@ index 0000000..e506fbc
 +            {
 +                for (var y = y0; y <= y1; y++)
 +                {
-+                    for (var x = x0; x <= x1; x++)
-+                        _mobileLightmapSolid[y * width + x] = true;
++                    solid.AsSpan(y * width + x0, x1 - x0 + 1).Fill(true);
 +                }
 +
 +                return;
@@ -2234,30 +2267,80 @@ index 0000000..e506fbc
 +
 +            var halfCell = cell * 0.5f;
 +            var limit = halfCell * halfCell;
++
++            // Walls are unrotated boxes: the distance to an axis-aligned box is a clamp per
++            // axis, no point-in-polygon test and no per-edge projection for every cell.
++            if (IsAxisAlignedBox(worldPolygon))
++            {
++                for (var y = y0; y <= y1; y++)
++                {
++                    var pointY = origin.Y + (y + 0.5f) * cell;
++                    var outsideY = MathF.Max(MathF.Max(min.Y - pointY, pointY - max.Y), 0f);
++                    var outsideY2 = outsideY * outsideY;
++                    if (outsideY2 > limit)
++                        continue;
++
++                    var row = y * width;
++                    for (var x = x0; x <= x1; x++)
++                    {
++                        var pointX = origin.X + (x + 0.5f) * cell;
++                        var outsideX = MathF.Max(MathF.Max(min.X - pointX, pointX - max.X), 0f);
++                        if (outsideX * outsideX + outsideY2 <= limit)
++                            solid[row + x] = true;
++                    }
++                }
++
++                return;
++            }
++
++            // Edge vectors once per occluder instead of once per cell and test.
++            Span<Vector2> edges = stackalloc Vector2[worldPolygon.Length];
++            Span<float> edgeLengths = stackalloc float[worldPolygon.Length];
++            for (var i = 0; i < worldPolygon.Length; i++)
++            {
++                var next = i + 1 == worldPolygon.Length ? 0 : i + 1;
++                var edge = worldPolygon[next] - worldPolygon[i];
++                edges[i] = edge;
++                edgeLengths[i] = edge.LengthSquared();
++            }
++
 +            for (var y = y0; y <= y1; y++)
 +            {
 +                for (var x = x0; x <= x1; x++)
 +                {
 +                    var point = new Vector2(origin.X + (x + 0.5f) * cell, origin.Y + (y + 0.5f) * cell);
-+                    if (!PointInConvexPolygon(worldPolygon, point) &&
-+                        DistanceSquaredToPolygon(worldPolygon, point) > limit)
++                    if (!PointInConvexPolygon(worldPolygon, edges, point) &&
++                        DistanceSquaredToPolygon(worldPolygon, edges, edgeLengths, point) > limit)
 +                    {
 +                        continue;
 +                    }
 +
-+                    _mobileLightmapSolid[y * width + x] = true;
++                    solid[y * width + x] = true;
 +                }
 +            }
 +        }
 +
-+        private static bool PointInConvexPolygon(ReadOnlySpan<Vector2> polygon, Vector2 point)
++        private static bool IsAxisAlignedBox(ReadOnlySpan<Vector2> polygon)
++        {
++            if (polygon.Length != 4)
++                return false;
++
++            var a = polygon[0];
++            var b = polygon[1];
++            var c = polygon[2];
++            var d = polygon[3];
++            return a.X == b.X && b.Y == c.Y && c.X == d.X && d.Y == a.Y ||
++                   a.Y == b.Y && b.X == c.X && c.Y == d.Y && d.X == a.X;
++        }
++
++        private static bool PointInConvexPolygon(ReadOnlySpan<Vector2> polygon, ReadOnlySpan<Vector2> edges, Vector2 point)
 +        {
 +            var sign = 0;
 +            for (var i = 0; i < polygon.Length; i++)
 +            {
 +                var a = polygon[i];
-+                var b = polygon[(i + 1) % polygon.Length];
-+                var cross = (b.X - a.X) * (point.Y - a.Y) - (b.Y - a.Y) * (point.X - a.X);
++                var edge = edges[i];
++                var cross = edge.X * (point.Y - a.Y) - edge.Y * (point.X - a.X);
 +                if (cross > 1e-5f)
 +                {
 +                    if (sign < 0)
@@ -2275,12 +2358,29 @@ index 0000000..e506fbc
 +            return sign != 0;
 +        }
 +
-+        private static float DistanceSquaredToPolygon(ReadOnlySpan<Vector2> polygon, Vector2 point)
++        private static float DistanceSquaredToPolygon(
++            ReadOnlySpan<Vector2> polygon,
++            ReadOnlySpan<Vector2> edges,
++            ReadOnlySpan<float> edgeLengths,
++            Vector2 point)
 +        {
 +            var best = float.MaxValue;
 +            for (var i = 0; i < polygon.Length; i++)
 +            {
-+                var distance = DistanceSquaredToSegment(point, polygon[i], polygon[(i + 1) % polygon.Length]);
++                var a = polygon[i];
++                float distance;
++                var lengthSquared = edgeLengths[i];
++                if (lengthSquared <= 1e-8f)
++                {
++                    distance = (point - a).LengthSquared();
++                }
++                else
++                {
++                    var ab = edges[i];
++                    var t = Math.Clamp(Vector2.Dot(point - a, ab) / lengthSquared, 0f, 1f);
++                    distance = (point - (a + ab * t)).LengthSquared();
++                }
++
 +                if (distance < best)
 +                    best = distance;
 +            }
@@ -2288,15 +2388,37 @@ index 0000000..e506fbc
 +            return best;
 +        }
 +
-+        private static float DistanceSquaredToSegment(Vector2 point, Vector2 a, Vector2 b)
++        private float[] GetMobileLightmapFalloff(float curveFactor, float falloff)
 +        {
-+            var ab = b - a;
-+            var lengthSquared = ab.LengthSquared();
-+            if (lengthSquared <= 1e-8f)
-+                return (point - a).LengthSquared();
++            if (_mobileLightmapLastFalloffLut != null &&
++                curveFactor.Equals(_mobileLightmapLastCurve) &&
++                falloff.Equals(_mobileLightmapLastFalloff))
++            {
++                return _mobileLightmapLastFalloffLut;
++            }
 +
-+            var t = Math.Clamp(Vector2.Dot(point - a, ab) / lengthSquared, 0f, 1f);
-+            return (point - (a + ab * t)).LengthSquared();
++            if (!_mobileLightmapFalloffCache.TryGetValue((curveFactor, falloff), out var lut))
++            {
++                if (_mobileLightmapFalloffCache.Count >= MobileLightmapFalloffCacheLimit)
++                    _mobileLightmapFalloffCache.Clear();
++
++                lut = new float[MobileLightmapFalloffSteps];
++                var lastIndex = lut.Length - 1;
++                for (var i = 0; i <= lastIndex; i++)
++                {
++                    var s2 = i / (float) lastIndex;
++                    var s = MathF.Sqrt(s2);
++                    var curve = s + (s2 - s) * curveFactor;
++                    lut[i] = Math.Clamp((1f - s2) * (1f - s2) / (1f + falloff * curve), 0f, 1f);
++                }
++
++                _mobileLightmapFalloffCache[(curveFactor, falloff)] = lut;
++            }
++
++            _mobileLightmapLastCurve = curveFactor;
++            _mobileLightmapLastFalloff = falloff;
++            _mobileLightmapLastFalloffLut = lut;
++            return lut;
 +        }
 +
 +        private void AddMobileLightmapLight(ref LightRenderData lightData, bool occlude)
@@ -2307,25 +2429,16 @@ index 0000000..e506fbc
 +                return;
 +
 +            var invRadiusSquared = 1f / (radius * radius);
-+            var curveFactor = Math.Clamp(light.CurveFactor, 0f, 1f);
-+            var falloff = light.Falloff;
-+            var power = light.Energy;
-+            var falloffLut = _mobileLightmapFalloff;
++            var falloffLut = GetMobileLightmapFalloff(Math.Clamp(light.CurveFactor, 0f, 1f), light.Falloff);
 +            var lastIndex = falloffLut.Length - 1;
-+            for (var i = 0; i <= lastIndex; i++)
-+            {
-+                var s2 = i / (float) lastIndex;
-+                var s = MathF.Sqrt(s2);
-+                var curve = s + (s2 - s) * curveFactor;
-+                falloffLut[i] = Math.Clamp((1f - s2) * (1f - s2) / (1f + falloff * curve), 0f, 1f) * power;
-+            }
-+
++            var power = light.Energy;
 +            var color = light.Color;
 +            var cell = _mobileLightmapCell;
 +            var width = _mobileLightmapWidth;
 +            var height = _mobileLightmapHeight;
 +            var origin = _mobileLightmapMin;
 +            var position = lightData.Position;
++            var accum = _mobileLightmapAccum;
 +
 +            // The grid always covers every light center, clamping only guards the exact edge.
 +            var startX = Math.Clamp((int) MathF.Floor((position.X - origin.X) / cell), 0, width - 1);
@@ -2333,21 +2446,55 @@ index 0000000..e506fbc
 +
 +            var radiusSquared = radius * radius;
 +
++            // Every cell closer than the radius lies in this box: a cell outside it is at
++            // least (reach - 0.5) cells away from the light. Neither loop leaves it.
++            var reach = (int) MathF.Ceiling(radius / cell) + 1;
++            var minX = Math.Max(0, startX - reach);
++            var maxX = Math.Min(width - 1, startX + reach);
++            var minY = Math.Max(0, startY - reach);
++            var maxY = Math.Min(height - 1, startY + reach);
++
++            // Same per-cell distance as before, (dx * dx + dy * dy + 1), with dx * dx and
++            // dy * dy computed once per column and row instead of once per cell visit.
++            var columns = _mobileLightmapColumnDistance;
++            var rows = _mobileLightmapRowDistance;
++            for (var x = minX; x <= maxX; x++)
++            {
++                var dx = origin.X + (x + 0.5f) * cell - position.X;
++                columns[x] = dx * dx;
++            }
++
++            for (var y = minY; y <= maxY; y++)
++            {
++                var dy = origin.Y + (y + 0.5f) * cell - position.Y;
++                rows[y] = dy * dy;
++            }
++
 +            if (!occlude)
 +            {
-+                var reach = (int) MathF.Ceiling(radius / cell) + 1;
-+                var minX = Math.Max(0, startX - reach);
-+                var maxX = Math.Min(width - 1, startX + reach);
-+                var minY = Math.Max(0, startY - reach);
-+                var maxY = Math.Min(height - 1, startY + reach);
 +                for (var y = minY; y <= maxY; y++)
 +                {
-+                    var dy = origin.Y + (y + 0.5f) * cell - position.Y;
++                    var rowDistance = rows[y];
++                    // The +1 is the fake lighting height, as in light_shared.swsl.
++                    if (rowDistance + 1f >= radiusSquared)
++                        continue;
++
++                    var row = y * width;
 +                    for (var x = minX; x <= maxX; x++)
 +                    {
-+                        var dx = origin.X + (x + 0.5f) * cell - position.X;
-+                        AddMobileLightmapCell(y * width + x, dx, dy, color, radiusSquared, invRadiusSquared,
-+                            falloffLut, lastIndex);
++                        var squared = columns[x] + rowDistance + 1f;
++                        if (squared >= radiusSquared)
++                            continue;
++
++                        var lutIndex = (int) (squared * invRadiusSquared * lastIndex);
++                        if (lutIndex > lastIndex)
++                            lutIndex = lastIndex;
++
++                        var value = falloffLut[lutIndex] * power;
++                        var baseIndex = (row + x) * 3;
++                        accum[baseIndex] += color.R * value;
++                        accum[baseIndex + 1] += color.G * value;
++                        accum[baseIndex + 2] += color.B * value;
 +                    }
 +                }
 +
@@ -2370,73 +2517,82 @@ index 0000000..e506fbc
 +            var tail = 0;
 +            var startIndex = startY * width + startX;
 +            seen[startIndex] = stamp;
-+            queue[tail++] = startIndex;
++            queue[tail++] = startX;
++            queue[tail++] = startY;
 +
++            // Every queued cell is lit once. Solid cells are lit like everything else but
++            // light does not pass through them; the light's own cell always spreads.
 +            while (head < tail)
 +            {
-+                var index = queue[head++];
-+                var x = index % width;
-+                var y = index / width;
-+                AddMobileLightmapCell(index, origin.X + (x + 0.5f) * cell - position.X,
-+                    origin.Y + (y + 0.5f) * cell - position.Y, color, radiusSquared, invRadiusSquared,
-+                    falloffLut, lastIndex);
++                var x = queue[head++];
++                var y = queue[head++];
++                var rowDistance = rows[y];
++                var index = y * width + x;
 +
-+                for (var direction = 0; direction < 4; direction++)
++                var squared = columns[x] + rowDistance + 1f;
++                if (squared < radiusSquared)
 +                {
-+                    var nx = x + (direction == 0 ? 1 : direction == 1 ? -1 : 0);
-+                    var ny = y + (direction == 2 ? 1 : direction == 3 ? -1 : 0);
-+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height)
-+                        continue;
++                    var lutIndex = (int) (squared * invRadiusSquared * lastIndex);
++                    if (lutIndex > lastIndex)
++                        lutIndex = lastIndex;
 +
-+                    var neighbour = ny * width + nx;
-+                    if (seen[neighbour] == stamp)
-+                        continue;
++                    var value = falloffLut[lutIndex] * power;
++                    var baseIndex = index * 3;
++                    accum[baseIndex] += color.R * value;
++                    accum[baseIndex + 1] += color.G * value;
++                    accum[baseIndex + 2] += color.B * value;
++                }
 +
-+                    var dx = origin.X + (nx + 0.5f) * cell - position.X;
-+                    var dy = origin.Y + (ny + 0.5f) * cell - position.Y;
-+                    if (dx * dx + dy * dy + 1f >= radiusSquared)
-+                        continue;
++                if (solid[index] && index != startIndex)
++                    continue;
 +
-+                    seen[neighbour] = stamp;
-+                    if (solid[neighbour])
++                if (x < maxX)
++                {
++                    var neighbour = index + 1;
++                    if (seen[neighbour] != stamp && !(columns[x + 1] + rowDistance + 1f >= radiusSquared))
 +                    {
-+                        // Lit like everything else, but light does not pass through it.
-+                        AddMobileLightmapCell(neighbour, dx, dy, color, radiusSquared, invRadiusSquared,
-+                            falloffLut, lastIndex);
-+                        continue;
++                        seen[neighbour] = stamp;
++                        queue[tail++] = x + 1;
++                        queue[tail++] = y;
 +                    }
++                }
 +
-+                    queue[tail++] = neighbour;
++                if (x > minX)
++                {
++                    var neighbour = index - 1;
++                    if (seen[neighbour] != stamp && !(columns[x - 1] + rowDistance + 1f >= radiusSquared))
++                    {
++                        seen[neighbour] = stamp;
++                        queue[tail++] = x - 1;
++                        queue[tail++] = y;
++                    }
++                }
++
++                var columnDistance = columns[x];
++                if (y < maxY)
++                {
++                    var neighbour = index + width;
++                    if (seen[neighbour] != stamp && !(columnDistance + rows[y + 1] + 1f >= radiusSquared))
++                    {
++                        seen[neighbour] = stamp;
++                        queue[tail++] = x;
++                        queue[tail++] = y + 1;
++                    }
++                }
++
++                if (y > minY)
++                {
++                    var neighbour = index - width;
++                    if (seen[neighbour] != stamp && !(columnDistance + rows[y - 1] + 1f >= radiusSquared))
++                    {
++                        seen[neighbour] = stamp;
++                        queue[tail++] = x;
++                        queue[tail++] = y - 1;
++                    }
 +                }
 +            }
 +        }
-+
-+        private void AddMobileLightmapCell(
-+            int index,
-+            float dx,
-+            float dy,
-+            Color color,
-+            float radiusSquared,
-+            float invRadiusSquared,
-+            float[] falloffLut,
-+            int lastIndex)
-+        {
-+            // Same attenuation as light_shared.swsl: +1 for the fake lighting height.
-+            var squared = dx * dx + dy * dy + 1f;
-+            if (squared >= radiusSquared)
-+                return;
-+
-+            var lutIndex = (int) (squared * invRadiusSquared * lastIndex);
-+            if (lutIndex > lastIndex)
-+                lutIndex = lastIndex;
-+
-+            var value = falloffLut[lutIndex];
-+            var accum = _mobileLightmapAccum;
-+            var baseIndex = index * 3;
-+            accum[baseIndex] += color.R * value;
-+            accum[baseIndex + 1] += color.G * value;
-+            accum[baseIndex + 2] += color.B * value;
-+        }
++        // mobile-lightmap-cpu-core: end
 +    }
 +}
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
