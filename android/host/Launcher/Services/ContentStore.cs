@@ -163,25 +163,9 @@ public static class ContentStore
             }
         }
 
-        var serverPaths = new HashSet<string>(entries.Select(e => e.Path), StringComparer.Ordinal);
         var changed = new List<int>();
-        for (var i = 0; i < entries.Count; i++)
-        {
-            var entry = entries[i];
-            var fullPath = System.IO.Path.Combine(dir, entry.Path);
-            if (!File.Exists(fullPath))
-            {
-                changed.Add(i);
-                continue;
-            }
-
-            if (local == null || !local.TryGetValue(entry.Path, out var localHash) || !string.Equals(localHash, entry.Hash, StringComparison.OrdinalIgnoreCase))
-                changed.Add(i);
-        }
-
-        var removed = local == null
-            ? new List<string>()
-            : local.Keys.Where(p => !serverPaths.Contains(p)).ToList();
+        var removed = new List<string>();
+        ContentSyncCore.ComputeDelta(dir, entries, local, changed, removed);
 
         if (changed.Count == 0 && removed.Count == 0)
         {
@@ -417,17 +401,23 @@ public static class ContentStore
         Action<int, int, string>? progress,
         CancellationToken cancel)
     {
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        var done = 0;
-        foreach (var entry in entries)
-        {
-            cancel.ThrowIfCancellationRequested();
-            var full = System.IO.Path.Combine(dir, entry.Path);
-            if (File.Exists(full))
-                map[entry.Path] = HashFile(full);
+        var paths = new string[entries.Count];
+        for (var i = 0; i < entries.Count; i++)
+            paths[i] = System.IO.Path.Combine(dir, entries[i].Path);
 
-            if (++done % 256 == 0)
-                progress?.Invoke(done, entries.Count, $"Checking cached content: {done * 100L / entries.Count}%");
+        // 1.2 ГБ в один поток упирались в одно ядро; хеши собираем в массив и кладём в map
+        // в порядке манифеста, чтобы восстановленный манифест не зависел от числа потоков.
+        var hashes = ContentSyncCore.HashFilesParallel(
+            paths,
+            Math.Min(Environment.ProcessorCount, 4),
+            progress == null ? null : done => progress(done, entries.Count, $"Checking cached content: {done * 100L / entries.Count}%"),
+            cancel);
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (hashes[i] is { } hash)
+                map[entries[i].Path] = hash;
         }
 
         return map;
@@ -449,6 +439,8 @@ public static class ContentStore
 
         var total = changed.Count;
         var written = 0;
+        // Каждое обновление прогресса уходит в UI-поток и уведомление: на 18k файлов это 18k перерисовок.
+        var progressThrottle = new ProgressThrottle(100);
 
         for (var start = 0; start < total; start += ChunkSize)
         {
@@ -568,8 +560,7 @@ public static class ContentStore
 
                     // Пишем сразу в конечный файл: частичный файл не попадёт в манифест и будет
                     // перекачан, а лишний rename на каждые из десятков тысяч файлов стоит дорого.
-                    using (var fileStream = new FileStream(full, FileMode.Create, FileAccess.Write, FileShare.None, 65536))
-                        fileStream.Write(data.Span);
+                    ContentSyncCore.WriteFile(full, data.Span);
                     var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
 
                     bytesDone += data.Length;
@@ -577,10 +568,13 @@ public static class ContentStore
                     fileSaved?.Invoke(index);
 
                     written++;
+                    if (progress == null || !progressThrottle.ShouldReport(written == total))
+                        continue;
+
                     var elapsedSec = speedWatch.Elapsed.TotalSeconds;
                     var speed = elapsedSec > 0.2 ? bytesDone / 1048576.0 / elapsedSec : 0;
                     var pct = written * 100L / total;
-                    progress?.Invoke(written, total, $"Downloading content: {pct}%\n({written}/{total} files, {speed:F1} MB/s)");
+                    progress(written, total, $"Downloading content: {pct}%\n({written}/{total} files, {speed:F1} MB/s)");
                 }
             }
 
@@ -595,20 +589,6 @@ public static class ContentStore
         Span<byte> result = stackalloc byte[32];
         CryptoGenericHashBlake2B.Init(ref state, ReadOnlySpan<byte>.Empty, 32);
         CryptoGenericHashBlake2B.Update(ref state, data);
-        CryptoGenericHashBlake2B.Final(ref state, result);
-        return Convert.ToHexString(result);
-    }
-
-    private static string HashFile(string path)
-    {
-        var state = default(CryptoGenericHashBlake2B.State);
-        Span<byte> result = stackalloc byte[32];
-        CryptoGenericHashBlake2B.Init(ref state, ReadOnlySpan<byte>.Empty, 32);
-        var buffer = new byte[65536];
-        using var fs = File.OpenRead(path);
-        int read;
-        while ((read = fs.Read(buffer, 0, buffer.Length)) > 0)
-            CryptoGenericHashBlake2B.Update(ref state, buffer.AsSpan(0, read));
         CryptoGenericHashBlake2B.Final(ref state, result);
         return Convert.ToHexString(result);
     }

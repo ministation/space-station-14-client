@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Correctness check and benchmark for the Android launcher content sync
+    (android/host/Launcher/Services/ContentStore.cs).
+    The optimized logic is not copied here: ContentSyncCore.cs is compiled straight from
+    android/host, so the bench always checks what ships. Baseline.cs holds frozen copies
+    of the Android 0.9.1 implementations it is compared against.
+
+      dotnet run -c Release (project tools/LauncherBench)          verify + benchmark
+      dotnet run -c Release (project tools/LauncherBench) verify   only the old-vs-new check
+      dotnet run -c Release (project tools/LauncherBench) write    only the file-write check + timing
+
+    The test tree (~18k files, a few hundred MB) is generated in %TEMP% and deleted afterwards.
+    Exit code 1 on any mismatch.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\android\host\Launcher\Services\ContentSyncCore.cs" Link="Shipped\ContentSyncCore.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same BLAKE2B binding and native libsodium versions as android/host/Content.Android.csproj. -->
+    <PackageReference Include="SpaceWizards.Sodium" Version="0.3.0" />
+    <PackageReference Include="libsodium" Version="1.0.20.1" />
+  </ItemGroup>
+
+</Project>
