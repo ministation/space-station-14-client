@@ -144,8 +144,12 @@ public sealed class LauncherActivity : Activity
     {
         var (screenW, screenH) = MobileSafeArea.ScreenSize(this);
         var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(this);
-        return PadEditorView.BuildLayout(prefs, screenW, screenH,
-            MobileSafeArea.MeasureWindow(this, frameMode, frameScale));
+        var insets = MobileSafeArea.MeasureWindow(this, frameMode, frameScale);
+        var layout = PadEditorView.BuildLayout(prefs, screenW, screenH, insets);
+        CrashReporter.AppendLauncherLog("pad",
+            $"screen={screenW}x{screenH} insets={insets.Left},{insets.Top},{insets.Right},{insets.Bottom} " +
+            $"frame={frameMode}x{frameScale} layout={layout}");
+        return layout;
     }
 
     /// <summary>
@@ -156,7 +160,7 @@ public sealed class LauncherActivity : Activity
     private void MigratePadLayout()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 5)
+        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= PadEditorView.LayoutVersion)
             return;
 
         // Layout 4: the editor preview is now drawn in the immersive full
@@ -166,7 +170,7 @@ public sealed class LauncherActivity : Activity
         // smaller window would draw the pad scaled up. Drop them once.
         prefs.Edit()?
             .Remove("mobile_positions")?
-            .PutInt("mobile_positions_layout", 5)?
+            .PutInt("mobile_positions_layout", PadEditorView.LayoutVersion)?
             .Apply();
     }
 
@@ -462,7 +466,7 @@ public sealed class LauncherActivity : Activity
 
     private void AddLoginChrome()
     {
-        var logs = CreateFooterTextButton("Open log directory", () => ShowCrashReporterDialog());
+        var logs = CreateFooterTextButton("Logs", () => ShowCrashReporterDialog());
         _bottomBar.AddView(logs, new LinearLayout.LayoutParams(Dp(150), Dp(30)) { LeftMargin = Dp(4), TopMargin = Dp(4) });
         var spacer = new Space(this);
         _bottomBar.AddView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
@@ -1096,7 +1100,7 @@ public sealed class LauncherActivity : Activity
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
-        AddActionRow(list, "Open log directory", () => ShowCrashReporterDialog());
+        AddActionRow(list, "Logs", () => ShowCrashReporterDialog());
         AddActionRow(list, "Offline sandbox", () => LaunchOfflineSandbox());
         AddActionRow(list, "Check for updates", () => _ = CheckForUpdatesAsync(true));
         AddActionRow(list, "Website", () => OpenUrl("https://spacestation14.com/"));
@@ -2131,6 +2135,10 @@ public sealed class LauncherActivity : Activity
             ("bag", "BAG", 0.684f, 0.622f, 0.095f),
         };
 
+        // Version of the saved layout. MigratePadLayout drops anything older, so
+        // Save and Reset have to write this exact number.
+        public const int LayoutVersion = 5;
+
         // One range for a saved radius and for the resize slider. The engine takes
         // the radius as is, so a value outside this range would show one size in the
         // editor and another one in game.
@@ -2276,7 +2284,7 @@ public sealed class LauncherActivity : Activity
         {
             ResetItems();
             _selected = null;
-            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", 4)?.Apply();
+            _prefs?.Edit()?.Remove("mobile_positions")?.PutInt("mobile_positions_layout", LayoutVersion)?.Apply();
             SelectionChanged?.Invoke();
             Invalidate();
         }
@@ -2302,10 +2310,12 @@ public sealed class LauncherActivity : Activity
                             $"{fy.ToString("F4", CultureInfo.InvariantCulture)}," +
                             $"{item.Radius.ToString("F4", CultureInfo.InvariantCulture)}");
             }
+            var serialized = string.Join(";", entries);
             _prefs?.Edit()?
-                .PutString("mobile_positions", string.Join(";", entries))?
-                .PutInt("mobile_positions_layout", 4)?
+                .PutString("mobile_positions", serialized)?
+                .PutInt("mobile_positions_layout", LayoutVersion)?
                 .Apply();
+            CrashReporter.AppendLauncherLog("pad", $"editor saved: {serialized}");
         }
 
         /// <summary>
@@ -3518,7 +3528,7 @@ public sealed class LauncherActivity : Activity
             builder.SetTitle("Last session crashed");
             builder.SetMessage("The game crashed last time. You can view the crash report " +
                 "and share it with developers.\n\n" + CrashReporter.GetStatusLine());
-            builder.SetPositiveButton("View Report", (_, _) => ShowCrashReporterDialog());
+            builder.SetPositiveButton("View Logs", (_, _) => ShowCrashReporterDialog("crash.txt"));
             builder.SetNegativeButton("Dismiss", (_, _) => CrashReporter.MarkSeen());
             builder.SetCancelable(true);
             RunOnUiThread(() =>
@@ -3529,107 +3539,186 @@ public sealed class LauncherActivity : Activity
         catch { }
     }
 
-    private void ShowCrashReporterDialog()
+    // Full-screen log viewer. The phone has no adb, so every diagnostic the game
+    // or this activity writes has to be readable and shareable in the app itself.
+    private void ShowCrashReporterDialog(string? selectTitle = null)
     {
         var density = Resources?.DisplayMetrics?.Density ?? 1f;
-        string report;
-        try { report = CrashReporter.GetFullReport(); }
-        catch (Exception ex) { report = $"Failed to load report: {ex.Message}"; }
-        // Keep the on-screen preview short; Share sends the fuller text.
-        var preview = report.Length > 15000
-            ? "[... showing tail ...]\n" + report.Substring(report.Length - 15000)
-            : report;
+        var sources = CrashReporter.GetLogFiles();
 
-        var builder = new AlertDialog.Builder(this);
-        builder.SetTitle("Crash Report");
+        var dialog = new Dialog(this);
+        dialog.RequestWindowFeature((int)WindowFeatures.NoTitle);
+        dialog.SetCanceledOnTouchOutside(false);
 
-        var scroll = new ScrollView(this);
-        var view = new LinearLayout(this) { Orientation = Orientation.Vertical };
-        view.SetPadding((int)(16 * density), (int)(12 * density), (int)(16 * density), (int)(12 * density));
+        var root = new LinearLayout(this) { Orientation = Orientation.Vertical };
+        root.SetBackgroundColor(Color.ParseColor("#101014"));
+        root.SetPadding((int)(12 * density), (int)(10 * density), (int)(12 * density), (int)(10 * density));
 
         var status = new TextView(this) { Text = CrashReporter.GetStatusLine(), TextSize = 11 };
         status.SetTextColor(LauncherTheme.SubText);
-        status.SetPadding(0, 0, 0, (int)(8 * density));
-        view.AddView(status);
+        root.AddView(status);
 
-        var btnRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        btnRow.SetPadding(0, 0, 0, (int)(8 * density));
+        var tabs = new HorizontalScrollView(this);
+        var tabRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+        tabs.AddView(tabRow);
+        root.AddView(tabs, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
 
-        var logView = new TextView(this)
-        {
-            Text = string.IsNullOrWhiteSpace(preview) ? "(empty)" : preview,
-            TextSize = 10
-        };
-        logView.SetTextColor(LauncherTheme.Foreground);
-        logView.SetTextIsSelectable(true);
+        var scroll = new ScrollView(this);
+        var text = new TextView(this) { TextSize = 9, Typeface = Typeface.Monospace };
+        text.SetTextColor(LauncherTheme.Foreground);
+        text.SetTextIsSelectable(true);
+        text.SetPadding(0, (int)(6 * density), 0, 0);
+        scroll.AddView(text);
+        root.AddView(scroll, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, 0, 1f));
 
-        var clearBtn = new Button(this) { Text = "Clear Logs", TextSize = 11 };
-        clearBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        clearBtn.SetTextColor(Color.ParseColor("#ef4444"));
-        clearBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f)
+        var info = new TextView(this) { TextSize = 10 };
+        info.SetTextColor(LauncherTheme.SubText);
+        info.SetPadding(0, (int)(4 * density), 0, (int)(4 * density));
+        root.AddView(info);
+
+        var bar = new LinearLayout(this) { Orientation = Orientation.Horizontal };
+
+        string? currentTitle = null;
+        string? currentPath = null;
+
+        void Load(string? title)
         {
-            RightMargin = (int)(6 * density)
-        };
-        clearBtn.Click += (_, _) =>
+            CrashReporter.LogFile? picked = null;
+            foreach (var source in sources)
+            {
+                if (source.Title == title)
+                {
+                    picked = source;
+                    break;
+                }
+            }
+
+            if (picked == null && sources.Count > 0)
+                picked = sources[0];
+
+            if (picked == null)
+            {
+                currentTitle = null;
+                currentPath = null;
+                text.Text = "No logs yet.\n\n" +
+                    "The game writes game.log and crash.txt on its next run.\n" +
+                    "mobile-controls-debug.txt appears once the in-game pad is laid out.";
+                info.Text = CrashReporter.GetStatusLine();
+                RenderTabs();
+                return;
+            }
+
+            var log = picked.Value;
+            currentTitle = log.Title;
+            currentPath = log.Path;
+            var body = CrashReporter.ReadTailText(log.Path, 400_000);
+            text.Text = body;
+            info.Text = $"{log.Title}: {log.Size / 1024} KB, {body.Length} chars shown";
+            scroll.Post(() => scroll.FullScroll(FocusSearchDirection.Down));
+            RenderTabs();
+        }
+
+        void RenderTabs()
         {
-            ClearCrashReports();
+            tabRow.RemoveAllViews();
+            foreach (var source in sources)
+            {
+                var name = source.Title;
+                var tab = new Button(this) { Text = name, TextSize = 10 };
+                tab.SetTextColor(LauncherTheme.Foreground);
+                tab.Background = LauncherTheme.CreateBox(
+                    currentTitle == name ? LauncherTheme.ControlHigh : LauncherTheme.ControlMid, 3);
+                tab.SetPadding((int)(10 * density), 0, (int)(10 * density), 0);
+                tab.LayoutParameters = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WrapContent, (int)(32 * density))
+                {
+                    RightMargin = (int)(4 * density)
+                };
+                tab.Click += (_, _) => Load(name);
+                tabRow.AddView(tab);
+            }
+        }
+
+        void CopyCurrentLog()
+        {
+            try
+            {
+                var body = currentPath == null
+                    ? CrashReporter.GetStatusLine()
+                    : CrashReporter.GetShareText(currentTitle ?? "log", currentPath);
+                var clipboard = GetSystemService(ClipboardService) as ClipboardManager;
+                if (clipboard != null)
+                    clipboard.PrimaryClip = ClipData.NewPlainText("SS14 log", body);
+                Toast.MakeText(this, $"Copied {currentTitle ?? "status"}", ToastLength.Short)?.Show();
+            }
+            catch (Exception ex)
+            {
+                Toast.MakeText(this, $"Copy failed: {ex.Message}", ToastLength.Short)?.Show();
+            }
+        }
+
+        void ShareCurrentLog()
+        {
+            try
+            {
+                if (currentPath == null)
+                {
+                    Toast.MakeText(this, "No log to share yet", ToastLength.Short)?.Show();
+                    return;
+                }
+
+                var intent = new Intent(Intent.ActionSend);
+                intent.SetType("text/plain");
+                intent.PutExtra(Intent.ExtraSubject,
+                    $"SS14 Android log {GetCurrentAppVersion()} ({currentTitle})");
+                intent.PutExtra(Intent.ExtraText, CrashReporter.GetShareText(currentTitle ?? "log", currentPath));
+                StartActivity(Intent.CreateChooser(intent, "Share log"));
+            }
+            catch (Exception ex)
+            {
+                Toast.MakeText(this, $"Share failed: {ex.Message}", ToastLength.Short)?.Show();
+            }
+        }
+
+        Button MakeBarButton(string label)
+        {
+            var button = new Button(this) { Text = label, TextSize = 11 };
+            button.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
+            button.SetTextColor(LauncherTheme.Foreground);
+            button.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f)
+            {
+                RightMargin = (int)(4 * density)
+            };
+            bar.AddView(button);
+            return button;
+        }
+
+        MakeBarButton("Refresh").Click += (_, _) =>
+        {
+            sources = CrashReporter.GetLogFiles();
             status.Text = CrashReporter.GetStatusLine();
-            logView.Text = "(cleared)";
+            Load(currentTitle);
         };
-        btnRow.AddView(clearBtn);
+        MakeBarButton("Copy").Click += (_, _) => CopyCurrentLog();
+        MakeBarButton("Share").Click += (_, _) => ShareCurrentLog();
+        MakeBarButton("Close").Click += (_, _) => dialog.Dismiss();
 
-        var issuesBtn = new Button(this) { Text = "GitHub Issues", TextSize = 11 };
-        issuesBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 3);
-        issuesBtn.SetTextColor(LauncherTheme.Foreground);
-        issuesBtn.LayoutParameters = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f);
-        issuesBtn.Click += (_, _) => OpenUrl("https://github.com/ministation/space-station-14-client/issues");
-        btnRow.AddView(issuesBtn);
-        view.AddView(btnRow);
+        root.AddView(bar, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent));
+        dialog.SetContentView(root);
 
-        view.AddView(logView);
-        scroll.AddView(view);
-        builder.SetView(scroll);
-
-        builder.SetPositiveButton("Share", (_, _) => ShareCrashReport());
-        builder.SetNeutralButton("Copy", (_, _) => CopyCrashReport());
-        builder.SetNegativeButton("Close", (_, _) => CrashReporter.MarkSeen());
-        var dialog = builder.Create();
+        var window = dialog.Window;
+        if (window != null)
+        {
+            window.SetLayout(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent);
+            window.SetBackgroundDrawable(new ColorDrawable(Color.ParseColor("#101014")));
+        }
 
         dialog.Show();
+        Load(selectTitle);
         CrashReporter.MarkSeen();
-    }
-
-    private void ShareCrashReport()
-    {
-        try
-        {
-            var report = CrashReporter.GetFullReport();
-            var intent = new Intent(Intent.ActionSend);
-            intent.SetType("text/plain");
-            intent.PutExtra(Intent.ExtraSubject, $"SS14 Android crash report {GetCurrentAppVersion()}");
-            intent.PutExtra(Intent.ExtraText, report);
-            StartActivity(Intent.CreateChooser(intent, "Share crash report"));
-        }
-        catch (Exception ex)
-        {
-            Toast.MakeText(this, $"Share failed: {ex.Message}", ToastLength.Short)?.Show();
-        }
-    }
-
-    private void CopyCrashReport()
-    {
-        try
-        {
-            var report = CrashReporter.GetFullReport();
-            var clipboard = GetSystemService(ClipboardService) as ClipboardManager;
-            if (clipboard != null)
-                clipboard.PrimaryClip = ClipData.NewPlainText("SS14 crash report", report);
-            Toast.MakeText(this, "Crash report copied to clipboard", ToastLength.Short)?.Show();
-        }
-        catch (Exception ex)
-        {
-            Toast.MakeText(this, $"Copy failed: {ex.Message}", ToastLength.Short)?.Show();
-        }
     }
 
     private void ClearCrashReports()
@@ -3673,7 +3762,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.9.0";
+    public const string CurrentAppVersion = "v0.9.1";
 
 
     public string GetCurrentAppVersion()

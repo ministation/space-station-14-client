@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
@@ -29,16 +30,19 @@ public static class CrashReporter
     {
         get
         {
+            // game.log is written by the game activity into the internal files dir
+            // (AppStorage.FilesDir). The reporter used to prefer the external one, so
+            // the log tail in every shared report was empty: read the internal dir.
             try
             {
-                var dir = global::Android.App.Application.Context.GetExternalFilesDir(null)?.AbsolutePath;
+                var dir = global::Android.App.Application.Context.FilesDir?.AbsolutePath;
                 if (!string.IsNullOrEmpty(dir))
                     return dir!;
             }
             catch { }
             try
             {
-                var dir = global::Android.App.Application.Context.FilesDir?.AbsolutePath;
+                var dir = global::Android.App.Application.Context.GetExternalFilesDir(null)?.AbsolutePath;
                 if (!string.IsNullOrEmpty(dir))
                     return dir!;
             }
@@ -50,6 +54,11 @@ public static class CrashReporter
     public static string CrashPath => Path.Combine(FilesDir, CrashFileName);
     public static string GameLogPath => Path.Combine(FilesDir, GameLogFileName);
     private static string SeenMarkerPath => Path.Combine(FilesDir, SeenMarkerFileName);
+
+    public static string LauncherLogPath => Path.Combine(FilesDir, LauncherLogFileName);
+
+    private const string LauncherLogFileName = "launcher.log";
+    private const long MaxLauncherLogBytes = 512 * 1024;
 
     public static string GetDeviceSummary()
     {
@@ -238,10 +247,10 @@ public static class CrashReporter
         sb.Append(GetDeviceSummary());
         sb.AppendLine();
         sb.AppendLine("=== crash.txt (tail) ===");
-        sb.AppendLine(TailText(CrashPath, MaxReportChars - MaxLogTailChars - 2000));
+        sb.AppendLine(ReadTailText(CrashPath, MaxReportChars - MaxLogTailChars - 2000));
         sb.AppendLine();
         sb.AppendLine("=== game.log (tail) ===");
-        sb.AppendLine(TailText(GameLogPath, MaxLogTailChars));
+        sb.AppendLine(ReadTailText(GameLogPath, MaxLogTailChars));
         sb.AppendLine();
         sb.AppendLine("=== client config (mobile/display/interface/input) ===");
         var cfgSection = GetMobileConfigSection();
@@ -268,6 +277,71 @@ public static class CrashReporter
             return $"crash.txt: {FormatBytes(crashSize)}   game.log: {FormatBytes(logSize)}";
         }
         catch { return "Log status unavailable."; }
+    }
+
+    /// <summary>
+    /// Log files the launcher can show, newest session first. Only existing
+    /// non-empty files are listed so the viewer never opens an empty tab.
+    /// </summary>
+    public readonly record struct LogFile(string Title, string Path, long Size);
+
+    public static List<LogFile> GetLogFiles()
+    {
+        var list = new List<LogFile>();
+        Add("game.log", GameLogFileName);
+        Add("crash.txt", CrashFileName);
+        Add("launcher.log", LauncherLogFileName);
+        Add("pad in game", "mobile-controls-debug.txt");
+        Add("pad arrange", "mobile-arrange-debug.txt");
+        return list;
+
+        void Add(string title, string fileName)
+        {
+            try
+            {
+                var path = Path.Combine(FilesDir, fileName);
+                if (!File.Exists(path))
+                    return;
+                var size = new FileInfo(path).Length;
+                if (size > 0)
+                    list.Add(new LogFile(title, path, size));
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Appends one launcher line to launcher.log. Logcat is unreadable on a phone,
+    /// so screen size, safe area and the pad layout the game receives go here and
+    /// the in-app log viewer shows them.
+    /// </summary>
+    public static void AppendLauncherLog(string tag, string message)
+    {
+        lock (Lock)
+        {
+            try
+            {
+                var path = LauncherLogPath;
+                var info = new FileInfo(path);
+                if (info.Exists && info.Length > MaxLauncherLogBytes)
+                    File.WriteAllText(path, ReadTailText(path, (int)(MaxLauncherLogBytes / 2)));
+                File.AppendAllText(path, $"{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}Z [{tag}] {message}\n");
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Device header plus one log tail: what the Share and Copy buttons send.
+    /// </summary>
+    public static string GetShareText(string title, string path)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"=== SS14 Android log: {title} ===");
+        sb.Append(GetDeviceSummary());
+        sb.AppendLine($"=== {Path.GetFileName(path)} (tail) ===");
+        sb.AppendLine(ReadTailText(path, MaxReportChars));
+        return sb.ToString();
     }
 
     /// <summary>
@@ -326,7 +400,7 @@ public static class CrashReporter
         }
     }
 
-    private static string TailText(string path, int maxChars)
+    public static string ReadTailText(string path, int maxChars)
     {
         try
         {

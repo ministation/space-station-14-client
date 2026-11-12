@@ -1931,10 +1931,10 @@ index 73cadae..99dfd2a 100644
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
 new file mode 100644
-index 0000000..eb7f5a3
+index 0000000..e506fbc
 --- /dev/null
 +++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,504 @@
 +using System;
 +using System.Numerics;
 +using OpenToolkit.Graphics.OpenGL4;
@@ -1987,13 +1987,42 @@ index 0000000..eb7f5a3
 +        private float _mobileLightmapCell = MobileLightmapCellSize;
 +        private int _mobileLightmapStamp;
 +
++        private bool _mobileLightmapFaulted;
++
 +        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count)
 +        {
++            if (_mobileLightmapFaulted)
++                return false;
++
 +            if (_mobileLightmapShaderHandle == default ||
 +                !_loadedShaders.TryGetValue(_mobileLightmapShaderHandle, out var loadedShader))
 +            {
++                if (!_mobileLightmapWarned)
++                {
++                    _mobileLightmapWarned = true;
++                    _clydeSawmill.Warning("Mobile lightmap shader is missing, drawing lights per source instead");
++                }
++
 +                return false;
 +            }
++
++            try
++            {
++                return DrawMobileLightmapInner(map, expandedBounds, count, loadedShader);
++            }
++            catch (Exception ex)
++            {
++                _mobileLightmapFaulted = true;
++                _clydeSawmill.Error($"Mobile lightmap failed, falling back to per-light lights: {ex}");
++                return false;
++            }
++        }
++
++        private bool _mobileLightmapWarned;
++
++        private bool DrawMobileLightmapInner(MapId map, Box2 expandedBounds, int count,
++            LoadedShader loadedShader)
++        {
 +
 +            SetUpMobileLightmapGrid(expandedBounds, out var cells);
 +
@@ -2109,6 +2138,12 @@ index 0000000..eb7f5a3
 +                width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
 +                height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
 +            }
++
++            // Round up to 16: the bounds follow the camera by less than a cell per
++            // frame, so an exact size would recreate the GPU texture constantly.
++            // Extra cells are just lit black, the quad covers them too.
++            width = (width + 15) & ~15;
++            height = (height + 15) & ~15;
 +
 +            _mobileLightmapCell = cell;
 +            _mobileLightmapWidth = width;

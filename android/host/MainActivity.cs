@@ -615,6 +615,15 @@ namespace Content.Android
                     }
                 }
 
+                var padLayout = LaunchBuildCVars.TryGetValue("mobile.controls_positions", out var padValue)
+                    ? padValue
+                    : "<not passed>";
+                CrashReporter.AppendLauncherLog("Launch",
+                    $"uiScale={LaunchBuildCVars.GetValueOrDefault("display.uiScale")} " +
+                    $"resolution={Intent?.GetStringExtra("display_resolution") ?? "native"} " +
+                    $"lightmap={LaunchBuildCVars.GetValueOrDefault("light.mobile_lightmap")} " +
+                    $"pad_layout={padLayout}");
+
                 Assembly.Load("Robust.Shared");
                 Assembly.Load("Robust.Client");
             }
@@ -767,6 +776,7 @@ namespace Content.Android
                 {
                     int targetW = (int)Math.Round(targetH * aspect);
                     global::Android.Util.Log.Info("SS14Launch", $"[Resolution] Setting Surface size to {targetW}x{targetH} (native is {screenW}x{screenH})");
+                    CrashReporter.AppendLauncherLog("Resolution", $"surface={targetW}x{targetH} native={screenW}x{screenH}");
                     MSurface.Holder.SetFixedSize(targetW, targetH);
                     // SDL sizes the surface view to the render resolution, which
                     // leaves the game in the top left corner of the screen. The
@@ -1335,6 +1345,9 @@ namespace Content.Android
             $"[SafeArea] final ready={_safeAreaReady} surfaceScale={SurfaceScale():F3} " +
             $"physical l={_safeAreaLeft} t={_safeAreaTop} r={_safeAreaRight} b={_safeAreaBottom} " +
             $"passed l={SafeInset(_safeAreaLeft)} t={SafeInset(_safeAreaTop)} r={SafeInset(_safeAreaRight)} b={SafeInset(_safeAreaBottom)}");
+        CrashReporter.AppendLauncherLog("SafeArea",
+            $"ready={_safeAreaReady} scale={SurfaceScale():F3} physical={_safeAreaLeft},{_safeAreaTop},{_safeAreaRight},{_safeAreaBottom} " +
+            $"passed={SafeInset(_safeAreaLeft)},{SafeInset(_safeAreaTop)},{SafeInset(_safeAreaRight)},{SafeInset(_safeAreaBottom)}");
     }
 
     private void ApplySafeArea(WindowInsets? insets)
@@ -1516,6 +1529,8 @@ namespace Content.Android
                 var window = context?.Resources?.DisplayMetrics;
                 global::Android.Util.Log.Info("SS14Launch",
                     $"[ScreenSize] base={width}x{height} source={source} window={window?.WidthPixels}x{window?.HeightPixels}");
+                CrashReporter.AppendLauncherLog("ScreenSize",
+                    $"base={width}x{height} source={source} window={window?.WidthPixels}x{window?.HeightPixels}");
             }
 
             return (Math.Max(width, height), Math.Min(width, height));
