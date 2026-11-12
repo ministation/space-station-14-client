@@ -972,9 +972,6 @@ public sealed class LauncherActivity : Activity
         var direct = CreateAngleButton("Direct Connect", 30, 130);
         direct.Click += (_, _) => ShowDirectConnectDialog();
         footer.AddView(direct, new LinearLayout.LayoutParams(Dp(130), Dp(30)) { RightMargin = Dp(6) });
-        var sandbox = CreateAngleButton("Offline Sandbox", 30, 140);
-        sandbox.Click += (_, _) => LaunchOfflineSandbox();
-        footer.AddView(sandbox, new LinearLayout.LayoutParams(Dp(140), Dp(30)));
         page.AddView(footer);
 
         RenderServerList();
@@ -1094,14 +1091,12 @@ public sealed class LauncherActivity : Activity
             MobileSafeArea.FrameTop, MobileSafeArea.FrameBottom, MobileSafeArea.FrameAllSides,
             MobileSafeArea.FrameOff,
         });
-        AddChoiceRow(list, "Frame size", prefs, "frame_scale", "x1", new[] { "x1", "x2", "x3" });
 
         AddActionRow(list, "Customize controls", () => ShowControlsEditor());
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
         AddActionRow(list, "Logs", () => ShowCrashReporterDialog());
-        AddActionRow(list, "Offline sandbox", () => LaunchOfflineSandbox());
         AddActionRow(list, "Check for updates", () => _ = CheckForUpdatesAsync(true));
         AddActionRow(list, "Website", () => OpenUrl("https://spacestation14.com/"));
         AddActionRow(list, "GitHub", () => OpenUrl("https://github.com/ministation/space-station-14-client"));
@@ -1212,18 +1207,20 @@ public sealed class LauncherActivity : Activity
 
     private void AddActionRow(LinearLayout list, string label, Action action)
     {
+        // The row itself is the target: a repeated "Open" button on every line
+        // made the list look like a wall of buttons.
         var row = new LinearLayout(this) { Orientation = Orientation.Horizontal };
         row.SetGravity(GravityFlags.CenterVertical);
-        row.SetPadding(Dp(4), Dp(2), Dp(4), Dp(2));
+        row.SetPadding(Dp(4), 0, Dp(4), 0);
+        row.Clickable = true;
+        row.Click += (_, _) => action();
         var text = new TextView(this) { Text = label, TextSize = 12f };
         text.SetTextColor(LauncherTheme.Foreground);
-        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(30), 1f));
-        var button = new Button(this) { Text = "Open", TextSize = 11f };
-        button.SetTextColor(LauncherTheme.Foreground);
-        button.Background = CreateAngleButtonBackground(Dp(10), AngleSide.Both);
-        button.SetPadding(Dp(10), 0, Dp(10), 0);
-        button.Click += (_, _) => action();
-        row.AddView(button, new LinearLayout.LayoutParams(Dp(76), Dp(30)));
+        row.AddView(text, new LinearLayout.LayoutParams(0, Dp(34), 1f));
+        var chevron = new TextView(this) { Text = ">", TextSize = 12f };
+        chevron.SetTextColor(LauncherTheme.SubText);
+        chevron.Gravity = GravityFlags.CenterVertical;
+        row.AddView(chevron, new LinearLayout.LayoutParams(Dp(18), Dp(34)));
         list.AddView(row);
     }
 
@@ -1991,7 +1988,7 @@ public sealed class LauncherActivity : Activity
     // Launcher-side pad editor: the game no longer has an edit mode, so the
     // player drags the sticks and buttons here and the fractions are passed to
     // the engine as cvar_build_mobile.controls_positions on the next launch.
-    private void ShowControlsEditor()
+    private void ShowControlsEditor(Action? onClosed = null)
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         var editor = new PadEditorView(this, prefs, prefs?.GetString("mobile_positions", "") ?? "", Density);
@@ -2064,6 +2061,7 @@ public sealed class LauncherActivity : Activity
             ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent) { Gravity = GravityFlags.Top });
 
         dialog.SetContentView(rootView);
+        dialog.DismissEvent += (_, _) => onClosed?.Invoke();
         dialog.Show();
         var window = dialog.Window;
         if (window != null)
@@ -2125,19 +2123,20 @@ public sealed class LauncherActivity : Activity
         {
             // Radii are fractions of screen height, matching the engine's
             // ArrangeOverride table in MobileControlsOverlay.
-            ("stick", "MOVE", 0.21f, 0.81f, 0.18f),
-            ("aim", "AIM", 0.79f, 0.81f, 0.18f),
-            ("drop", "DROP", 0.316f, 0.622f, 0.095f),
-            ("pull", "PULL", 0.21f, 0.544f, 0.095f),
-            ("esc", "ESC", 0.104f, 0.622f, 0.095f),
-            ("use", "USE", 0.896f, 0.622f, 0.1075f),
-            ("exam", "EXAM", 0.79f, 0.544f, 0.095f),
-            ("bag", "BAG", 0.684f, 0.622f, 0.095f),
+            ("stick", "MOVE", 0.21f, 0.755f, 0.234f),
+            ("aim", "AIM", 0.79f, 0.755f, 0.234f),
+            ("drop", "DROP", 0.3478f, 0.5106f, 0.095f),
+            ("pull", "PULL", 0.21f, 0.4092f, 0.095f),
+            ("esc", "ESC", 0.0722f, 0.5106f, 0.095f),
+            ("run", "RUN", 0.5144f, 0.5106f, 0.09f),
+            ("z", "Z", 0.9278f, 0.5106f, 0.095f),
+            ("exam", "EXAM", 0.79f, 0.4092f, 0.095f),
+            ("bag", "BAG", 0.6522f, 0.5106f, 0.095f),
         };
 
         // Version of the saved layout. MigratePadLayout drops anything older, so
         // Save and Reset have to write this exact number.
-        public const int LayoutVersion = 5;
+        public const int LayoutVersion = 6;
 
         // One range for a saved radius and for the resize slider. The engine takes
         // the radius as is, so a value outside this range would show one size in the
@@ -2427,7 +2426,7 @@ public sealed class LauncherActivity : Activity
                 var cx = clamped.X - _originX;
                 var cy = clamped.Y - _originY;
                 if (isStick)
-                    DrawStick(canvas, cx, cy, radiusPx, item.Id == "aim");
+                    DrawStick(canvas, _paint, cx, cy, radiusPx, item.Id == "aim");
                 else
                     DrawButton(canvas, cx, cy, radiusPx, item.Label, AccentOf(item.Id));
             }
@@ -2475,11 +2474,12 @@ public sealed class LauncherActivity : Activity
                 canvas.DrawRect(0, bottomEdge, Width, Height, _paint);
         }
 
-        private static Color AccentOf(string id) => id switch
+        public static Color AccentOf(string id) => id switch
         {
             "pull" => Color.Argb(255, 155, 89, 182),
             "exam" => Color.Argb(255, 52, 152, 219),
-            "use" => Color.Argb(255, 0, 180, 216),
+            "run" => Color.Argb(255, 230, 180, 60),
+            "z" => Color.Argb(255, 0, 180, 216),
             "drop" => Color.Argb(255, 231, 76, 60),
             "bag" => Color.Argb(255, 26, 188, 156),
             _ => Color.Argb(255, 210, 210, 210),
@@ -2494,7 +2494,7 @@ public sealed class LauncherActivity : Activity
             (int)(a.G + (b.G - a.G) * t),
             (int)(a.B + (b.B - a.B) * t));
 
-        private void DrawButton(Canvas canvas, float cx, float cy, float radius, string label, Color accent)
+        public static void DrawButton(Canvas canvas, float cx, float cy, float radius, string label, Color accent)
         {
             var unit = MathF.Max(3f, MathF.Round(radius / 6f));
             var face = FaceOf(accent);
@@ -2516,7 +2516,7 @@ public sealed class LauncherActivity : Activity
                 Color.Argb(245, 248, 250, 255));
         }
 
-        private void DrawStick(Canvas canvas, float cx, float cy, float radius, bool aim)
+        public static void DrawStick(Canvas canvas, Paint paint, float cx, float cy, float radius, bool aim)
         {
             var unit = MathF.Max(2f, MathF.Round(radius / 7f));
             DrawDisc(canvas, cx, cy, radius,
@@ -2533,12 +2533,12 @@ public sealed class LauncherActivity : Activity
 
             var block = MathF.Max(2f, MathF.Round(radius * 0.11f));
             var cross = Color.Argb(110, 186, 192, 202);
-            _paint.SetStyle(Paint.Style.Fill);
-            _paint.Color = cross;
+            paint.SetStyle(Paint.Style.Fill);
+            paint.Color = cross;
             void Pix(float ox, float oy)
             {
                 var half = block / 2f;
-                canvas.DrawRect(cx + ox - half, cy + oy - half, cx + ox + half, cy + oy + half, _paint);
+                canvas.DrawRect(cx + ox - half, cy + oy - half, cx + ox + half, cy + oy + half, paint);
             }
 
             if (aim)
@@ -2773,15 +2773,6 @@ public sealed class LauncherActivity : Activity
         scrollView.AddView(view);
 
         var toolsRow = new LinearLayout(this) { Orientation = Orientation.Horizontal };
-        var sandboxBtn = new Button(this) { Text = "Offline Sandbox", TextSize = 11 };
-        sandboxBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
-        sandboxBtn.SetTextColor(LauncherTheme.Foreground);
-        var sandboxLp = new LinearLayout.LayoutParams(0, (int)(34 * density), 1f);
-        sandboxLp.SetMargins(0, 0, (int)(6 * density), (int)(8 * density));
-        sandboxBtn.LayoutParameters = sandboxLp;
-        sandboxBtn.Click += (_, _) => LaunchOfflineSandbox();
-        toolsRow.AddView(sandboxBtn);
-
         var logsBtn = new Button(this) { Text = "Logs", TextSize = 11 };
         logsBtn.Background = LauncherTheme.CreateBox(LauncherTheme.ControlMid, 0);
         logsBtn.SetTextColor(LauncherTheme.Foreground);
@@ -3733,25 +3724,6 @@ public sealed class LauncherActivity : Activity
 
     #endregion
 
-    private void LaunchOfflineSandbox()
-    {
-        var intent = new Intent(this, typeof(MainActivity));
-        var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs != null)
-        {
-            var o = prefs.GetFloat("mobile_opacity", 0.85f);
-            intent.PutExtra("cvar_build_mobile.controls_opacity", o.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
-            // display.uiScale is derived from display_resolution in MainActivity.
-            var dispRes = prefs.GetString("display_resolution", "native") ?? "native";
-            intent.PutExtra("display_resolution", dispRes);
-            intent.PutExtra("cvar_build_mobile.controls_positions", BuildPadLayout(prefs));
-            intent.PutExtra("frame_mode", MobileSafeArea.ReadMode(prefs));
-            intent.PutExtra("frame_scale", "x" + MobileSafeArea.ReadScale(prefs));
-            ApplyGraphicsExtras(intent, prefs);
-        }
-        StartActivity(intent);
-    }
-
     private void OpenUrl(string url)
     {
         try
@@ -3762,7 +3734,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.9.1";
+    public const string CurrentAppVersion = "v1.0.0";
 
 
     public string GetCurrentAppVersion()

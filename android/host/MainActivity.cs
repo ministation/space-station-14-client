@@ -94,6 +94,31 @@ namespace Content.Android
             return false;
         }
 
+        /// <summary>
+        ///    Shows the IME for a focused in-game text field. The engine calls this
+        ///    through AppDomain on text input start and the matching hide on stop.
+        /// </summary>
+        public static void ShowSoftKeyboard()
+        {
+            Instance?.RunOnUiThread(() =>
+            {
+                try
+                {
+                    var imm = (global::Android.Views.InputMethods.InputMethodManager?)Application.Context?
+                        .GetSystemService(global::Android.Content.Context.InputMethodService);
+                    var view = MSurface ?? Instance?.Window?.DecorView;
+                    if (imm == null || view == null)
+                        return;
+
+                    imm.ShowSoftInput(view, 0);
+                }
+                catch (Exception ex)
+                {
+                    global::Android.Util.Log.Warn("SS14Keyboard", $"Show keyboard failed: {ex.Message}");
+                }
+            });
+        }
+
         public static void DismissSoftKeyboard()
         {
             try
@@ -656,6 +681,8 @@ namespace Content.Android
                     Instance?.RunOnUiThread(DismissSoftKeyboard);
                 }
             }));
+            AppDomain.CurrentDomain.SetData("SS14_SHOW_SOFT_KEYBOARD", (Action)ShowSoftKeyboard);
+            AppDomain.CurrentDomain.SetData("SS14_HIDE_SOFT_KEYBOARD", (Action)DismissSoftKeyboard);
             UpdateHardwareKeyboardState();
             ApplyImmersiveMode();
         }
@@ -732,7 +759,10 @@ namespace Content.Android
 #pragma warning restore CS0618
                 }
 
-                Window.SetSoftInputMode(SoftInput.StateAlwaysHidden);
+                // The IME has to be able to appear over the game, otherwise chat
+                // and other text fields get focus but no keyboard. AdjustNothing
+                // keeps the render surface size while the keyboard is up.
+                Window.SetSoftInputMode(SoftInput.AdjustNothing);
                 InstallSafeAreaListener();
             }
             catch (Exception ex)

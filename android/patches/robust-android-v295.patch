@@ -3062,7 +3062,7 @@ index 1b6cdba..af2cb75 100644
  
  #if MACOS
 diff --git a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
-index 70fa5ed..51b6061 100644
+index 70fa5ed..fedecab 100644
 --- a/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
 +++ b/Robust.Client/Graphics/Clyde/Windowing/Sdl3.Window.cs
 @@ -1,4 +1,4 @@
@@ -3174,7 +3174,7 @@ index 70fa5ed..51b6061 100644
  
                  SDL.SDL_GL_SetSwapInterval(swapInterval);
              }
-@@ -660,7 +683,18 @@ internal partial class Clyde
+@@ -660,7 +683,23 @@ internal partial class Clyde
  
          private static void WinThreadStartTextInput(CmdTextInputStart cmd)
          {
@@ -3190,18 +3190,26 @@ index 70fa5ed..51b6061 100644
 +
 +            var dismissAction = AppDomain.CurrentDomain.GetData("SS14_DISMISS_SOFT_KEYBOARD_IF_HARDWARE") as Action;
 +            dismissAction?.Invoke();
++
++            // SDL asks Android for the IME itself, but the host also owns the
++            // window soft-input mode, so tell it explicitly.
++            var showKeyboard = AppDomain.CurrentDomain.GetData("SS14_SHOW_SOFT_KEYBOARD") as Action;
++            showKeyboard?.Invoke();
          }
  
          public void TextInputStop(WindowReg reg)
-@@ -671,6 +705,7 @@ internal partial class Clyde
+@@ -671,6 +710,10 @@ internal partial class Clyde
          private static void WinThreadStopTextInput(CmdTextInputStop cmd)
          {
              SDL.SDL_StopTextInput(cmd.Window);
 +            AppDomain.CurrentDomain.SetData("SS14_TEXT_INPUT_ACTIVE", false);
++
++            var hideKeyboard = AppDomain.CurrentDomain.GetData("SS14_HIDE_SOFT_KEYBOARD") as Action;
++            hideKeyboard?.Invoke();
          }
  
          public void ClipboardSetText(WindowReg mainWindow, string text)
-@@ -715,6 +750,11 @@ internal partial class Clyde
+@@ -715,6 +758,11 @@ internal partial class Clyde
                      return windowReg;
              }
  
@@ -4072,10 +4080,10 @@ index 29c54bc..0ac4d9d 100644
          void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..88b5f72
+index 0000000..0036cde
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1496 @@
+@@ -0,0 +1,1500 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -4150,7 +4158,8 @@ index 0000000..88b5f72
 +    private readonly PojavActionButton _pullButton;
 +    private readonly PojavActionButton _examButton;
 +
-+    private readonly PojavActionButton _useButton;
++    private readonly PojavActionButton _zButton;
++    private readonly PojavActionButton _runButton;
 +    private readonly PojavActionButton _dropButton;
 +    private readonly PojavActionButton _bagButton;
 +
@@ -4271,7 +4280,9 @@ index 0000000..88b5f72
 +        };
 +        _staticExamButton = _examButton;
 +
-+        _useButton = CreateButton("USE", Keyboard.Key.Z, id: "use", accent: new Color(0, 180, 216));
++        // Z is ActivateItemInHand; RUN holds Sprint so the stick moves faster.
++        _zButton = CreateButton("Z", Keyboard.Key.Z, id: "z", accent: new Color(0, 180, 216));
++        _runButton = CreateButton("RUN", Keyboard.Key.Space, id: "run", accent: new Color(230, 180, 60));
 +        _dropButton = CreateButton("DROP", Keyboard.Key.Q, id: "drop", accent: new Color(231, 76, 60));
 +        // V opens the backpack storage directly; the old INV key opened the
 +        // whole inventory menu and is replaced by BAG.
@@ -5455,11 +5466,11 @@ index 0000000..88b5f72
 +        // (PadEditorView.Defaults). The same fractions everywhere make the
 +        // editor, the game and every phone show identical controls; no size
 +        // cvar scales the pad any more.
-+        var stickRadius = finalSize.Y * 0.18f;
-+        var useSize = finalSize.Y * 0.215f;
++        var stickRadius = finalSize.Y * 0.234f;
 +        var utilSize = finalSize.Y * 0.19f;
-+        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.81f);
-+        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.81f);
++        var runSize = finalSize.Y * 0.18f;
++        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.755f);
++        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.755f);
 +
 +        _thumbstick.Radius = stickRadius;
 +        _thumbstick.KnobRadius = stickRadius * 0.30f;
@@ -5502,19 +5513,20 @@ index 0000000..88b5f72
 +            ArrangeChild(control, center - new Vector2(size) / 2f, new Vector2(size, size), finalSize);
 +        }
 +
-+        PlaceAt(_escButton, 0.104f, 0.622f, utilSize);
-+        PlaceAt(_pullButton, 0.21f, 0.544f, utilSize);
-+        PlaceAt(_dropButton, 0.316f, 0.622f, utilSize);
-+        PlaceAt(_bagButton, 0.684f, 0.622f, utilSize);
-+        PlaceAt(_examButton, 0.79f, 0.544f, utilSize);
-+        PlaceAt(_useButton, 0.896f, 0.622f, useSize);
++        PlaceAt(_escButton, 0.0722f, 0.5106f, utilSize);
++        PlaceAt(_pullButton, 0.21f, 0.4092f, utilSize);
++        PlaceAt(_dropButton, 0.3478f, 0.5106f, utilSize);
++        PlaceAt(_bagButton, 0.6522f, 0.5106f, utilSize);
++        PlaceAt(_examButton, 0.79f, 0.4092f, utilSize);
++        PlaceAt(_runButton, 0.5144f, 0.5106f, runSize);
++        PlaceAt(_zButton, 0.9278f, 0.5106f, utilSize);
 +
 +        // User-made buttons keep their saved place.
 +        foreach (var btn in _allButtons)
 +        {
 +            if (!btn.CustomPosition.HasValue)
 +                continue;
-+            if (btn == _useButton || btn == _dropButton || btn == _pullButton ||
++            if (btn == _zButton || btn == _runButton || btn == _dropButton || btn == _pullButton ||
 +                btn == _escButton || btn == _examButton || btn == _bagButton)
 +                continue;
 +            var customSize = btn.CustomSize ?? utilSize;
@@ -5533,7 +5545,7 @@ index 0000000..88b5f72
 +            ClampToSafe(_aimStick);
 +            foreach (var btn in _allButtons)
 +            {
-+                if (btn == _useButton || btn == _dropButton || btn == _pullButton ||
++                if (btn == _zButton || btn == _runButton || btn == _dropButton || btn == _pullButton ||
 +                    btn == _escButton || btn == _examButton || btn == _bagButton ||
 +                    btn.CustomPosition.HasValue)
 +                    ClampToSafe(btn);
@@ -6233,10 +6245,10 @@ index 0000000..ab3df7c
 +
 diff --git a/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
 new file mode 100644
-index 0000000..640d340
+index 0000000..ca2f0fd
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/VirtualThumbstick.cs
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,444 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -6281,7 +6293,7 @@ index 0000000..640d340
 +
 +    // Pushing the aim stick out this far also holds the primary attack, the way
 +    // a PC player aims with the mouse and holds the left button.
-+    private const float AttackThreshold = 0.55f;
++    private const float AttackThreshold = 0.45f;
 +    private Vector2? _dragTouchOffset;
 +    private readonly HashSet<Keyboard.Key> _activeKeys = new();
 +    // Reused by UpdateMovementKeys, which runs on every touch move.
@@ -6297,6 +6309,7 @@ index 0000000..640d340
 +    }
 +
 +    private long? _activeFingerId;
++    private long _lastAimTapMs = -10000;
 +    private float _pressElapsed;
 +    private bool _pressMoved;
 +
@@ -6365,9 +6378,15 @@ index 0000000..640d340
 +        SetAttackHeld(false);
 +
 +        // Terraria style: a quick tap of the aim stick works as a normal click.
++        // Two taps in a row are the heavy, wide swing a PC player makes with the
++        // right mouse button.
 +        if (IsAimStick && !_pressMoved && _pressElapsed < 0.25f)
 +        {
-+            var click = new KeyEventArgs(Keyboard.Key.MouseLeft, false, false, false, false, false, 0);
++            var now = Environment.TickCount64;
++            var doubleTap = now - _lastAimTapMs < 350;
++            _lastAimTapMs = doubleTap ? -10000 : now;
++            var button = doubleTap ? Keyboard.Key.MouseRight : Keyboard.Key.MouseLeft;
++            var click = new KeyEventArgs(button, false, false, false, false, false, 0);
 +            _inputManager.KeyDown(click);
 +            _inputManager.KeyUp(click);
 +        }
@@ -6716,7 +6735,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..f8934ae 100644
+index 274aa2a..4253e06 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -6851,7 +6870,7 @@ index 274aa2a..f8934ae 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,72 @@ internal partial class UserInterfaceManager
+@@ -583,4 +687,83 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -6887,6 +6906,17 @@ index 274aa2a..f8934ae 100644
 +            var hit = MouseGetControlAndRel(pointerLocation);
 +            if (hit == null || !hit.Value.control.VisibleInTree)
 +                return false;
++
++            // The main viewport covers the whole screen and is the control under
++            // every tap in the world. Sending it a bare UIClick never reaches the
++            // game input: attacks and "use item in world" are bound to the mouse
++            // button, not to UIClick. Return false so GameController turns the
++            // finger into a real mouse click at that spot instead.
++            for (var parent = hit.Value.control; parent != null; parent = parent.Parent)
++            {
++                if (parent is IViewportControl)
++                    return false;
++            }
 +
 +            control = hit.Value.control;
 +            relativePixel = hit.Value.rel;
