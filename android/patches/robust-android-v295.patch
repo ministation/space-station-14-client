@@ -630,15 +630,17 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..3ef28e0 100644
+index a6bc6a0..602159c 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
-@@ -1,3 +1,4 @@
+@@ -1,4 +1,6 @@
 +using System;
  using Robust.Client.Input;
++using Robust.Shared.Map;
  
  namespace Robust.Client
-@@ -49,5 +50,56 @@ namespace Robust.Client
+ {
+@@ -49,5 +51,78 @@ namespace Robust.Client
                  return;
              }
          }
@@ -663,6 +665,16 @@ index a6bc6a0..3ef28e0 100644
 +            switch (touchEvent.Action)
 +            {
 +                case TouchFingerAction.Down when _touchUiFinger == null && _touchMouseFinger == null:
++                    // Taps inside a content window must be real mouse presses: the
++                    // window's controls act on mouse key bindings (storage drags
++                    // listen to MoveStoredItem), and a bare UIClick never reaches them.
++                    if (TouchHitsWindow(touchEvent.Coordinates))
++                    {
++                        _touchMouseFinger = touchEvent.FingerId;
++                        _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
++                        break;
++                    }
++
 +                    // A UI click goes straight to the control under the finger. Sending
 +                    // it through the key bindings aims at the focused control, which on
 +                    // touch is stale, so the button never fires.
@@ -692,6 +704,18 @@ index a6bc6a0..3ef28e0 100644
 +                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, false);
 +                    break;
 +            }
++        }
++
++        private bool TouchHitsWindow(ScreenCoordinates coordinates)
++        {
++            var control = _userInterfaceManager.MouseGetControl(coordinates);
++            for (; control != null; control = control.Parent)
++            {
++                if (control == _userInterfaceManager.WindowRoot)
++                    return true;
++            }
++
++            return false;
 +        }
      }
  }
