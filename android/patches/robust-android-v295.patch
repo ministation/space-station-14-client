@@ -689,6 +689,101 @@ index 6079fa6..3e2161b 100644
          }
      }
  }
+diff --git a/Robust.Client/GameController/GameController.Perf.cs b/Robust.Client/GameController/GameController.Perf.cs
+new file mode 100644
+index 0000000..11b7219
+--- /dev/null
++++ b/Robust.Client/GameController/GameController.Perf.cs
+@@ -0,0 +1,89 @@
++using System;
++using System.Diagnostics;
++using Robust.Shared.Timing;
++
++namespace Robust.Client;
++
++// Android performance diagnostics: one [Perf] line in game.log every 120 frames
++// with the time split between simulation, frame update and render submission.
++// Render time includes the buffer swap, so a GPU-bound scene shows up there
++// while a busy simulation shows up in tick/update. Keep this cheap: it must be
++// safe to leave on in release builds.
++internal sealed partial class GameController
++{
++    private double _perfFrameMs;
++    private double _perfTickMs;
++    private double _perfUpdateMs;
++    private double _perfRenderMs;
++    private int _perfFrames;
++    private int _perfGc0;
++    private int _perfGc2;
++    private TimeSpan _perfGcPause;
++    private bool _perfGcPauseSupported = true;
++
++    private void PerfReset()
++    {
++        _perfFrameMs = 0;
++        _perfTickMs = 0;
++        _perfUpdateMs = 0;
++        _perfRenderMs = 0;
++        _perfFrames = 0;
++        _perfGc0 = GC.CollectionCount(0);
++        _perfGc2 = GC.CollectionCount(2);
++        try
++        {
++            _perfGcPause = GC.GetTotalPauseDuration();
++        }
++        catch
++        {
++            _perfGcPauseSupported = false;
++        }
++    }
++
++    private void PerfFrameEnd(in FrameEventArgs args)
++    {
++        _perfFrameMs += args.DeltaSeconds * 1000.0;
++        _perfFrames++;
++        if (_perfFrames < 120)
++            return;
++
++        var frames = _perfFrames;
++        var gcPause = 0.0;
++        if (_perfGcPauseSupported)
++        {
++            try
++            {
++                var now = GC.GetTotalPauseDuration();
++                gcPause = (now - _perfGcPause).TotalMilliseconds;
++                _perfGcPause = now;
++            }
++            catch
++            {
++                _perfGcPauseSupported = false;
++            }
++        }
++
++        var stats = _clyde.DebugStats;
++        _logger.Info(
++            "[Perf] frame=" + (_perfFrameMs / frames).ToString("F1") +
++            "ms tick=" + (_perfTickMs / frames).ToString("F1") +
++            "ms update=" + (_perfUpdateMs / frames).ToString("F1") +
++            "ms render=" + (_perfRenderMs / frames).ToString("F1") +
++            "ms gc0=" + (GC.CollectionCount(0) - _perfGc0) +
++            " gc2=" + (GC.CollectionCount(2) - _perfGc2) +
++            " gcpause=" + gcPause.ToString("F0") +
++            "ms draws=" + stats.LastGLDrawCalls +
++            " lights=" + stats.TotalLights +
++            " shadow=" + stats.ShadowLights +
++            " occluders=" + stats.Occluders +
++            " entities=" + stats.Entities +
++            " frames=" + frames.ToString("F0"));
++
++        PerfReset();
++    }
++
++    private static long PerfNow() => System.Diagnostics.Stopwatch.GetTimestamp();
++
++    private static double PerfMs(long start) =>
++        System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
++}
 diff --git a/Robust.Client/GameController/GameController.Standalone.cs b/Robust.Client/GameController/GameController.Standalone.cs
 index de20f0e..b918ded 100644
 --- a/Robust.Client/GameController/GameController.Standalone.cs
@@ -711,7 +806,7 @@ index de20f0e..b918ded 100644
  
              CleanupGameThread();
 diff --git a/Robust.Client/GameController/GameController.cs b/Robust.Client/GameController/GameController.cs
-index 60fabdc..67dde9a 100644
+index 60fabdc..ca3ff77 100644
 --- a/Robust.Client/GameController/GameController.cs
 +++ b/Robust.Client/GameController/GameController.cs
 @@ -265,7 +265,14 @@ namespace Robust.Client
@@ -730,7 +825,45 @@ index 60fabdc..67dde9a 100644
                  GC.Collect();
              }
  
-@@ -357,9 +364,81 @@ namespace Robust.Client
+@@ -287,7 +294,9 @@ namespace Robust.Client
+             {
+                 if (_mainLoop.Running)
+                 {
++                    var perfStart = PerfNow();
+                     Tick(args);
++                    _perfTickMs += PerfMs(perfStart);
+                 }
+             };
+ 
+@@ -295,8 +304,10 @@ namespace Robust.Client
+             {
+                 if (_mainLoop.Running)
+                 {
++                    var perfStart = PerfNow();
+                     _gameTiming.CurFrame++;
+                     _clyde.Render();
++                    _perfRenderMs += PerfMs(perfStart);
+                 }
+             };
+             _mainLoop.Input += (sender, args) =>
+@@ -311,10 +322,16 @@ namespace Robust.Client
+             {
+                 if (_mainLoop.Running)
+                 {
++                    var perfStart = PerfNow();
+                     Update(args);
++                    _perfUpdateMs += PerfMs(perfStart);
++                    PerfFrameEnd(args);
+                 }
+             };
+ 
++            PerfReset();
++            _logger.Info("[Perf] frame diagnostics on: tick, update and render per frame");
++
+             _configurationManager.OnValueChanged(CVars.DisplayMaxFPS, _ => UpdateVsyncConfig());
+             _configurationManager.OnValueChanged(CVars.DisplayVSync, _ => UpdateVsyncConfig(), invokeImmediately: true);
+ 
+@@ -357,9 +374,81 @@ namespace Robust.Client
                  return false;
              }
  
@@ -812,7 +945,7 @@ index 60fabdc..67dde9a 100644
          internal bool StartupSystemSplash(
              GameControllerOptions options,
              Func<ILogHandler>? logHandlerFactory,
-@@ -481,6 +560,7 @@ namespace Robust.Client
+@@ -481,6 +570,7 @@ namespace Robust.Client
              _clyde.KeyUp += KeyUp;
              _clyde.KeyDown += KeyDown;
              _clyde.MouseWheel += MouseWheel;
