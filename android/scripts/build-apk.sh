@@ -41,6 +41,13 @@ APK=$(ls -t "$ROOT/android/host/bin/$CONFIG/net10.0-android/"*-Signed.apk 2>/dev
 # carry the v2/v3 signature and report a missing certificate.
 ANDROID_HOME="$ANDROID_HOME" bash "$ROOT/android/scripts/sign-apk.sh" "$APK"
 
+# Release artifact name. The package id stays ru.ministation.client so the
+# installed app updates over the old one; only the file the player downloads
+# is called space-station.apk.
+OUT="$(dirname "$APK")/space-station.apk"
+[ "$APK" = "$OUT" ] || mv -f "$APK" "$OUT"
+APK="$OUT"
+
 # Проверка, что в движок не уехала FREEDESKTOP-ветка.
 if strings "$ROOT/android/host/bin/$CONFIG/net10.0-android/Robust.Client.dll" 2>/dev/null | grep -q SystemFontManagerFontconfig; then
     echo "ERROR: engine built with FREEDESKTOP branch, expected ANDROID" >&2

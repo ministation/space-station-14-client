@@ -38,7 +38,7 @@ android/scripts/build-native-libs.sh x86_64
 android/scripts/build-apk.sh Release
 ```
 
-APK: android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk.
+APK: android/host/bin/Release/net10.0-android/space-station.apk.
 
 Важно: -p:TargetOS=Android обязателен при сборке (скрипт его передаёт). Без него движок
 собирается с desktop-ветками (FREEDESKTOP, fontconfig) и на Android ведёт себя неправильно.
@@ -46,7 +46,7 @@ APK: android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk.
 Установка на устройство или эмулятор:
 
 ```bash
-adb install -r android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk
+adb install -r android/host/bin/Release/net10.0-android/space-station.apk
 adb shell am start -n ru.ministation.client/crc640001e7ab1265b90d.LauncherActivity
 ```
 

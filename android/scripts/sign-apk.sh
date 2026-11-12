@@ -5,7 +5,7 @@
 set -euo pipefail
 
 HOST="$(cd "$(dirname "${BASH_SOURCE[0]}")/../host" && pwd)"
-APK="${1:-$HOST/bin/Release/net10.0-android/ru.ministation.client-Signed.apk}"
+APK="${1:-$(ls -t "$HOST/bin/Release/net10.0-android/"*-Signed.apk 2>/dev/null | head -n 1)}"
 # Relative to the host project, the same as the build output.
 KEYSTORE="${KEYSTORE:-$HOST/keystore/release.keystore}"
 ALIAS="${ALIAS:-ministation}"

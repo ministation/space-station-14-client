@@ -3734,7 +3734,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v1.0.0";
+    public const string CurrentAppVersion = "v1.0.1";
 
 
     public string GetCurrentAppVersion()
@@ -4009,7 +4009,7 @@ public sealed class LauncherActivity : Activity
         if (version.StartsWith("android-v", StringComparison.OrdinalIgnoreCase))
             version = version["android-v".Length..];
         var downloadUrl = !string.IsNullOrWhiteSpace(version)
-            ? $"https://cdn.ministation.ru/android/{version}/ru.ministation.client-Signed.apk"
+            ? $"https://cdn.ministation.ru/android/{version}/space-station.apk"
             : apkAsset?.BrowserDownloadUrl ?? release.HtmlUrl ?? "https://github.com/ministation/space-station-14-client/releases/latest";
 
         downloadBtn.Click += (_, _) =>

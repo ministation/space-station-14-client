@@ -23,11 +23,11 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v1.0.0](https://github.com/ministation/space-station-14-client/releases/tag/android-v1.0.0).
+APK: [Release android-v1.0.1](https://github.com/ministation/space-station-14-client/releases/tag/android-v1.0.1).
 
-Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
+Зеркало CDN: https://cdn.ministation.ru/android/latest/space-station.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 1.0.0: a5b1f290b0abfe7db7209431a6395c342565c461bc1cf35f2203c1bf66872923
+sha256 версии 1.0.1: f20935ac46aa62d7810ba9ede957d30b6e7b99b741f8455a7c02af3643950eb1
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/www/android/<версия>).
@@ -67,7 +67,7 @@ android/scripts/build-native-libs.sh x86_64
 android/scripts/build-apk.sh Release
 ```
 
-APK: `android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk`.
+APK: `android/host/bin/Release/net10.0-android/space-station.apk`.
 
 ## Если Android не устанавливает APK и пишет про сертификат
 
@@ -81,7 +81,7 @@ C=RU, SHA-256 ```c5c81ad38d37a3dd772e416cb2132f75b52444bb087e038c631ad5767df58d4
 Проверить подпись скачанного файла:
 
 ```
-apksigner verify --print-certs ru.ministation.client-Signed.apk
+apksigner verify --print-certs space-station.apk
 ```
 
 Если SHA-256 отличается, файл скачан не с нашего CDN или релиза.

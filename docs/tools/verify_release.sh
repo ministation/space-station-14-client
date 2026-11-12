@@ -8,7 +8,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO="ministation/space-station-14-client"
-APK="android/host/bin/Release/net10.0-android/ru.ministation.client-Signed.apk"
+APK="android/host/bin/Release/net10.0-android/space-station.apk"
 SIGN_CERT="c5c81ad38d37a3dd772e416cb2132f75b52444bb087e038c631ad5767df58d42"
 BT=$(ls -d ${ANDROID_HOME:-/home/dsh/android-sdk}/build-tools/* 2>/dev/null | tail -1 || true)
 TMP=$(mktemp -d)
@@ -38,8 +38,8 @@ else
 fi
 
 check "README sha256" "$LOCAL" "$(grep -oE '[a-f0-9]{64}' README.md | head -1)"
-check "CDN latest"    "$LOCAL" "$(curl -s --max-time 180 https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk | sha256sum | cut -d' ' -f1)"
-check "CDN $VERSION"  "$LOCAL" "$(curl -s --max-time 180 "https://cdn.ministation.ru/android/$VERSION/ru.ministation.client-Signed.apk" | sha256sum | cut -d' ' -f1)"
+check "CDN latest"    "$LOCAL" "$(curl -s --max-time 180 https://cdn.ministation.ru/android/latest/space-station.apk | sha256sum | cut -d' ' -f1)"
+check "CDN $VERSION"  "$LOCAL" "$(curl -s --max-time 180 "https://cdn.ministation.ru/android/$VERSION/space-station.apk" | sha256sum | cut -d' ' -f1)"
 
 if [ "$PUBLISHED" = 0 ] && [ -n "$BT" ] && [ -x "$BT/apksigner" ]; then
     check "подпись APK" "$SIGN_CERT" "$("$BT/apksigner" verify --print-certs "$APK" 2>/dev/null | sed -n 's/.*SHA-256 digest: //p' | head -1)"
@@ -49,7 +49,7 @@ fi
 
 if [ "${1:-}" = "--github" ] || [ "${2:-}" = "--github" ]; then
     TMPAPK="$TMP/release.apk"
-    curl -sL --max-time 600 -o "$TMPAPK" "https://github.com/$REPO/releases/download/android-v$VERSION/ru.ministation.client-Signed.apk"
+    curl -sL --max-time 600 -o "$TMPAPK" "https://github.com/$REPO/releases/download/android-v$VERSION/space-station.apk"
     check "GitHub asset" "$LOCAL" "$(sha256sum "$TMPAPK" | cut -d' ' -f1)"
 fi
 
