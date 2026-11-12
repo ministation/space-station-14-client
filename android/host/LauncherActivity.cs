@@ -2123,20 +2123,20 @@ public sealed class LauncherActivity : Activity
         {
             // Radii are fractions of screen height, matching the engine's
             // ArrangeOverride table in MobileControlsOverlay.
-            ("stick", "MOVE", 0.21f, 0.755f, 0.234f),
-            ("aim", "AIM", 0.79f, 0.755f, 0.234f),
-            ("drop", "DROP", 0.3478f, 0.5106f, 0.095f),
-            ("pull", "PULL", 0.21f, 0.4092f, 0.095f),
-            ("esc", "ESC", 0.0722f, 0.5106f, 0.095f),
-            ("run", "RUN", 0.5144f, 0.5106f, 0.09f),
-            ("z", "Z", 0.9278f, 0.5106f, 0.095f),
-            ("exam", "EXAM", 0.79f, 0.4092f, 0.095f),
-            ("bag", "BAG", 0.6522f, 0.5106f, 0.095f),
+            ("stick", "MOVE", 0.21f, 0.775f, 0.20f),
+            ("aim", "AIM", 0.79f, 0.775f, 0.20f),
+            ("drop", "DROP", 0.3278f, 0.5661f, 0.095f),
+            ("pull", "PULL", 0.21f, 0.4795f, 0.095f),
+            ("esc", "ESC", 0.0922f, 0.5661f, 0.095f),
+            ("run", "RUN", 0.5544f, 0.5661f, 0.09f),
+            ("z", "Z", 0.9078f, 0.5661f, 0.095f),
+            ("exam", "EXAM", 0.79f, 0.4795f, 0.095f),
+            ("bag", "BAG", 0.6722f, 0.5661f, 0.095f),
         };
 
         // Version of the saved layout. MigratePadLayout drops anything older, so
         // Save and Reset have to write this exact number.
-        public const int LayoutVersion = 6;
+        public const int LayoutVersion = 7;
 
         // One range for a saved radius and for the resize slider. The engine takes
         // the radius as is, so a value outside this range would show one size in the
@@ -3734,7 +3734,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v1.0.1";
+    public const string CurrentAppVersion = "v1.0.2";
 
 
     public string GetCurrentAppVersion()

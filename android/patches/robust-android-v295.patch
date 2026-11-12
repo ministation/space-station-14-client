@@ -630,7 +630,7 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..e65425d 100644
+index a6bc6a0..3ef28e0 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
 @@ -1,3 +1,4 @@
@@ -638,7 +638,7 @@ index a6bc6a0..e65425d 100644
  using Robust.Client.Input;
  
  namespace Robust.Client
-@@ -49,5 +50,50 @@ namespace Robust.Client
+@@ -49,5 +50,56 @@ namespace Robust.Client
                  return;
              }
          }
@@ -674,6 +674,12 @@ index a6bc6a0..e65425d 100644
 +
 +                    _touchMouseFinger = touchEvent.FingerId;
 +                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
++                    break;
++
++                case TouchFingerAction.Motion when _touchMouseFinger == touchEvent.FingerId:
++                    // Dragging: moving items between slots only works when the
++                    // cursor follows the finger, like a mouse drag on PC.
++                    _clyde.InjectMouseMoveTo(touchEvent.Coordinates.Position);
 +                    break;
 +
 +                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchUiFinger == touchEvent.FingerId:
@@ -1305,7 +1311,7 @@ index c3ca7a2..dd1e34d 100644
  
      /// <summary>
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Events.cs b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
-index 029d12c..62f1f9c 100644
+index 029d12c..a102ad0 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 @@ -1,14 +1,17 @@
@@ -1337,7 +1343,7 @@ index 029d12c..62f1f9c 100644
              }
          }
  
-@@ -148,6 +154,49 @@ namespace Robust.Client.Graphics.Clyde
+@@ -148,6 +154,67 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventTextEditing(ev));
          }
  
@@ -1360,7 +1366,11 @@ index 029d12c..62f1f9c 100644
 +        /// The mobile client turns a finger into a mouse click with this, because
 +        /// SDL's own touch-to-mouse emulation is off (see Sdl3WindowingImpl.InitSdl3).
 +        /// </summary>
-+        public void InjectMouseClick(Vector2 position, bool down)
++        /// <summary>
++        /// Inject an absolute mouse move. A finger that drags an inventory item needs
++        /// the cursor to follow it, the same way a mouse does.
++        /// </summary>
++        public void InjectMouseMoveTo(Vector2 position)
 +        {
 +            var window = _mainWindow;
 +            if (window == null || window.IsDisposed || window.FramebufferSize.X <= 0 || window.FramebufferSize.Y <= 0)
@@ -1373,6 +1383,20 @@ index 029d12c..62f1f9c 100644
 +            window.LastMousePos = position;
 +            _currentHoveredWindow = window;
 +            SendMouseMove(new MouseMoveEventArgs(delta, new ScreenCoordinates(position, window.Id)));
++        }
++
++        /// <summary>
++        /// Inject a left mouse press or release at an absolute framebuffer position.
++        /// The mobile client turns a finger into a mouse click with this, because
++        /// SDL's own touch-to-mouse emulation is off (see Sdl3WindowingImpl.InitSdl3).
++        /// </summary>
++        public void InjectMouseClick(Vector2 position, bool down)
++        {
++            var window = _mainWindow;
++            if (window == null || window.IsDisposed || window.FramebufferSize.X <= 0 || window.FramebufferSize.Y <= 0)
++                return;
++
++            InjectMouseMoveTo(position);
 +
 +            var ev = new KeyEventArgs(
 +                Mouse.MouseButtonToKey(Mouse.Button.Left),
@@ -1387,7 +1411,7 @@ index 029d12c..62f1f9c 100644
          private void SendMouseMove(MouseMoveEventArgs ev)
          {
              _eventDispatchQueue.Enqueue(new DEventMouseMove(ev));
-@@ -163,9 +212,16 @@ namespace Robust.Client.Graphics.Clyde
+@@ -163,9 +230,16 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventInputModeChanged());
          }
  
@@ -2694,15 +2718,19 @@ index 7c870c3..849c661 100644
              // I can't be bothered to tear down and set these threads up in a cvar change handler.
  
 diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-index c0e01b4..1332590 100644
+index c0e01b4..d3e6383 100644
 --- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 +++ b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-@@ -32,6 +32,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -32,6 +32,18 @@ namespace Robust.Client.Graphics.Clyde
          public Vector2i ScreenSize => (1280, 720);
          public IEnumerable<IClydeWindow> AllWindows => _windows;
          public Vector2 DefaultWindowScale => new Vector2(1, 1);
 +
 +        public void InjectMouseMove(Vector2 delta)
++        {
++        }
++
++        public void InjectMouseMoveTo(Vector2 position)
 +        {
 +        }
 +
@@ -2712,7 +2740,7 @@ index c0e01b4..1332590 100644
          public bool IsFocused => true;
          private readonly List<IClydeWindow> _windows = new();
          private int _nextWindowId = 2;
-@@ -64,6 +72,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -64,6 +76,7 @@ namespace Robust.Client.Graphics.Clyde
          public event Action<KeyEventArgs>? KeyUp { add { } remove { } }
          public event Action<KeyEventArgs>? KeyDown { add { } remove { } }
          public event Action<MouseWheelEventArgs>? MouseWheel { add { } remove { } }
@@ -3255,7 +3283,7 @@ index a829bb9..1d752b5 100644
          {
              var advanceTotal = Vector2.Zero;
 diff --git a/Robust.Client/Graphics/IClyde.cs b/Robust.Client/Graphics/IClyde.cs
-index 329a9ca..15f6e3c 100644
+index 329a9ca..7a8899b 100644
 --- a/Robust.Client/Graphics/IClyde.cs
 +++ b/Robust.Client/Graphics/IClyde.cs
 @@ -1,4 +1,4 @@
@@ -3264,7 +3292,7 @@ index 329a9ca..15f6e3c 100644
  using System.Collections.Generic;
  using System.Diagnostics.Contracts;
  using System.IO;
-@@ -35,6 +35,16 @@ namespace Robust.Client.Graphics
+@@ -35,6 +35,21 @@ namespace Robust.Client.Graphics
          /// </summary>
          Vector2 DefaultWindowScale { get; }
  
@@ -3272,6 +3300,11 @@ index 329a9ca..15f6e3c 100644
 +        /// Inject a relative mouse movement, used by the mobile aim stick.
 +        /// </summary>
 +        void InjectMouseMove(Vector2 delta);
++
++        /// <summary>
++        /// Inject an absolute mouse move, used by a dragging finger.
++        /// </summary>
++        void InjectMouseMoveTo(Vector2 position);
 +
 +        /// <summary>
 +        /// Inject a left mouse press or release at an absolute framebuffer position.
@@ -3959,10 +3992,10 @@ index 29c54bc..0ac4d9d 100644
          void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..055f775
+index 0000000..3b62df0
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
-@@ -0,0 +1,1495 @@
+@@ -0,0 +1,1514 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Globalization;
@@ -4711,12 +4744,31 @@ index 0000000..055f775
 +        InvalidateArrange();
 +    }
 +
++    private bool TouchHitsWindow(ScreenCoordinates coordinates)
++    {
++        var control = UserInterfaceManager.MouseGetControl(coordinates);
++        for (; control != null; control = control.Parent)
++        {
++            if (control == UserInterfaceManager.WindowRoot)
++                return true;
++        }
++
++        return false;
++    }
++
 +    public bool HandleTouch(TouchFingerEventArgs args)
 +    {
 +        if (!VisibleInTree)
 +            return false;
 +
 +        if (_modalOverlay.Visible || IsEditMode)
++            return false;
++
++        // Content windows (WindowRoot) are drawn above the pad, so they also get
++        // the touch first. Without this the pad claims taps over an open backpack
++        // and nothing can be taken out of it: moving items needs real mouse
++        // events, which only the window path produces.
++        if (TouchHitsWindow(args.Coordinates))
 +            return false;
 +
 +        switch (args.Action)
@@ -5340,11 +5392,11 @@ index 0000000..055f775
 +        // (PadEditorView.Defaults). The same fractions everywhere make the
 +        // editor, the game and every phone show identical controls; no size
 +        // cvar scales the pad any more.
-+        var stickRadius = finalSize.Y * 0.234f;
++        var stickRadius = finalSize.Y * 0.20f;
 +        var utilSize = finalSize.Y * 0.19f;
 +        var runSize = finalSize.Y * 0.18f;
-+        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.755f);
-+        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.755f);
++        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.775f);
++        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.775f);
 +
 +        _thumbstick.Radius = stickRadius;
 +        _thumbstick.KnobRadius = stickRadius * 0.30f;
@@ -5387,13 +5439,13 @@ index 0000000..055f775
 +            ArrangeChild(control, center - new Vector2(size) / 2f, new Vector2(size, size), finalSize);
 +        }
 +
-+        PlaceAt(_escButton, 0.0722f, 0.5106f, utilSize);
-+        PlaceAt(_pullButton, 0.21f, 0.4092f, utilSize);
-+        PlaceAt(_dropButton, 0.3478f, 0.5106f, utilSize);
-+        PlaceAt(_bagButton, 0.6522f, 0.5106f, utilSize);
-+        PlaceAt(_examButton, 0.79f, 0.4092f, utilSize);
-+        PlaceAt(_runButton, 0.5144f, 0.5106f, runSize);
-+        PlaceAt(_zButton, 0.9278f, 0.5106f, utilSize);
++        PlaceAt(_escButton, 0.0922f, 0.5661f, utilSize);
++        PlaceAt(_pullButton, 0.21f, 0.4795f, utilSize);
++        PlaceAt(_dropButton, 0.3278f, 0.5661f, utilSize);
++        PlaceAt(_bagButton, 0.6722f, 0.5661f, utilSize);
++        PlaceAt(_examButton, 0.79f, 0.4795f, utilSize);
++        PlaceAt(_runButton, 0.5544f, 0.5661f, runSize);
++        PlaceAt(_zButton, 0.9078f, 0.5661f, utilSize);
 +
 +        // User-made buttons keep their saved place.
 +        foreach (var btn in _allButtons)
