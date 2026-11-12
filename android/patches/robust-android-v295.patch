@@ -630,17 +630,18 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..602159c 100644
+index a6bc6a0..ab743b2 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
 +using System;
++using System.Numerics;
  using Robust.Client.Input;
 +using Robust.Shared.Map;
  
  namespace Robust.Client
  {
-@@ -49,5 +51,78 @@ namespace Robust.Client
+@@ -49,5 +52,124 @@ namespace Robust.Client
                  return;
              }
          }
@@ -650,6 +651,16 @@ index a6bc6a0..602159c 100644
 +
 +        // The finger that is clicking a UI control, if any.
 +        private long? _touchUiFinger;
++
++        // A finger held still this long turns into a right click, which opens the
++        // verb menu ("взять в руку", "осмотреть") on an item in a storage window.
++        private const float TouchLongPressSeconds = 0.45f;
++        private const float TouchLongPressMoveThreshold = 12f;
++
++        private long? _touchLongPressFinger;
++        private float _touchLongPressTime;
++        private Vector2 _touchLongPressPosition;
++        private Vector2 _touchMousePosition;
 +
 +        public void TouchFinger(TouchFingerEventArgs touchEvent)
 +        {
@@ -670,8 +681,7 @@ index a6bc6a0..602159c 100644
 +                    // listen to MoveStoredItem), and a bare UIClick never reaches them.
 +                    if (TouchHitsWindow(touchEvent.Coordinates))
 +                    {
-+                        _touchMouseFinger = touchEvent.FingerId;
-+                        _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
++                        StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position);
 +                        break;
 +                    }
 +
@@ -684,11 +694,18 @@ index a6bc6a0..602159c 100644
 +                        break;
 +                    }
 +
-+                    _touchMouseFinger = touchEvent.FingerId;
-+                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, true);
++                    StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position);
 +                    break;
 +
 +                case TouchFingerAction.Motion when _touchMouseFinger == touchEvent.FingerId:
++                    _touchMousePosition = touchEvent.Coordinates.Position;
++                    if (_touchLongPressFinger == touchEvent.FingerId &&
++                        (_touchMousePosition - _touchLongPressPosition).LengthSquared() >
++                        TouchLongPressMoveThreshold * TouchLongPressMoveThreshold)
++                    {
++                        _touchLongPressFinger = null;
++                    }
++
 +                    // Dragging: moving items between slots only works when the
 +                    // cursor follows the finger, like a mouse drag on PC.
 +                    _clyde.InjectMouseMoveTo(touchEvent.Coordinates.Position);
@@ -701,9 +718,39 @@ index a6bc6a0..602159c 100644
 +
 +                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchMouseFinger == touchEvent.FingerId:
 +                    _touchMouseFinger = null;
++                    _touchLongPressFinger = null;
 +                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, false);
 +                    break;
 +            }
++        }
++
++        private void StartTouchMouse(long fingerId, Vector2 position)
++        {
++            _touchMouseFinger = fingerId;
++            _touchMousePosition = position;
++            _touchLongPressFinger = fingerId;
++            _touchLongPressTime = 0f;
++            _touchLongPressPosition = position;
++            _clyde.InjectMouseClick(position, true);
++        }
++
++        private void UpdateTouchLongPress(float deltaSeconds)
++        {
++            if (_touchLongPressFinger == null || _touchMouseFinger != _touchLongPressFinger)
++                return;
++
++            _touchLongPressTime += deltaSeconds;
++            if (_touchLongPressTime < TouchLongPressSeconds)
++                return;
++
++            _touchLongPressFinger = null;
++            _touchMouseFinger = null;
++
++            // Drop the drag the press started before asking for the menu: left up,
++            // then a right click, the same order a mouse uses.
++            _clyde.InjectMouseClick(_touchMousePosition, false);
++            _clyde.InjectMouseClick(_touchMousePosition, true, Mouse.Button.Right);
++            _clyde.InjectMouseClick(_touchMousePosition, false, Mouse.Button.Right);
 +        }
 +
 +        private bool TouchHitsWindow(ScreenCoordinates coordinates)
@@ -865,7 +912,7 @@ index de20f0e..b918ded 100644
  
              CleanupGameThread();
 diff --git a/Robust.Client/GameController/GameController.cs b/Robust.Client/GameController/GameController.cs
-index 60fabdc..ca3ff77 100644
+index 60fabdc..f3612a6 100644
 --- a/Robust.Client/GameController/GameController.cs
 +++ b/Robust.Client/GameController/GameController.cs
 @@ -265,7 +265,14 @@ namespace Robust.Client
@@ -1012,6 +1059,15 @@ index 60fabdc..ca3ff77 100644
              _clyde.CloseWindow += args =>
              {
                  if (args.Window == _clyde.MainWindow)
+@@ -657,6 +747,8 @@ namespace Robust.Client
+                 _clyde.FrameProcess(frameEventArgs);
+             }
+ 
++            UpdateTouchLongPress(frameEventArgs.DeltaSeconds);
++
+             using (_prof.Group("Content Pre Engine"))
+             {
+                 _modLoader.BroadcastUpdate(ModUpdateLevel.FramePreEngine, frameEventArgs);
 diff --git a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs b/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
 index a183d75..dafdf9a 100644
 --- a/Robust.Client/GameObjects/Components/Renderable/SpriteComponent.cs
@@ -1335,7 +1391,7 @@ index c3ca7a2..dd1e34d 100644
  
      /// <summary>
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Events.cs b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
-index 029d12c..a102ad0 100644
+index 029d12c..a2f1957 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.Events.cs
 @@ -1,14 +1,17 @@
@@ -1367,7 +1423,7 @@ index 029d12c..a102ad0 100644
              }
          }
  
-@@ -148,6 +154,67 @@ namespace Robust.Client.Graphics.Clyde
+@@ -148,6 +154,62 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventTextEditing(ev));
          }
  
@@ -1385,11 +1441,6 @@ index 029d12c..a102ad0 100644
 +            SendMouseMove(new MouseMoveEventArgs(delta, new ScreenCoordinates(newPos, window.Id)));
 +        }
 +
-+        /// <summary>
-+        /// Inject a left mouse press or release at an absolute framebuffer position.
-+        /// The mobile client turns a finger into a mouse click with this, because
-+        /// SDL's own touch-to-mouse emulation is off (see Sdl3WindowingImpl.InitSdl3).
-+        /// </summary>
 +        /// <summary>
 +        /// Inject an absolute mouse move. A finger that drags an inventory item needs
 +        /// the cursor to follow it, the same way a mouse does.
@@ -1410,11 +1461,11 @@ index 029d12c..a102ad0 100644
 +        }
 +
 +        /// <summary>
-+        /// Inject a left mouse press or release at an absolute framebuffer position.
++        /// Inject a mouse press or release at an absolute framebuffer position.
 +        /// The mobile client turns a finger into a mouse click with this, because
 +        /// SDL's own touch-to-mouse emulation is off (see Sdl3WindowingImpl.InitSdl3).
 +        /// </summary>
-+        public void InjectMouseClick(Vector2 position, bool down)
++        public void InjectMouseClick(Vector2 position, bool down, Mouse.Button button = Mouse.Button.Left)
 +        {
 +            var window = _mainWindow;
 +            if (window == null || window.IsDisposed || window.FramebufferSize.X <= 0 || window.FramebufferSize.Y <= 0)
@@ -1423,7 +1474,7 @@ index 029d12c..a102ad0 100644
 +            InjectMouseMoveTo(position);
 +
 +            var ev = new KeyEventArgs(
-+                Mouse.MouseButtonToKey(Mouse.Button.Left),
++                Mouse.MouseButtonToKey(button),
 +                false, false, false, false, false, 0, 0, false);
 +
 +            if (down)
@@ -1435,7 +1486,7 @@ index 029d12c..a102ad0 100644
          private void SendMouseMove(MouseMoveEventArgs ev)
          {
              _eventDispatchQueue.Enqueue(new DEventMouseMove(ev));
-@@ -163,9 +230,16 @@ namespace Robust.Client.Graphics.Clyde
+@@ -163,9 +225,16 @@ namespace Robust.Client.Graphics.Clyde
              _eventDispatchQueue.Enqueue(new DEventInputModeChanged());
          }
  
@@ -2748,7 +2799,7 @@ index 7c870c3..849c661 100644
              // I can't be bothered to tear down and set these threads up in a cvar change handler.
  
 diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
-index c0e01b4..d3e6383 100644
+index c0e01b4..081a540 100644
 --- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 +++ b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 @@ -32,6 +32,18 @@ namespace Robust.Client.Graphics.Clyde
@@ -2764,7 +2815,7 @@ index c0e01b4..d3e6383 100644
 +        {
 +        }
 +
-+        public void InjectMouseClick(Vector2 position, bool down)
++        public void InjectMouseClick(Vector2 position, bool down, Mouse.Button button = Mouse.Button.Left)
 +        {
 +        }
          public bool IsFocused => true;
@@ -3343,7 +3394,7 @@ index a829bb9..1d752b5 100644
          {
              var advanceTotal = Vector2.Zero;
 diff --git a/Robust.Client/Graphics/IClyde.cs b/Robust.Client/Graphics/IClyde.cs
-index 329a9ca..7a8899b 100644
+index 329a9ca..9c54524 100644
 --- a/Robust.Client/Graphics/IClyde.cs
 +++ b/Robust.Client/Graphics/IClyde.cs
 @@ -1,4 +1,4 @@
@@ -3367,9 +3418,9 @@ index 329a9ca..7a8899b 100644
 +        void InjectMouseMoveTo(Vector2 position);
 +
 +        /// <summary>
-+        /// Inject a left mouse press or release at an absolute framebuffer position.
++        /// Inject a mouse press or release at an absolute framebuffer position.
 +        /// </summary>
-+        void InjectMouseClick(Vector2 position, bool down);
++        void InjectMouseClick(Vector2 position, bool down, Mouse.Button button = Mouse.Button.Left);
 +
          void SetWindowTitle(string title);
          void SetWindowMonitor(IClydeMonitor monitor);
