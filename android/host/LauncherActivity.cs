@@ -1081,6 +1081,9 @@ public sealed class LauncherActivity : Activity
         AddCycleRow(list, "Controls opacity", prefs, "mobile_opacity", 0.6f, new[] { 0.4f, 0.5f, 0.6f, 0.75f, 0.9f }, "%");
         AddChoiceRow(list, "Display resolution", prefs, "display_resolution", "native", new[] { "native", "1080p", "900p", "720p" });
         AddChoiceRow(list, "Graphics", prefs, "graphics_quality", "Medium", new[] { "Low", "Medium", "High" });
+        // Android mobile lighting: "shadows" is the old per-light shadow maps path,
+        // keep it as a fallback in case the lightmap looks wrong on a device.
+        AddChoiceRow(list, "Lighting", prefs, "lighting_mode", "lightmap", new[] { "lightmap", "shadows" });
         AddChoiceRow(list, "Screen frame", prefs, "frame_mode", MobileSafeArea.DefaultMode, new[]
         {
             MobileSafeArea.FrameAuto, MobileSafeArea.FrameLeft, MobileSafeArea.FrameRight,
@@ -1194,6 +1197,11 @@ public sealed class LauncherActivity : Activity
         intent.PutExtra("cvar_build_light.max_occluder_count", occluders);
         intent.PutExtra("cvar_build_light.resolution_scale", lightRes);
         intent.PutExtra("cvar_build_light.wall_bleed", bleed);
+
+        // Lightmap is the mobile path: no per-light shadow maps, one occluded
+        // lightmap drawn as a single quad.
+        var lighting = prefs.GetString("lighting_mode", "lightmap") ?? "lightmap";
+        intent.PutExtra("cvar_build_light.mobile_lightmap", lighting == "shadows" ? "false" : "true");
         intent.PutExtra("cvar_build_particles.quality", "0");
         intent.PutExtra("cvar_build_particles.global_budget", budget);
     }
@@ -3665,7 +3673,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.17";
+    public const string CurrentAppVersion = "v0.8.18";
 
 
     public string GetCurrentAppVersion()

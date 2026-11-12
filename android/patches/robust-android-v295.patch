@@ -272,6 +272,35 @@ index 8e2707a..b72b97e 100644
 +    COLOR = vec4(lightColor.rgb, clamp(val * occlusion, 0.0, 10.0));
  }
  
+diff --git a/Resources/Shaders/Internal/mobile-lightmap.swsl b/Resources/Shaders/Internal/mobile-lightmap.swsl
+new file mode 100644
+index 0000000..c5d377a
+--- /dev/null
++++ b/Resources/Shaders/Internal/mobile-lightmap.swsl
+@@ -0,0 +1,23 @@
++// Android mobile lighting: one additive quad with the CPU-built lightmap,
++// replaces the per-light shadow map quads. See Clyde.MobileLighting.cs.
++preset raw;
++
++uniform highp vec2 lightmapMin;
++uniform highp vec2 lightmapInvSize;
++
++varying highp vec2 worldPosition;
++
++void vertex()
++{
++    highp vec3 transformed = modelMatrix * vec3(VERTEX, 1.0);
++    worldPosition = transformed.xy;
++    transformed = projectionMatrix * viewMatrix * transformed;
++
++    VERTEX = transformed.xy;
++}
++
++void fragment()
++{
++    highp vec4 light = zTexture((worldPosition - lightmapMin) * lightmapInvSize);
++    COLOR = vec4(light.rgb, 1.0);
++}
 diff --git a/Resources/Shaders/Internal/shadow_cast_shared.swsl b/Resources/Shaders/Internal/shadow_cast_shared.swsl
 index 6ed529f..1918ef4 100644
 --- a/Resources/Shaders/Internal/shadow_cast_shared.swsl
@@ -1391,9 +1420,15 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..d9be340 100644
+index 73cadae..99dfd2a 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
+@@ -1,4 +1,4 @@
+-using System;
++﻿using System;
+ using System.Collections.Generic;
+ using System.Buffers;
+ using System.Diagnostics.Contracts;
 @@ -40,7 +40,12 @@ namespace Robust.Client.Graphics.Clyde
          private const float SharedOccluderNeighbourQueryPadding = 1f + SharedOccluderEdgeTolerance;
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
@@ -1455,7 +1490,15 @@ index 73cadae..d9be340 100644
                  }
  
                  _clydeSawmill.Warning($"Can't load shader {path}\n");
-@@ -318,15 +342,30 @@ namespace Robust.Client.Graphics.Clyde
+@@ -234,6 +258,7 @@ namespace Robust.Client.Graphics.Clyde
+             _wallBleedBlurShaderHandle = LoadShaderHandle("/Shaders/Internal/wall-bleed-blur.swsl");
+             _lightBlurShaderHandle = LoadShaderHandle("/Shaders/Internal/light-blur.swsl");
+             _mergeWallLayerShaderHandle = LoadShaderHandle("/Shaders/Internal/wall-merge.swsl");
++            _mobileLightmapShaderHandle = LoadShaderHandle("/Shaders/Internal/mobile-lightmap.swsl");
+         }
+ 
+         private void DrawFov(Viewport viewport, IEye eye)
+@@ -318,15 +343,30 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              if (_hasGLFloatFramebuffers)
              {
@@ -1489,7 +1532,36 @@ index 73cadae..d9be340 100644
              CheckGlError();
  
              BindVertexArray(_occlusionVao.Handle);
-@@ -453,8 +492,27 @@ namespace Robust.Client.Graphics.Clyde
+@@ -375,7 +415,10 @@ namespace Robust.Client.Graphics.Clyde
+                 (count, expandedBounds) = GetLightsToRender(mapId, worldBounds, worldAABB);
+             }
+ 
+-            UpdateOcclusionGeometry(mapId, expandedBounds, eye.Position.Position);
++            // The mobile lightmap rasterizes occluders itself; the shared edge topology
++            // is only needed for the eye FOV.
++            if (!_mobileLightmap || eye.DrawFov)
++                UpdateOcclusionGeometry(mapId, expandedBounds, eye.Position.Position);
+ 
+             DrawFov(viewport, eye);
+ 
+@@ -387,6 +430,8 @@ namespace Robust.Client.Graphics.Clyde
+                 return;
+             }
+ 
++            if (!_mobileLightmap)
++            {
+             using (DebugGroup("Draw shadow depth"))
+             using (_prof.Group("Draw shadow depth"))
+             {
+@@ -413,6 +458,7 @@ namespace Robust.Client.Graphics.Clyde
+ 
+                 FinalizeDepthDraw();
+             }
++            }
+ 
+             IsStencilling = true;
+ 
+@@ -453,8 +499,27 @@ namespace Robust.Client.Graphics.Clyde
  
              ApplyLightingFovToBuffer(viewport, eye);
  
@@ -1519,12 +1591,43 @@ index 73cadae..d9be340 100644
              lightShader.Use();
  
              SetupGlobalUniformsImmediate(lightShader, ShadowTexture);
-@@ -570,14 +628,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -470,6 +535,21 @@ namespace Robust.Client.Graphics.Clyde
+             GL.StencilOp(TKStencilOp.Keep, TKStencilOp.Keep, TKStencilOp.Keep);
+             CheckGlError();
+ 
++            var lightQuads = count;
++            if (_mobileLightmap)
++            {
++                var lightmapDrawn = false;
++                using (_prof.Group("Draw mobile lightmap"))
++                {
++                    lightmapDrawn = DrawMobileLightmap(mapId, expandedBounds, count);
++                }
++
++                // The single lightmap quad already contains every light. If the
++                // lightmap path is unavailable, fall back to the per-light quads.
++                if (lightmapDrawn)
++                    lightQuads = 0;
++            }
++
+             var lastRange = float.NaN;
+             var lastPower = float.NaN;
+             var lastColor = new Color(float.NaN, float.NaN, float.NaN, float.NaN);
+@@ -480,7 +560,7 @@ namespace Robust.Client.Graphics.Clyde
+ 
+             using (_prof.Group("Draw Lights"))
+             {
+-                for (var i = 0; i < count; i++)
++                for (var i = 0; i < lightQuads; i++)
+                 {
+                     ref var lightData = ref _lightsToRenderList[i];
+                     var component = lightData.Light;
+@@ -570,14 +650,17 @@ namespace Robust.Client.Graphics.Clyde
              if (_cfg.GetCVar(CVars.LightBlur))
                  BlurRenderTarget(viewport, viewport.LightRenderTarget, viewport.LightBlurTarget, eye, 14f);
  
 -            using (_prof.Group("BlurOntoWalls"))
-+            if (_cfg.GetCVar(CVars.LightWallBleed))
++            if (!_mobileLightmap && _cfg.GetCVar(CVars.LightWallBleed))
              {
 -                BlurOntoWalls(viewport, eye);
 -            }
@@ -1543,7 +1646,7 @@ index 73cadae..d9be340 100644
              }
  
              BindRenderTargetFull(viewport.RenderTarget);
-@@ -601,7 +662,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -601,7 +684,7 @@ namespace Robust.Client.Graphics.Clyde
              ref var shadowCount = ref state.shadowCastingCount;
  
              // If there are too many lights, exit the query
@@ -1552,16 +1655,18 @@ index 73cadae..d9be340 100644
                  return false;
  
              var (light, transform) = value;
-@@ -617,7 +678,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -617,7 +700,9 @@ namespace Robust.Client.Graphics.Clyde
              if (!circle.Intersects(state.worldAABB))
                  return true;
  
 -            if (light.CastShadows)
-+            if (light.CastShadows && state.clyde._maxShadowcastingLights > 0)
++            // Shadow map bookkeeping is pointless in lightmap mode: there are no shadow
++            // maps, and a light inside a wall is fine because its own cell is always lit.
++            if (light.CastShadows && state.clyde._maxShadowcastingLights > 0 && !state.clyde._mobileLightmap)
              {
                  // Shadow-casting lights embedded inside an occluder cannot work consistently.
                  // As such we just disable them! If you want light inside an occluder use non-shadow casting lights!
-@@ -662,6 +723,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -662,6 +747,20 @@ namespace Robust.Client.Graphics.Clyde
              }
          }
  
@@ -1582,7 +1687,7 @@ index 73cadae..d9be340 100644
          private sealed class LightCapacityComparer : IComparer<LightRenderData>
          {
              public int Compare(LightRenderData x, LightRenderData y)
-@@ -680,6 +755,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -680,6 +779,14 @@ namespace Robust.Client.Graphics.Clyde
              }
          }
  
@@ -1597,7 +1702,7 @@ index 73cadae..d9be340 100644
          private (int count, Box2 expandedBounds) GetLightsToRender(
              MapId map,
              in Box2Rotated worldBounds,
-@@ -696,7 +779,22 @@ namespace Robust.Client.Graphics.Clyde
+@@ -696,7 +803,22 @@ namespace Robust.Client.Graphics.Clyde
                  comp.Tree.QueryAabb(ref state, LightQuery, bounds);
              }
  
@@ -1621,7 +1726,7 @@ index 73cadae..d9be340 100644
              {
                  // There are too many lights casting shadows to fit in the scene.
                  // This check must occur before occluder expansion, or else bad things happen.
-@@ -897,7 +995,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -897,7 +1019,10 @@ namespace Robust.Client.Graphics.Clyde
              CalcScreenMatrices(viewport.Size, out var proj, out var view);
              SetProjViewBuffer(proj, view);
  
@@ -1633,7 +1738,7 @@ index 73cadae..d9be340 100644
              shader.Use();
  
              SetupGlobalUniformsImmediate(shader, viewport.LightRenderTarget.Texture);
-@@ -958,7 +1059,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -958,7 +1083,10 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              IsBlending = false;
  
@@ -1645,7 +1750,7 @@ index 73cadae..d9be340 100644
              shader.Use();
  
              var tex = viewport.WallBleedIntermediateRenderTarget2.Texture;
-@@ -990,7 +1094,18 @@ namespace Robust.Client.Graphics.Clyde
+@@ -990,7 +1118,18 @@ namespace Robust.Client.Graphics.Clyde
  
              // Applies FOV to the final framebuffer.
  
@@ -1665,7 +1770,7 @@ index 73cadae..d9be340 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1013,7 +1128,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1013,7 +1152,10 @@ namespace Robust.Client.Graphics.Clyde
          {
              // Applies FOV to the lighting framebuffer.
  
@@ -1677,7 +1782,7 @@ index 73cadae..d9be340 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1585,6 +1703,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1585,6 +1727,7 @@ namespace Robust.Client.Graphics.Clyde
              _occluderRenderEntries.Clear();
              _occluderRenderVertices.Clear();
              _occluderRenderEdges.Clear();
@@ -1685,7 +1790,7 @@ index 73cadae..d9be340 100644
              _occluderRenderSharedEdges.Clear();
  
              BuildFrameOccluderGeometry(map, expandedBounds, xforms);
-@@ -1703,46 +1822,57 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1703,46 +1846,57 @@ namespace Robust.Client.Graphics.Clyde
                              _occluderSharedBoundaryEdges,
                              _occluderBoundarySegments);
  
@@ -1775,7 +1880,7 @@ index 73cadae..d9be340 100644
  
                  _occlusionMaskDataLength = imi;
  
-@@ -1945,6 +2075,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1945,6 +2099,14 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxShadowcastingLightsChanged(int newValue)
          {
@@ -1790,7 +1895,7 @@ index 73cadae..d9be340 100644
              _maxShadowcastingLights = newValue;
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
  
-@@ -1957,8 +2095,8 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1957,8 +2119,8 @@ namespace Robust.Client.Graphics.Clyde
                  DeleteRenderTexture(_shadowRenderTarget.Handle);
              }
  
@@ -1801,7 +1906,7 @@ index 73cadae..d9be340 100644
                  new RenderTargetFormatParameters(
                      _hasGLFloatFramebuffers ? RenderTargetColorFormat.RG32F : RenderTargetColorFormat.Rgba8, true),
                  new TextureSampleParameters { WrapMode = TextureWrapMode.Repeat, Filter = true },
-@@ -1972,13 +2110,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1972,13 +2134,20 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxOccludersChanged(int value)
          {
@@ -1824,6 +1929,481 @@ index 73cadae..d9be340 100644
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
          }
      }
+diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
+new file mode 100644
+index 0000000..eb7f5a3
+--- /dev/null
++++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
+@@ -0,0 +1,469 @@
++using System;
++using System.Numerics;
++using OpenToolkit.Graphics.OpenGL4;
++using Robust.Shared.GameObjects;
++using Robust.Shared.Map;
++using Robust.Shared.Maths;
++using Robust.Shared.Physics;
++using Robust.Shared.Graphics;
++using SixLabors.ImageSharp.PixelFormats;
++using TextureWrapMode = Robust.Shared.Graphics.TextureWrapMode;
++
++namespace Robust.Client.Graphics.Clyde
++{
++    // Android mobile lighting: replaces the per-light 512x512 shadow maps with one
++    // CPU-built lightmap rasterized over the visible world rect (1 world unit per cell).
++    // Occluders are rasterized into the grid as opaque cells, every light is flood
++    // filled over the grid, and the result goes into the light render target with a
++    // single additive quad. Sprite shaders still sample the same light render target.
++    //
++    // shortcut: light masks (PointLightComponent.Mask) are ignored here, only a
++    // handful of content lights use them. Upgrade when a masked light must look right.
++    internal sealed partial class Clyde
++    {
++        private const float MobileLightmapCellSize = 1f;
++
++        // Hard cap on grid cells. The grid is the visible world rect plus light centers,
++        // so on phones it stays around 100x100 cells.
++        private const int MobileLightmapMaxCells = 96 * 1024;
++
++        private const int MobileLightmapFalloffSteps = 256;
++
++        private bool _mobileLightmap;
++        private ClydeHandle _mobileLightmapShaderHandle;
++
++        private ClydeTexture? _mobileLightmapTexture;
++        private int _mobileLightmapTextureWidth;
++        private int _mobileLightmapTextureHeight;
++
++        private float[] _mobileLightmapAccum = Array.Empty<float>();
++        private Rgba32[] _mobileLightmapPixels = Array.Empty<Rgba32>();
++        private int[] _mobileLightmapSeen = Array.Empty<int>();
++        private bool[] _mobileLightmapSolid = Array.Empty<bool>();
++        private int[] _mobileLightmapQueue = Array.Empty<int>();
++        private readonly float[] _mobileLightmapFalloff = new float[MobileLightmapFalloffSteps];
++
++        private int _mobileLightmapCapacity;
++        private int _mobileLightmapWidth;
++        private int _mobileLightmapHeight;
++        private Vector2 _mobileLightmapMin;
++        private float _mobileLightmapCell = MobileLightmapCellSize;
++        private int _mobileLightmapStamp;
++
++        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count)
++        {
++            if (_mobileLightmapShaderHandle == default ||
++                !_loadedShaders.TryGetValue(_mobileLightmapShaderHandle, out var loadedShader))
++            {
++                return false;
++            }
++
++            SetUpMobileLightmapGrid(expandedBounds, out var cells);
++
++            var accum = _mobileLightmapAccum;
++            var solid = _mobileLightmapSolid;
++            Array.Clear(accum, 0, cells * 3);
++            Array.Clear(solid, 0, cells);
++
++            var occlude = _lightManager.DrawShadows;
++            if (occlude)
++                RasterizeMobileLightmapOccluders(map, expandedBounds);
++
++            for (var i = 0; i < count; i++)
++            {
++                ref var lightData = ref _lightsToRenderList[i];
++                AddMobileLightmapLight(ref lightData, occlude && lightData.Light.CastShadows);
++            }
++
++            var width = _mobileLightmapWidth;
++            var height = _mobileLightmapHeight;
++
++            // Grid row 0 is the world bottom, but SetSubImage takes image-space rows
++            // (top first) and flips them for OpenGL, so write the rows upside down.
++            var pixels = _mobileLightmapPixels;
++            for (var y = 0; y < height; y++)
++            {
++                var sourceRow = y * width;
++                var targetRow = (height - 1 - y) * width;
++                for (var x = 0; x < width; x++)
++                {
++                    var index = (sourceRow + x) * 3;
++                    pixels[targetRow + x] = new Rgba32(
++                        ToByte(accum[index]),
++                        ToByte(accum[index + 1]),
++                        ToByte(accum[index + 2]),
++                        (byte) 255);
++                }
++            }
++            if (_mobileLightmapTexture == null ||
++                _mobileLightmapTextureWidth != width ||
++                _mobileLightmapTextureHeight != height)
++            {
++                _mobileLightmapTexture?.Dispose();
++                var loadParams = new TextureLoadParameters
++                {
++                    Srgb = false,
++                    SampleParameters = new TextureSampleParameters
++                    {
++                        Filter = true,
++                        WrapMode = TextureWrapMode.None,
++                    },
++                };
++
++                var blankTexture = CreateBlankTexture<Rgba32>(
++                    new Vector2i(width, height),
++                    "mobile-lightmap",
++                    loadParams);
++                _mobileLightmapTexture = (ClydeTexture) blankTexture;
++                _mobileLightmapTextureWidth = width;
++                _mobileLightmapTextureHeight = height;
++            }
++
++            _mobileLightmapTexture.SetSubImage(
++                Vector2i.Zero,
++                new Vector2i(width, height),
++                pixels.AsSpan(0, cells));
++
++            var shader = loadedShader.Program;
++            shader.Use();
++
++            SetupGlobalUniformsImmediate(shader, _mobileLightmapTexture);
++            SetTexture(TextureUnit.Texture0, _mobileLightmapTexture);
++            shader.SetUniformTextureMaybe(UniIMainTexture, TextureUnit.Texture0);
++            shader.SetUniformMaybe("lightmapMin", _mobileLightmapMin);
++            shader.SetUniformMaybe("lightmapInvSize",
++                new Vector2(1f / (width * _mobileLightmapCell), 1f / (height * _mobileLightmapCell)));
++
++            var half = new Vector2(width * _mobileLightmapCell, height * _mobileLightmapCell) / 2f;
++            var center = _mobileLightmapMin + half;
++            _drawQuad(-half, half, Matrix3x2.CreateTranslation(center), shader);
++            return true;
++        }
++
++        private void MobileLightmapChanged(bool value)
++        {
++            _mobileLightmap = value;
++            // The grid arrays and texture are recreated on demand by the next frame.
++            _mobileLightmapTexture?.Dispose();
++            _mobileLightmapTexture = null;
++            _mobileLightmapTextureWidth = 0;
++            _mobileLightmapTextureHeight = 0;
++            _mobileLightmapCapacity = 0;
++        }
++
++        private static byte ToByte(float value)
++        {
++            if (value <= 0f)
++                return 0;
++            if (value >= 1f)
++                return 255;
++            return (byte) (value * 255f);
++        }
++
++        private void SetUpMobileLightmapGrid(Box2 bounds, out int cells)
++        {
++            var cell = MobileLightmapCellSize;
++            var width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
++            var height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++
++            while (width * height > MobileLightmapMaxCells)
++            {
++                cell *= 2f;
++                width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
++                height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++            }
++
++            _mobileLightmapCell = cell;
++            _mobileLightmapWidth = width;
++            _mobileLightmapHeight = height;
++            _mobileLightmapMin = bounds.BottomLeft;
++            cells = width * height;
++
++            if (cells <= _mobileLightmapCapacity)
++                return;
++
++            _mobileLightmapCapacity = cells;
++            _mobileLightmapAccum = new float[cells * 3];
++            _mobileLightmapPixels = new Rgba32[cells];
++            _mobileLightmapSeen = new int[cells];
++            _mobileLightmapSolid = new bool[cells];
++            _mobileLightmapQueue = new int[cells];
++            _mobileLightmapStamp = 0;
++        }
++
++        private void RasterizeMobileLightmapOccluders(MapId map, Box2 bounds)
++        {
++            var xforms = _entityManager.GetEntityQuery<TransformComponent>();
++            var queryBounds = bounds.Enlarged(SharedOccluderNeighbourQueryPadding);
++
++            _occluderTrees.Clear();
++            _occluderSystem.GetIntersectingTrees(map, queryBounds, ref _occluderTrees);
++
++            foreach (var (uid, comp) in _occluderTrees)
++            {
++                var treeBounds = _transformSystem.GetInvWorldMatrix(uid, xforms).TransformBox(queryBounds);
++
++                comp.Tree.QueryAabb((in ComponentTreeEntry<OccluderComponent> entry) =>
++                {
++                    var occluder = entry.Component;
++                    if (!occluder.Enabled)
++                        return true;
++
++                    var polygon = occluder.Polygon;
++                    if (polygon.Length < 3)
++                        return true;
++
++                    var worldTransform = _transformSystem.GetWorldMatrix(entry.Transform, xforms);
++                    RasterizeMobileLightmapOccluder(polygon, worldTransform);
++                    return true;
++                }, treeBounds);
++            }
++        }
++
++        private void RasterizeMobileLightmapOccluder(ReadOnlySpan<Vector2> polygon, Matrix3x2 transform)
++        {
++            if (polygon.Length > 32)
++                return;
++
++            Span<Vector2> worldPolygon = stackalloc Vector2[polygon.Length];
++            var min = new Vector2(float.MaxValue);
++            var max = new Vector2(float.MinValue);
++            for (var i = 0; i < polygon.Length; i++)
++            {
++                var vertex = Vector2.Transform(polygon[i], transform);
++                worldPolygon[i] = vertex;
++                min = Vector2.Min(min, vertex);
++                max = Vector2.Max(max, vertex);
++            }
++
++            var cell = _mobileLightmapCell;
++            var width = _mobileLightmapWidth;
++            var height = _mobileLightmapHeight;
++            var origin = _mobileLightmapMin;
++
++            var x0 = Math.Max(0, (int) MathF.Floor((min.X - origin.X) / cell));
++            var y0 = Math.Max(0, (int) MathF.Floor((min.Y - origin.Y) / cell));
++            var x1 = Math.Min(width - 1, (int) MathF.Floor((max.X - origin.X) / cell));
++            var y1 = Math.Min(height - 1, (int) MathF.Floor((max.Y - origin.Y) / cell));
++            if (x1 < x0 || y1 < y0)
++                return;
++
++            // Big occluders are rare and would cost a lot of point tests, fill the box.
++            if ((x1 - x0 + 1) * (y1 - y0 + 1) > 4096)
++            {
++                for (var y = y0; y <= y1; y++)
++                {
++                    for (var x = x0; x <= x1; x++)
++                        _mobileLightmapSolid[y * width + x] = true;
++                }
++
++                return;
++            }
++
++            var halfCell = cell * 0.5f;
++            var limit = halfCell * halfCell;
++            for (var y = y0; y <= y1; y++)
++            {
++                for (var x = x0; x <= x1; x++)
++                {
++                    var point = new Vector2(origin.X + (x + 0.5f) * cell, origin.Y + (y + 0.5f) * cell);
++                    if (!PointInConvexPolygon(worldPolygon, point) &&
++                        DistanceSquaredToPolygon(worldPolygon, point) > limit)
++                    {
++                        continue;
++                    }
++
++                    _mobileLightmapSolid[y * width + x] = true;
++                }
++            }
++        }
++
++        private static bool PointInConvexPolygon(ReadOnlySpan<Vector2> polygon, Vector2 point)
++        {
++            var sign = 0;
++            for (var i = 0; i < polygon.Length; i++)
++            {
++                var a = polygon[i];
++                var b = polygon[(i + 1) % polygon.Length];
++                var cross = (b.X - a.X) * (point.Y - a.Y) - (b.Y - a.Y) * (point.X - a.X);
++                if (cross > 1e-5f)
++                {
++                    if (sign < 0)
++                        return false;
++                    sign = 1;
++                }
++                else if (cross < -1e-5f)
++                {
++                    if (sign > 0)
++                        return false;
++                    sign = -1;
++                }
++            }
++
++            return sign != 0;
++        }
++
++        private static float DistanceSquaredToPolygon(ReadOnlySpan<Vector2> polygon, Vector2 point)
++        {
++            var best = float.MaxValue;
++            for (var i = 0; i < polygon.Length; i++)
++            {
++                var distance = DistanceSquaredToSegment(point, polygon[i], polygon[(i + 1) % polygon.Length]);
++                if (distance < best)
++                    best = distance;
++            }
++
++            return best;
++        }
++
++        private static float DistanceSquaredToSegment(Vector2 point, Vector2 a, Vector2 b)
++        {
++            var ab = b - a;
++            var lengthSquared = ab.LengthSquared();
++            if (lengthSquared <= 1e-8f)
++                return (point - a).LengthSquared();
++
++            var t = Math.Clamp(Vector2.Dot(point - a, ab) / lengthSquared, 0f, 1f);
++            return (point - (a + ab * t)).LengthSquared();
++        }
++
++        private void AddMobileLightmapLight(ref LightRenderData lightData, bool occlude)
++        {
++            var light = lightData.Light;
++            var radius = light.Radius;
++            if (radius <= 0f)
++                return;
++
++            var invRadiusSquared = 1f / (radius * radius);
++            var curveFactor = Math.Clamp(light.CurveFactor, 0f, 1f);
++            var falloff = light.Falloff;
++            var power = light.Energy;
++            var falloffLut = _mobileLightmapFalloff;
++            var lastIndex = falloffLut.Length - 1;
++            for (var i = 0; i <= lastIndex; i++)
++            {
++                var s2 = i / (float) lastIndex;
++                var s = MathF.Sqrt(s2);
++                var curve = s + (s2 - s) * curveFactor;
++                falloffLut[i] = Math.Clamp((1f - s2) * (1f - s2) / (1f + falloff * curve), 0f, 1f) * power;
++            }
++
++            var color = light.Color;
++            var cell = _mobileLightmapCell;
++            var width = _mobileLightmapWidth;
++            var height = _mobileLightmapHeight;
++            var origin = _mobileLightmapMin;
++            var position = lightData.Position;
++
++            // The grid always covers every light center, clamping only guards the exact edge.
++            var startX = Math.Clamp((int) MathF.Floor((position.X - origin.X) / cell), 0, width - 1);
++            var startY = Math.Clamp((int) MathF.Floor((position.Y - origin.Y) / cell), 0, height - 1);
++
++            var radiusSquared = radius * radius;
++
++            if (!occlude)
++            {
++                var reach = (int) MathF.Ceiling(radius / cell) + 1;
++                var minX = Math.Max(0, startX - reach);
++                var maxX = Math.Min(width - 1, startX + reach);
++                var minY = Math.Max(0, startY - reach);
++                var maxY = Math.Min(height - 1, startY + reach);
++                for (var y = minY; y <= maxY; y++)
++                {
++                    var dy = origin.Y + (y + 0.5f) * cell - position.Y;
++                    for (var x = minX; x <= maxX; x++)
++                    {
++                        var dx = origin.X + (x + 0.5f) * cell - position.X;
++                        AddMobileLightmapCell(y * width + x, dx, dy, color, radiusSquared, invRadiusSquared,
++                            falloffLut, lastIndex);
++                    }
++                }
++
++                return;
++            }
++
++            var seen = _mobileLightmapSeen;
++            var solid = _mobileLightmapSolid;
++            var queue = _mobileLightmapQueue;
++
++            _mobileLightmapStamp++;
++            if (_mobileLightmapStamp == int.MaxValue)
++            {
++                Array.Clear(seen, 0, seen.Length);
++                _mobileLightmapStamp = 1;
++            }
++
++            var stamp = _mobileLightmapStamp;
++            var head = 0;
++            var tail = 0;
++            var startIndex = startY * width + startX;
++            seen[startIndex] = stamp;
++            queue[tail++] = startIndex;
++
++            while (head < tail)
++            {
++                var index = queue[head++];
++                var x = index % width;
++                var y = index / width;
++                AddMobileLightmapCell(index, origin.X + (x + 0.5f) * cell - position.X,
++                    origin.Y + (y + 0.5f) * cell - position.Y, color, radiusSquared, invRadiusSquared,
++                    falloffLut, lastIndex);
++
++                for (var direction = 0; direction < 4; direction++)
++                {
++                    var nx = x + (direction == 0 ? 1 : direction == 1 ? -1 : 0);
++                    var ny = y + (direction == 2 ? 1 : direction == 3 ? -1 : 0);
++                    if (nx < 0 || ny < 0 || nx >= width || ny >= height)
++                        continue;
++
++                    var neighbour = ny * width + nx;
++                    if (seen[neighbour] == stamp)
++                        continue;
++
++                    var dx = origin.X + (nx + 0.5f) * cell - position.X;
++                    var dy = origin.Y + (ny + 0.5f) * cell - position.Y;
++                    if (dx * dx + dy * dy + 1f >= radiusSquared)
++                        continue;
++
++                    seen[neighbour] = stamp;
++                    if (solid[neighbour])
++                    {
++                        // Lit like everything else, but light does not pass through it.
++                        AddMobileLightmapCell(neighbour, dx, dy, color, radiusSquared, invRadiusSquared,
++                            falloffLut, lastIndex);
++                        continue;
++                    }
++
++                    queue[tail++] = neighbour;
++                }
++            }
++        }
++
++        private void AddMobileLightmapCell(
++            int index,
++            float dx,
++            float dy,
++            Color color,
++            float radiusSquared,
++            float invRadiusSquared,
++            float[] falloffLut,
++            int lastIndex)
++        {
++            // Same attenuation as light_shared.swsl: +1 for the fake lighting height.
++            var squared = dx * dx + dy * dy + 1f;
++            if (squared >= radiusSquared)
++                return;
++
++            var lutIndex = (int) (squared * invRadiusSquared * lastIndex);
++            if (lutIndex > lastIndex)
++                lutIndex = lastIndex;
++
++            var value = falloffLut[lutIndex];
++            var accum = _mobileLightmapAccum;
++            var baseIndex = index * 3;
++            accum[baseIndex] += color.R * value;
++            accum[baseIndex + 1] += color.G * value;
++            accum[baseIndex + 2] += color.B * value;
++        }
++    }
++}
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs b/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
 index 1dc619d..8709c2e 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.Shaders.cs
@@ -1910,6 +2490,18 @@ index c77add4..221d034 100644
          public event Action<WindowRequestClosedEventArgs>? CloseWindow;
          public event Action<WindowDestroyedEventArgs>? DestroyWindow;
          public event Action<WindowContentScaleEventArgs>? OnWindowScaleChanged;
+diff --git a/Robust.Client/Graphics/Clyde/Clyde.cs b/Robust.Client/Graphics/Clyde/Clyde.cs
+index 7c870c3..849c661 100644
+--- a/Robust.Client/Graphics/Clyde/Clyde.cs
++++ b/Robust.Client/Graphics/Clyde/Clyde.cs
+@@ -122,6 +122,7 @@ namespace Robust.Client.Graphics.Clyde
+             _cfg.OnValueChanged(CVars.LightSoftShadows, SoftShadowsChanged, true);
+             _cfg.OnValueChanged(CVars.MaxLightCount, MaxLightsChanged, true);
+             _cfg.OnValueChanged(CVars.MaxOccluderCount, MaxOccludersChanged, true);
++            _cfg.OnValueChanged(CVars.LightMobileLightmap, MobileLightmapChanged, true);
+             _cfg.OnValueChanged(CVars.RenderTileEdges, RenderTileEdgesChanges, true);
+             // I can't be bothered to tear down and set these threads up in a cvar change handler.
+ 
 diff --git a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs b/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
 index c0e01b4..1332590 100644
 --- a/Robust.Client/Graphics/Clyde/ClydeHeadless.cs
@@ -6227,10 +6819,10 @@ index 18703ca..43496a3 100644
  
  /// <summary>
 diff --git a/Robust.Shared/CVars.cs b/Robust.Shared/CVars.cs
-index 5267fc7..208627c 100644
+index 5267fc7..b7c1273 100644
 --- a/Robust.Shared/CVars.cs
 +++ b/Robust.Shared/CVars.cs
-@@ -992,38 +992,46 @@ namespace Robust.Shared
+@@ -992,38 +992,53 @@ namespace Robust.Shared
          /// Maximum number of lights that the client will draw.
          /// </summary>
          public static readonly CVarDef<int> MaxLightCount =
@@ -6263,6 +6855,13 @@ index 5267fc7..208627c 100644
 +            CVarDef.Create("light.max_shadowcasting_lights", OperatingSystem.IsAndroid() ? 32 : 128, CVar.CLIENTONLY | CVar.ARCHIVE);
 +
 +        /// <summary>
++        /// Replace the per-light shadow maps with one CPU-built occluded lightmap and a single
++        /// additive quad. Much cheaper on mobile GPUs, this is the Terraria-style light path.
++        /// </summary>
++        public static readonly CVarDef<bool> LightMobileLightmap =
++            CVarDef.Create("light.mobile_lightmap", OperatingSystem.IsAndroid(), CVar.CLIENTONLY | CVar.ARCHIVE);
++
++        /// <summary>
 +        /// Bleed light onto walls to soften dark edges. Extremely expensive on mobile GPUs (TBDR).
 +        /// </summary>
 +        public static readonly CVarDef<bool> LightWallBleed =
@@ -6284,7 +6883,7 @@ index 5267fc7..208627c 100644
  
          /// <summary>
          /// Factor by which to blur the lighting framebuffer under <c>light.blur</c>.
-@@ -1204,7 +1212,7 @@ namespace Robust.Shared
+@@ -1204,7 +1219,7 @@ namespace Robust.Shared
          /// UI scale for all UI controls. If zero, this value is automatically calculated from the OS.
          /// </summary>
          public static readonly CVarDef<float> DisplayUIScale =
@@ -6293,7 +6892,7 @@ index 5267fc7..208627c 100644
  
          // Clyde related enums are in Clyde.Constants.cs.
  
-@@ -1357,6 +1365,71 @@ namespace Robust.Shared
+@@ -1357,6 +1372,71 @@ namespace Robust.Shared
          public static readonly CVarDef<bool> DisplayWin32Experience =
              CVarDef.Create("display.win32_experience", false, CVar.CLIENTONLY);
  
