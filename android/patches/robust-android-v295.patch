@@ -3803,7 +3803,7 @@ index 29c54bc..0ac4d9d 100644
          void TextEditing(TextEditingEventArgs textEvent);
 diff --git a/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 new file mode 100644
-index 0000000..b778a2c
+index 0000000..055f775
 --- /dev/null
 +++ b/Robust.Client/UserInterface/Mobile/MobileControlsOverlay.cs
 @@ -0,0 +1,1495 @@
@@ -5184,11 +5184,11 @@ index 0000000..b778a2c
 +        // (PadEditorView.Defaults). The same fractions everywhere make the
 +        // editor, the game and every phone show identical controls; no size
 +        // cvar scales the pad any more.
-+        var stickRadius = finalSize.Y * 0.18f;
++        var stickRadius = finalSize.Y * 0.234f;
 +        var utilSize = finalSize.Y * 0.19f;
 +        var runSize = finalSize.Y * 0.18f;
-+        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.81f);
-+        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.81f);
++        var moveCenter = new Vector2(finalSize.X * 0.21f, finalSize.Y * 0.755f);
++        var aimCenter = new Vector2(finalSize.X * 0.79f, finalSize.Y * 0.755f);
 +
 +        _thumbstick.Radius = stickRadius;
 +        _thumbstick.KnobRadius = stickRadius * 0.30f;
@@ -5231,13 +5231,13 @@ index 0000000..b778a2c
 +            ArrangeChild(control, center - new Vector2(size) / 2f, new Vector2(size, size), finalSize);
 +        }
 +
-+        PlaceAt(_escButton, 0.104f, 0.622f, utilSize);
-+        PlaceAt(_pullButton, 0.21f, 0.544f, utilSize);
-+        PlaceAt(_dropButton, 0.316f, 0.622f, utilSize);
-+        PlaceAt(_bagButton, 0.684f, 0.622f, utilSize);
-+        PlaceAt(_examButton, 0.79f, 0.544f, utilSize);
-+        PlaceAt(_runButton, 0.578f, 0.622f, runSize);
-+        PlaceAt(_zButton, 0.896f, 0.622f, utilSize);
++        PlaceAt(_escButton, 0.0722f, 0.5106f, utilSize);
++        PlaceAt(_pullButton, 0.21f, 0.4092f, utilSize);
++        PlaceAt(_dropButton, 0.3478f, 0.5106f, utilSize);
++        PlaceAt(_bagButton, 0.6522f, 0.5106f, utilSize);
++        PlaceAt(_examButton, 0.79f, 0.4092f, utilSize);
++        PlaceAt(_runButton, 0.5144f, 0.5106f, runSize);
++        PlaceAt(_zButton, 0.9278f, 0.5106f, utilSize);
 +
 +        // User-made buttons keep their saved place.
 +        foreach (var btn in _allButtons)
