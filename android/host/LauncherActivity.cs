@@ -156,15 +156,17 @@ public sealed class LauncherActivity : Activity
     private void MigratePadLayout()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
-        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 4)
+        if (prefs == null || prefs.GetInt("mobile_positions_layout", 0) >= 5)
             return;
 
         // Layout 4: the editor preview is now drawn in the immersive full
         // screen frame, so older fractions (measured inside a smaller dialog)
-        // would land slightly off. Drop them once.
+        // would land slightly off. Layout 5: the base is the physical screen
+        // instead of the activity window, so fractions saved against the
+        // smaller window would draw the pad scaled up. Drop them once.
         prefs.Edit()?
             .Remove("mobile_positions")?
-            .PutInt("mobile_positions_layout", 4)?
+            .PutInt("mobile_positions_layout", 5)?
             .Apply();
     }
 
@@ -3663,7 +3665,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.8.15";
+    public const string CurrentAppVersion = "v0.8.16";
 
 
     public string GetCurrentAppVersion()

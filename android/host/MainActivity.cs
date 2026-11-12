@@ -1448,15 +1448,41 @@ namespace Content.Android
         /// <summary>
         /// Physical screen size in the current orientation. Pad fractions are
         /// fractions of this size, so the launcher preview, the launcher layout
-        /// and the game surface must use the same numbers. Resources.DisplayMetrics
-        /// is the usable window area on some devices, while CurrentWindowMetrics
-        /// is the surface Android hands to the game window.
+        /// and the game surface must use the same numbers. Only the display
+        /// itself is that frame: CurrentWindowMetrics and Resources.DisplayMetrics
+        /// describe the activity window, which on some devices is smaller than
+        /// the screen (system bars, cutout, split screen), and then the preview
+        /// and the game apply the same fractions to different bases.
         /// </summary>
         public static (int Width, int Height) ScreenSize(global::Android.Content.Context? context)
         {
             var width = 0;
             var height = 0;
-            if (OperatingSystem.IsAndroidVersionAtLeast(30))
+            var source = "none";
+
+            // Real display metrics describe the physical screen in the current
+            // rotation, not the activity window, and the game surface is the
+            // full screen. GetRealMetrics is deprecated but still the only API
+            // that returns the display on every supported Android version.
+            try
+            {
+#pragma warning disable CS0618
+                var windowManager =
+                    context?.GetSystemService(global::Android.Content.Context.WindowService) as IWindowManager;
+                var display = windowManager?.DefaultDisplay;
+                if (display != null)
+                {
+                    var real = new global::Android.Util.DisplayMetrics();
+                    display.GetRealMetrics(real);
+                    width = real.WidthPixels;
+                    height = real.HeightPixels;
+                    source = "real";
+                }
+#pragma warning restore CS0618
+            }
+            catch { }
+
+            if (OperatingSystem.IsAndroidVersionAtLeast(30) && (width <= 0 || height <= 0))
             {
                 try
                 {
@@ -1467,27 +1493,8 @@ namespace Content.Android
                     {
                         width = bounds.Width();
                         height = bounds.Height();
+                        source = "window";
                     }
-                }
-                catch { }
-            }
-
-            if (width <= 0 || height <= 0)
-            {
-                try
-                {
-#pragma warning disable CS0618
-                    var windowManager =
-                        context?.GetSystemService(global::Android.Content.Context.WindowService) as IWindowManager;
-                    var display = windowManager?.DefaultDisplay;
-                    if (display != null)
-                    {
-                        var real = new global::Android.Util.DisplayMetrics();
-                        display.GetRealMetrics(real);
-                        width = real.WidthPixels;
-                        height = real.HeightPixels;
-                    }
-#pragma warning restore CS0618
                 }
                 catch { }
             }
@@ -1497,17 +1504,18 @@ namespace Content.Android
                 var metrics = context?.Resources?.DisplayMetrics;
                 width = metrics?.WidthPixels ?? 0;
                 height = metrics?.HeightPixels ?? 0;
+                source = "metrics";
             }
 
             if (!_screenSizeLogged)
             {
                 _screenSizeLogged = true;
                 // One line in logcat proves which source the pad geometry used:
-                // if window and display differ on a device, that difference was
-                // exactly the editor-vs-game offset before 0.8.15.
-                var display = context?.Resources?.DisplayMetrics;
+                // if the window and the real display differ on a device, that
+                // difference is exactly the editor-vs-game offset.
+                var window = context?.Resources?.DisplayMetrics;
                 global::Android.Util.Log.Info("SS14Launch",
-                    $"[ScreenSize] window={width}x{height} display={display?.WidthPixels}x{display?.HeightPixels}");
+                    $"[ScreenSize] base={width}x{height} source={source} window={window?.WidthPixels}x{window?.HeightPixels}");
             }
 
             return (Math.Max(width, height), Math.Min(width, height));
