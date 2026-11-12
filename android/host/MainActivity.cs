@@ -621,6 +621,16 @@ namespace Content.Android
                 LaunchBuildCVars["light.max_shadowcasting_lights"] = "32";
                 LaunchBuildCVars["light.wall_bleed"] = "false";
                 LaunchBuildCVars["light.ambient_occlusion"] = "false";
+                // PVS streaming budgets, per game state. The client reports these to the
+                // server, which then sends that many entities per state. The PC defaults
+                // (50 new, 200 re-entering, 75 leaving processed per state) spawn too much
+                // in one tick on a phone, so walking into a new room drops fps. Smaller
+                // batches spread the same work over more frames. The leave budget is raised
+                // so old entities leave the world as fast as new ones arrive instead of
+                // piling up.
+                LaunchBuildCVars["net.pvs_budget"] = "32";
+                LaunchBuildCVars["net.pvs_enter_budget"] = "96";
+                LaunchBuildCVars["net.pvs_exit_budget"] = "128";
 
                 if (Intent?.Extras != null)
                 {
