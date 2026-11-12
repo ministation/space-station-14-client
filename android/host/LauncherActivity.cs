@@ -1096,7 +1096,23 @@ public sealed class LauncherActivity : Activity
         });
         AddChoiceRow(list, "Frame size", prefs, "frame_scale", "x1", new[] { "x1", "x2", "x3" });
 
-        AddActionRow(list, "Customize controls", () => ShowControlsEditor());
+        var padPreview = new PadPreviewView(this, prefs);
+        list.AddView(padPreview, new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent)
+        {
+            TopMargin = Dp(6)
+        });
+        var padPreviewHint = new TextView(this)
+        {
+            Text = "The pad as it looks in game. Tap to adjust it.",
+            TextSize = 11f
+        };
+        padPreviewHint.SetTextColor(LauncherTheme.SubText);
+        padPreviewHint.SetPadding(Dp(6), 0, Dp(6), Dp(4));
+        list.AddView(padPreviewHint);
+        padPreview.Click += (_, _) => ShowControlsEditor(padPreview.Refresh);
+
+        AddActionRow(list, "Customize controls", () => ShowControlsEditor(padPreview.Refresh));
 
         AddActionRow(list, "Account settings", () => OnAccountButtonClicked());
         AddActionRow(list, "Clear content cache", () => ContentCacheManager.ClearAllCache(this, _storage));
@@ -1991,7 +2007,7 @@ public sealed class LauncherActivity : Activity
     // Launcher-side pad editor: the game no longer has an edit mode, so the
     // player drags the sticks and buttons here and the fractions are passed to
     // the engine as cvar_build_mobile.controls_positions on the next launch.
-    private void ShowControlsEditor()
+    private void ShowControlsEditor(Action? onClosed = null)
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
         var editor = new PadEditorView(this, prefs, prefs?.GetString("mobile_positions", "") ?? "", Density);
@@ -2064,6 +2080,7 @@ public sealed class LauncherActivity : Activity
             ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.WrapContent) { Gravity = GravityFlags.Top });
 
         dialog.SetContentView(rootView);
+        dialog.DismissEvent += (_, _) => onClosed?.Invoke();
         dialog.Show();
         var window = dialog.Window;
         if (window != null)
@@ -2427,7 +2444,7 @@ public sealed class LauncherActivity : Activity
                 var cx = clamped.X - _originX;
                 var cy = clamped.Y - _originY;
                 if (isStick)
-                    DrawStick(canvas, cx, cy, radiusPx, item.Id == "aim");
+                    DrawStick(canvas, _paint, cx, cy, radiusPx, item.Id == "aim");
                 else
                     DrawButton(canvas, cx, cy, radiusPx, item.Label, AccentOf(item.Id));
             }
@@ -2475,7 +2492,7 @@ public sealed class LauncherActivity : Activity
                 canvas.DrawRect(0, bottomEdge, Width, Height, _paint);
         }
 
-        private static Color AccentOf(string id) => id switch
+        public static Color AccentOf(string id) => id switch
         {
             "pull" => Color.Argb(255, 155, 89, 182),
             "exam" => Color.Argb(255, 52, 152, 219),
@@ -2494,7 +2511,7 @@ public sealed class LauncherActivity : Activity
             (int)(a.G + (b.G - a.G) * t),
             (int)(a.B + (b.B - a.B) * t));
 
-        private void DrawButton(Canvas canvas, float cx, float cy, float radius, string label, Color accent)
+        public static void DrawButton(Canvas canvas, float cx, float cy, float radius, string label, Color accent)
         {
             var unit = MathF.Max(3f, MathF.Round(radius / 6f));
             var face = FaceOf(accent);
@@ -2516,7 +2533,7 @@ public sealed class LauncherActivity : Activity
                 Color.Argb(245, 248, 250, 255));
         }
 
-        private void DrawStick(Canvas canvas, float cx, float cy, float radius, bool aim)
+        public static void DrawStick(Canvas canvas, Paint paint, float cx, float cy, float radius, bool aim)
         {
             var unit = MathF.Max(2f, MathF.Round(radius / 7f));
             DrawDisc(canvas, cx, cy, radius,
@@ -2533,12 +2550,12 @@ public sealed class LauncherActivity : Activity
 
             var block = MathF.Max(2f, MathF.Round(radius * 0.11f));
             var cross = Color.Argb(110, 186, 192, 202);
-            _paint.SetStyle(Paint.Style.Fill);
-            _paint.Color = cross;
+            paint.SetStyle(Paint.Style.Fill);
+            paint.Color = cross;
             void Pix(float ox, float oy)
             {
                 var half = block / 2f;
-                canvas.DrawRect(cx + ox - half, cy + oy - half, cx + ox + half, cy + oy + half, _paint);
+                canvas.DrawRect(cx + ox - half, cy + oy - half, cx + ox + half, cy + oy + half, paint);
             }
 
             if (aim)
@@ -2756,6 +2773,132 @@ public sealed class LauncherActivity : Activity
         }
     }
     // [SolomonNumb1] settings dialog: opacity, resolution, FPS limits, and cache management
+    /// <summary>
+    /// Whole game screen in miniature with the pad on it, drawn from the exact
+    /// layout string the game receives. Tap opens the editor.
+    /// </summary>
+    private sealed class PadPreviewView : View
+    {
+        private readonly ISharedPreferences _prefs;
+        private readonly Paint _paint = new(PaintFlags.AntiAlias);
+        private readonly List<(string Id, string Label, float Fx, float Fy, float Radius)> _items = new();
+        private float _aspect = 2f;
+        private float _safeLeft;
+        private float _safeTop;
+        private float _safeRight;
+        private float _safeBottom;
+
+        public PadPreviewView(Context context, ISharedPreferences prefs) : base(context)
+        {
+            _prefs = prefs;
+            Clickable = true;
+            Refresh();
+        }
+
+        public void Refresh()
+        {
+            var (screenW, screenH) = MobileSafeArea.ScreenSize(Context);
+            if (screenW <= 0 || screenH <= 0)
+            {
+                screenW = 2400;
+                screenH = 1080;
+            }
+
+            var (frameMode, frameScale) = MobileSafeArea.ReadPrefs(Context);
+            var insets = Context is Activity activity
+                ? MobileSafeArea.MeasureWindow(activity, frameMode, frameScale)
+                : (Left: 0, Top: 0, Right: 0, Bottom: 0);
+            _safeLeft = insets.Left / (float)screenW;
+            _safeRight = insets.Right / (float)screenW;
+            _safeTop = insets.Top / (float)screenH;
+            _safeBottom = insets.Bottom / (float)screenH;
+            _aspect = (float)screenW / screenH;
+
+            _items.Clear();
+            var layout = PadEditorView.BuildLayout(_prefs, screenW, screenH, insets);
+            foreach (var entry in layout.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var at = entry.IndexOf('@');
+                if (at <= 0)
+                    continue;
+                var coords = entry[(at + 1)..].Split(',');
+                if (coords.Length < 3 ||
+                    !float.TryParse(coords[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var fx) ||
+                    !float.TryParse(coords[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var fy) ||
+                    !float.TryParse(coords[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var radius))
+                {
+                    continue;
+                }
+
+                var id = entry[..at];
+                _items.Add((id, LabelOf(id), fx, fy, radius));
+            }
+
+            Invalidate();
+        }
+
+        private static string LabelOf(string id)
+        {
+            foreach (var item in PadEditorView.Defaults)
+            {
+                if (item.id == id)
+                    return item.label;
+            }
+
+            return id.ToUpperInvariant();
+        }
+
+        protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
+        {
+            var width = MeasureSpec.GetSize(widthMeasureSpec);
+            if (width <= 0)
+                width = Resources?.DisplayMetrics?.WidthPixels ?? 0;
+            SetMeasuredDimension(width, (int)(width / MathF.Max(0.2f, _aspect)));
+        }
+
+        protected override void OnDraw(Canvas canvas)
+        {
+            base.OnDraw(canvas);
+            var width = Width;
+            var height = Height;
+            if (width <= 0 || height <= 0)
+                return;
+
+            // Screen backdrop, cutout frame bands, then the pad at its real
+            // fractions of this screen, the same numbers the game uses.
+            _paint.SetStyle(Paint.Style.Fill);
+            _paint.Color = Color.Argb(255, 18, 20, 27);
+            canvas.DrawRect(0, 0, width, height, _paint);
+
+            _paint.Color = Color.Black;
+            if (_safeLeft > 0f)
+                canvas.DrawRect(0, 0, _safeLeft * width, height, _paint);
+            if (_safeRight > 0f)
+                canvas.DrawRect((1f - _safeRight) * width, 0, width, height, _paint);
+            if (_safeTop > 0f)
+                canvas.DrawRect(0, 0, width, _safeTop * height, _paint);
+            if (_safeBottom > 0f)
+                canvas.DrawRect(0, (1f - _safeBottom) * height, width, height, _paint);
+
+            foreach (var item in _items)
+            {
+                var cx = item.Fx * width;
+                var cy = item.Fy * height;
+                var radius = item.Radius * height;
+                if (item.Id == "stick" || item.Id == "aim")
+                    PadEditorView.DrawStick(canvas, _paint, cx, cy, radius, item.Id == "aim");
+                else
+                    PadEditorView.DrawButton(canvas, cx, cy, radius, item.Label, PadEditorView.AccentOf(item.Id));
+            }
+
+            // The outline is the display edge: this preview is the whole screen.
+            _paint.SetStyle(Paint.Style.Stroke);
+            _paint.StrokeWidth = MathF.Max(1f, height * 0.004f);
+            _paint.Color = Color.Argb(170, 87, 91, 127);
+            canvas.DrawRect(0, 0, width, height, _paint);
+        }
+    }
+
     private void ShowSettingsDialog()
     {
         var prefs = GetSharedPreferences("ss14_mobile_config", FileCreationMode.Private);
@@ -3762,7 +3905,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v0.9.1";
+    public const string CurrentAppVersion = "v0.9.2";
 
 
     public string GetCurrentAppVersion()
