@@ -630,7 +630,7 @@ index 5e94723..6fa6021 100644
  
          public static void StartLibrary(string[] args, GameControllerOptions options)
 diff --git a/Robust.Client/GameController/GameController.Input.cs b/Robust.Client/GameController/GameController.Input.cs
-index a6bc6a0..ab743b2 100644
+index a6bc6a0..e0480c8 100644
 --- a/Robust.Client/GameController/GameController.Input.cs
 +++ b/Robust.Client/GameController/GameController.Input.cs
 @@ -1,4 +1,7 @@
@@ -641,7 +641,7 @@ index a6bc6a0..ab743b2 100644
  
  namespace Robust.Client
  {
-@@ -49,5 +52,124 @@ namespace Robust.Client
+@@ -49,5 +52,172 @@ namespace Robust.Client
                  return;
              }
          }
@@ -655,11 +655,16 @@ index a6bc6a0..ab743b2 100644
 +        // A finger held still this long turns into a right click, which opens the
 +        // verb menu ("взять в руку", "осмотреть") on an item in a storage window.
 +        private const float TouchLongPressSeconds = 0.45f;
-+        private const float TouchLongPressMoveThreshold = 12f;
++
++        // A tap wobbles. Under this distance the finger is still a click, not a drag:
++        // content starts dragging once the mouse moves 12 px, and a drag released
++        // over the same item just puts it back instead of taking it into the hand.
++        private const float TouchTapSlop = 16f;
 +
 +        private long? _touchLongPressFinger;
 +        private float _touchLongPressTime;
-+        private Vector2 _touchLongPressPosition;
++        private bool _touchLongPressFired;
++        private bool _touchPressed;
 +        private Vector2 _touchMousePosition;
 +
 +        public void TouchFinger(TouchFingerEventArgs touchEvent)
@@ -681,7 +686,7 @@ index a6bc6a0..ab743b2 100644
 +                    // listen to MoveStoredItem), and a bare UIClick never reaches them.
 +                    if (TouchHitsWindow(touchEvent.Coordinates))
 +                    {
-+                        StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position);
++                        StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position, longPress: true);
 +                        break;
 +                    }
 +
@@ -694,21 +699,40 @@ index a6bc6a0..ab743b2 100644
 +                        break;
 +                    }
 +
-+                    StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position);
++                    StartTouchMouse(touchEvent.FingerId, touchEvent.Coordinates.Position, longPress: false);
++                    break;
++
++                case TouchFingerAction.Motion when _touchUiFinger == touchEvent.FingerId:
++                    _userInterfaceManager.InjectTouchMove(touchEvent.Coordinates);
 +                    break;
 +
 +                case TouchFingerAction.Motion when _touchMouseFinger == touchEvent.FingerId:
-+                    _touchMousePosition = touchEvent.Coordinates.Position;
-+                    if (_touchLongPressFinger == touchEvent.FingerId &&
-+                        (_touchMousePosition - _touchLongPressPosition).LengthSquared() >
-+                        TouchLongPressMoveThreshold * TouchLongPressMoveThreshold)
++                    if (_touchLongPressFired)
++                        break;
++
++                    var position = touchEvent.Coordinates.Position;
++                    if (!_touchPressed &&
++                        (position - _touchMousePosition).LengthSquared() <= TouchTapSlop * TouchTapSlop)
 +                    {
-+                        _touchLongPressFinger = null;
++                        // Still a tap: swallow the jitter so content does not start a drag.
++                        break;
 +                    }
++
++                    if (!_touchPressed)
++                    {
++                        // The press is injected only when the gesture turns into a drag,
++                        // so a tap stays a clean click on release and a long press does
++                        // not hold the item while the verb menu opens.
++                        _touchPressed = true;
++                        _touchLongPressFinger = null;
++                        _clyde.InjectMouseClick(_touchMousePosition, true);
++                    }
++
++                    _touchMousePosition = position;
 +
 +                    // Dragging: moving items between slots only works when the
 +                    // cursor follows the finger, like a mouse drag on PC.
-+                    _clyde.InjectMouseMoveTo(touchEvent.Coordinates.Position);
++                    _clyde.InjectMouseMoveTo(position);
 +                    break;
 +
 +                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchUiFinger == touchEvent.FingerId:
@@ -716,39 +740,63 @@ index a6bc6a0..ab743b2 100644
 +                    _userInterfaceManager.InjectTouchClick(touchEvent.Coordinates, false);
 +                    break;
 +
-+                case TouchFingerAction.Up or TouchFingerAction.Cancel when _touchMouseFinger == touchEvent.FingerId:
++                case TouchFingerAction.Up when _touchMouseFinger == touchEvent.FingerId:
 +                    _touchMouseFinger = null;
 +                    _touchLongPressFinger = null;
-+                    _clyde.InjectMouseClick(touchEvent.Coordinates.Position, false);
++
++                    if (_touchPressed)
++                    {
++                        _touchPressed = false;
++                        _clyde.InjectMouseClick(_touchMousePosition, false);
++                    }
++                    else if (!_touchLongPressFired)
++                    {
++                        // A tap is one click: press and release at the same spot.
++                        _clyde.InjectMouseClick(_touchMousePosition, true);
++                        _clyde.InjectMouseClick(_touchMousePosition, false);
++                    }
++                    break;
++
++                case TouchFingerAction.Cancel when _touchMouseFinger == touchEvent.FingerId:
++                    _touchMouseFinger = null;
++                    _touchLongPressFinger = null;
++
++                    if (_touchPressed)
++                    {
++                        _touchPressed = false;
++                        _clyde.InjectMouseClick(_touchMousePosition, false);
++                    }
 +                    break;
 +            }
 +        }
 +
-+        private void StartTouchMouse(long fingerId, Vector2 position)
++        private void StartTouchMouse(long fingerId, Vector2 position, bool longPress)
 +        {
 +            _touchMouseFinger = fingerId;
 +            _touchMousePosition = position;
-+            _touchLongPressFinger = fingerId;
++            _touchPressed = false;
++            _touchLongPressFinger = longPress ? fingerId : null;
 +            _touchLongPressTime = 0f;
-+            _touchLongPressPosition = position;
-+            _clyde.InjectMouseClick(position, true);
++            _touchLongPressFired = false;
 +        }
 +
 +        private void UpdateTouchLongPress(float deltaSeconds)
 +        {
-+            if (_touchLongPressFinger == null || _touchMouseFinger != _touchLongPressFinger)
++            if (_touchLongPressFinger == null ||
++                _touchMouseFinger != _touchLongPressFinger ||
++                _touchPressed)
++            {
 +                return;
++            }
 +
 +            _touchLongPressTime += deltaSeconds;
 +            if (_touchLongPressTime < TouchLongPressSeconds)
 +                return;
 +
 +            _touchLongPressFinger = null;
-+            _touchMouseFinger = null;
++            _touchLongPressFired = true;
 +
-+            // Drop the drag the press started before asking for the menu: left up,
-+            // then a right click, the same order a mouse uses.
-+            _clyde.InjectMouseClick(_touchMousePosition, false);
++            // No left press was injected yet, so this right click only opens the menu.
 +            _clyde.InjectMouseClick(_touchMousePosition, true, Mouse.Button.Right);
 +            _clyde.InjectMouseClick(_touchMousePosition, false, Mouse.Button.Right);
 +        }
@@ -4165,10 +4213,10 @@ index 5be710c..b09d7bd 100644
                  mode = DragMode.Move;
              }
 diff --git a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-index 29c54bc..0ac4d9d 100644
+index 29c54bc..8d720ce 100644
 --- a/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
 +++ b/Robust.Client/UserInterface/IUserInterfaceManagerInternal.cs
-@@ -30,6 +30,17 @@ namespace Robust.Client.UserInterface
+@@ -30,6 +30,22 @@ namespace Robust.Client.UserInterface
  
          void MouseWheel(MouseWheelEventArgs args);
  
@@ -4182,6 +4230,11 @@ index 29c54bc..0ac4d9d 100644
 +        /// </summary>
 +        /// <returns>True if a control was under the finger and got the click.</returns>
 +        bool InjectTouchClick(ScreenCoordinates pointerLocation, bool down);
++
++        /// <summary>
++        /// Moves a finger that is on a HUD control or popup, so lists under it scroll.
++        /// </summary>
++        void InjectTouchMove(ScreenCoordinates pointerLocation);
 +
          void TextEntered(TextEnteredEventArgs textEnteredEvent);
  
@@ -6862,7 +6915,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..4253e06 100644
+index 274aa2a..8bbc32d 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
@@ -6933,71 +6986,81 @@ index 274aa2a..4253e06 100644
          // Only raise keybind-up for the control on which we previously raised keybind-down
          if (!_focusedControls.Remove(args.Function, out var control) || !control.VisibleInTree)
              return;
-@@ -140,6 +187,63 @@ internal partial class UserInterfaceManager
+@@ -137,9 +184,73 @@ internal partial class UserInterfaceManager
+         args.Handle();
+     }
+ 
++    /// <summary>
++    /// Shared by the mouse path (windows) and the direct touch path (HUD, popups):
++    /// a finger that moves far enough scrolls the list under it and stops being a click.
++    /// </summary>
++    private bool ProcessTouchScroll(Vector2 curPos)
++    {
++        if (!OperatingSystem.IsAndroid() || _activeScrollTarget == null || !_activeScrollTarget.VisibleInTree)
++            return false;
++
++        var totalDelta = curPos - _touchDownPos;
++        var stepDelta = (curPos - _touchLastPos) / _activeScrollTarget.UIScale;
++        _touchLastPos = curPos;
++
++        if (!_isTouchScrolling &&
++            (MathF.Abs(totalDelta.Y) > TouchScrollThreshold || MathF.Abs(totalDelta.X) > TouchScrollThreshold))
++        {
++            _isTouchScrolling = true;
++
++            if (_touchDownTarget != null && _touchDownTarget != _activeScrollTarget)
++            {
++                if (ControlFocused == _touchDownTarget)
++                {
++                    ControlFocused = null;
++                }
++
++                if (_focusedControls.TryGetValue(EngineKeyFunctions.UIClick, out var focused) && focused == _touchDownTarget)
++                {
++                    _focusedControls[EngineKeyFunctions.UIClick] = _activeScrollTarget;
++                }
++            }
++        }
++
++        if (!_isTouchScrolling)
++            return false;
++
++        if (_activeScrollTarget is ScrollContainer sc)
++        {
++            if (sc.VScrollEnabled)
++            {
++                sc.VScroll -= stepDelta.Y;
++                sc.VScrollTarget = sc.VScroll;
++            }
++            if (sc.HScrollEnabled)
++            {
++                sc.HScroll -= stepDelta.X;
++                sc.HScrollTarget = sc.HScroll;
++            }
++        }
++        else if (_activeScrollTarget is ItemList list)
++        {
++            list.ScrollByDelta(stepDelta.Y);
++        }
++        else if (_activeScrollTarget is OutputPanel panel)
++        {
++            panel.ScrollByDelta(stepDelta.Y);
++        }
++
++        return true;
++    }
++
      public void MouseMove(MouseMoveEventArgs mouseMoveEventArgs)
      {
          _resetTooltipTimer();
 +
-+        if (OperatingSystem.IsAndroid() && _activeScrollTarget != null && _activeScrollTarget.VisibleInTree)
-+        {
-+            var curPos = mouseMoveEventArgs.Position.Position;
-+            var totalDelta = curPos - _touchDownPos;
-+            var stepDelta = (curPos - _touchLastPos) / _activeScrollTarget.UIScale;
-+            _touchLastPos = curPos;
-+
-+            if (!_isTouchScrolling)
-+            {
-+                if (MathF.Abs(totalDelta.Y) > TouchScrollThreshold || MathF.Abs(totalDelta.X) > TouchScrollThreshold)
-+                {
-+                    _isTouchScrolling = true;
-+
-+                    if (_touchDownTarget != null && _touchDownTarget != _activeScrollTarget)
-+                    {
-+                        if (ControlFocused == _touchDownTarget)
-+                        {
-+                            ControlFocused = null;
-+                        }
-+
-+                        if (_focusedControls.TryGetValue(EngineKeyFunctions.UIClick, out var focused) && focused == _touchDownTarget)
-+                        {
-+                            _focusedControls[EngineKeyFunctions.UIClick] = _activeScrollTarget;
-+                        }
-+                    }
-+                }
-+            }
-+
-+            if (_isTouchScrolling)
-+            {
-+                if (_activeScrollTarget is ScrollContainer sc)
-+                {
-+                    if (sc.VScrollEnabled)
-+                    {
-+                        sc.VScroll -= stepDelta.Y;
-+                        sc.VScrollTarget = sc.VScroll;
-+                    }
-+                    if (sc.HScrollEnabled)
-+                    {
-+                        sc.HScroll -= stepDelta.X;
-+                        sc.HScrollTarget = sc.HScroll;
-+                    }
-+                }
-+                else if (_activeScrollTarget is ItemList list)
-+                {
-+                    list.ScrollByDelta(stepDelta.Y);
-+                }
-+                else if (_activeScrollTarget is OutputPanel panel)
-+                {
-+                    panel.ScrollByDelta(stepDelta.Y);
-+                }
-+
-+                return;
-+            }
-+        }
++        if (ProcessTouchScroll(mouseMoveEventArgs.Position.Position))
++            return;
 +
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +687,83 @@ internal partial class UserInterfaceManager
+@@ -583,4 +694,115 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -7023,6 +7086,15 @@ index 274aa2a..4253e06 100644
 +    /// against its own global position, so the pointer location must be built
 +    /// from the hit test result, not from the raw screen coordinates.
 +    /// </summary>
++    /// <summary>
++    /// Feeds a dragging finger that is not a mouse press (HUD, popups) into the same
++    /// list scrolling the mouse path uses, so lists can be scrolled by touch.
++    /// </summary>
++    public void InjectTouchMove(ScreenCoordinates pointerLocation)
++    {
++        ProcessTouchScroll(pointerLocation.Position);
++    }
++
 +    public bool InjectTouchClick(ScreenCoordinates pointerLocation, bool down)
 +    {
 +        Control? control;
@@ -7050,6 +7122,16 @@ index 274aa2a..4253e06 100644
 +        }
 +        else
 +        {
++            // While scrolling the finger is not clicking: drop the pending click.
++            if (_isTouchScrolling)
++            {
++                _touchClickControl = null;
++                _activeScrollTarget = null;
++                _touchDownTarget = null;
++                _isTouchScrolling = false;
++                return true;
++            }
++
 +            control = _touchClickControl;
 +            relativePixel = _touchClickRelative;
 +            _touchClickControl = null;
@@ -7062,6 +7144,19 @@ index 274aa2a..4253e06 100644
 +        {
 +            _touchClickControl = control;
 +            _touchClickRelative = relativePixel;
++
++            // A finger that starts on a list should scroll it, not click it. This is
++            // the bookkeeping the key binding path does for UIClick before dispatch.
++            _touchDownPos = pointerLocation.Position;
++            _touchLastPos = pointerLocation.Position;
++            _touchDownTarget = control;
++            _activeScrollTarget = FindScrollable(control);
++            _isTouchScrolling = false;
++        }
++        else
++        {
++            _activeScrollTarget = null;
++            _touchDownTarget = null;
 +        }
 +
 +        var pointer = new ScreenCoordinates((Vector2) control.GlobalPixelPosition + relativePixel,
