@@ -1187,9 +1187,9 @@ public sealed class LauncherActivity : Activity
                 break;
         }
 
-        // 60 fps cap: uncapped rendering on 120 Hz panels halves the frame
-        // budget and throttles the phone, which reads as "low fps".
-        intent.PutExtra("cvar_build_display.max_fps", "60");
+        // 120 fps cap: enough for 120 Hz panels, still a ceiling so an uncapped
+        // renderer cannot burn the frame budget the phone needs to stay warm.
+        intent.PutExtra("cvar_build_display.max_fps", "120");
         intent.PutExtra("cvar_build_display.vsync", "false");
         intent.PutExtra("cvar_build_light.max_shadowcasting_lights", shadows);
         intent.PutExtra("cvar_build_light.max_light_count", lights);
@@ -3734,7 +3734,7 @@ public sealed class LauncherActivity : Activity
         catch {}
     }
 
-    public const string CurrentAppVersion = "v1.0.3";
+    public const string CurrentAppVersion = "v1.0.4";
 
 
     public string GetCurrentAppVersion()

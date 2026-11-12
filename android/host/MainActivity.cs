@@ -603,11 +603,12 @@ namespace Content.Android
                 LaunchBuildCVars.Clear();
 
                 // Mobile first defaults: low graphics, particles and parallax off.
-                // display.max_fps 0 means no cap: the phone's refresh rate is the limit.
+                // 120 fps cap: the ceiling for 120 Hz panels, still a limit so an
+                // uncapped renderer cannot eat the whole frame budget.
                 // Extras from the launcher below can override any of these.
                 LaunchBuildCVars["display.uiScale"] = UIScaleForResolution(Intent?.GetStringExtra("display_resolution"));
                 LaunchBuildCVars["display.vsync"] = "false";
-                LaunchBuildCVars["display.max_fps"] = "60";
+                LaunchBuildCVars["display.max_fps"] = "120";
                 LaunchBuildCVars["particles.quality"] = "0";
                 LaunchBuildCVars["particles.global_budget"] = "256";
                 LaunchBuildCVars["parallax.enabled"] = "false";
@@ -1157,7 +1158,7 @@ namespace Content.Android
                     "--cvar", "parallax.enabled=false",
                     "--cvar", "viewport.scale_render=false",
                     "--cvar", "display.vsync=false",
-                    "--cvar", "display.max_fps=0",
+                    "--cvar", "display.max_fps=120",
                     "--cvar", "audio.max_ambient_sources=16",
                     "--cvar", "audio.max_channels=24",
                     "--cvar", "net.logging=false",
