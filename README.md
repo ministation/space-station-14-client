@@ -23,11 +23,11 @@ Android-клиент Space Station 14 на настоящем движке Robus
 
 ## Скачать
 
-APK: [Release android-v0.8.17](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.8.17).
+APK: [Release android-v0.8.18](https://github.com/ministation/space-station-14-client/releases/tag/android-v0.8.18).
 
 Зеркало CDN: https://cdn.ministation.ru/android/latest/ru.ministation.client-Signed.apk
 Кнопка Android есть на странице билдов: https://cdn.ministation.ru/fork/ministation
-sha256 версии 0.8.17: e07a66695ae62c332bccd74b6fa5783eb98581282818e432d77f0a5b90d38928
+sha256 версии 0.8.18: 172d7a8ad09b4513057836fbcea77dc4814a630be7e55555fadd66ddd4629b2d
 
 Новые версии на CDN заливаются скриптом android/scripts/upload-cdn.sh
 (ssh на CDN-хост, путь /var/www/android/<версия>).
