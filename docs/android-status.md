@@ -200,6 +200,33 @@ android-v0.7.1 и на CDN в путях latest и 0.7.1. В README добавл
 панель, при этом физический размер кнопок не меняется. Именно это сделано в собранном, но не выпущенном
 кандидате 0.7.2.
 
+### 1.0.11: чат снова открывает клавиатуру
+
+Выпущено 13 ноября 2026: тег android-v1.0.11, android/latest и android/1.0.11 как space-station.apk,
+sha256 015c7a3f96474d408f93e95e01ffbf5aeb7d268a83bc696685d3c4f014f5da9f, versionCode 76. Патч движка: 122 файла, 11010 строк, sha256
+37118a1cdc33057cc4b570c21bf443606176d93c341e090e2e362203d9c15fbd; git apply --check на чистом v295.0.2 проходит, diff -r с vendor даёт 0 строк.
+
+- Не работало: тап по строке ввода чата не открывал экранную клавиатуру, писать в чат было нельзя.
+- Причина: с 0.8.8 тап по HUD-контролу не идёт путём мыши. InjectTouchClick в
+  UserInterfaceManager.Input.cs сам находит контрол под пальцем и отправляет ему UIClick, а фокус в
+  движке ставит только HandleCanFocusDown на пути мыши: ControlFocused = контрол, и если
+  CanKeyboardFocus и KeyboardFocusOnClick, то GrabKeyboardFocus. LineEdit (строка чата) на одиночный
+  UIClick фокус не берёт, он только выделяет слово по двойному клику. KeyboardFocused оставался пустым,
+  KeyboardFocusEntered не вызывался, движок не делал TextInputStart, а без него SDL и хост не показывают
+  IME. Показ клавиатуры, подключённый к TextInputStart в 0.9.3, получал управление только после фокуса,
+  которого не было.
+- Решение: InjectTouchClick на нажатии повторяет фокусную часть HandleCanFocusDown (снимает прежний
+  keyboard focus, ставит ControlFocused, берёт keyboard focus, если у контрола KeyboardFocusOnClick),
+  на отпускании сбрасывает ControlFocused, как HandleCanFocusUp. Тап по строке чата теперь даёт фокус
+  LineEdit, тот просит TextInputStart, хост показывает клавиатуру. Тап по другому HUD снимает фокус и
+  прячет клавиатуру, как клик мышью на ПК.
+- Проверка: временный тест в Robust.Client.IntegrationTests на headless UserInterfaceManager:
+  InjectTouchClick в LineEdit ставит KeyboardFocused на него, отпускание фокус не снимает. Тест проходит,
+  в патч не добавлен (движок пересоздаётся fetch-engine.sh). Патч проверен git apply --check на чистом
+  v295.0.2, применение совпадает с vendor.
+- На телефоне не проверено: эмулятор без аккаунта SS14 до чата в игре не доходит. Проверен фокус в
+  движке, показ IME на устройстве не проверялся.
+
 ### 1.0.10: сумка и меню действий по касанию
 
 Выпущено 12 ноября 2026: тег android-v1.0.10, android/latest и android/1.0.10 как space-station.apk,

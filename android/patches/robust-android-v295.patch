@@ -7148,7 +7148,7 @@ index 274aa2a..8bbc32d 100644
          // Update which control is considered hovered.
          var newHovered = MouseGetControl(mouseMoveEventArgs.Position);
          SetHovered(newHovered);
-@@ -583,4 +694,115 @@ internal partial class UserInterfaceManager
+@@ -583,4 +694,133 @@ internal partial class UserInterfaceManager
  
          return pos - control.GlobalPosition;
      }
@@ -7217,6 +7217,7 @@ index 274aa2a..8bbc32d 100644
 +                _activeScrollTarget = null;
 +                _touchDownTarget = null;
 +                _isTouchScrolling = false;
++                ControlFocused = null;
 +                return true;
 +            }
 +
@@ -7232,6 +7233,17 @@ index 274aa2a..8bbc32d 100644
 +        {
 +            _touchClickControl = control;
 +            _touchClickRelative = relativePixel;
++
++            // A tap is a click as far as focus goes. The mouse path does this in
++            // HandleCanFocusDown; touch dispatch skipped it, so a LineEdit (chat)
++            // received the UIClick but never keyboard focus: the engine never sent
++            // TextInputStart and the on-screen keyboard stayed closed.
++            if (control != KeyboardFocused)
++                ReleaseKeyboardFocus();
++
++            ControlFocused = control;
++            if (control.CanKeyboardFocus && control.KeyboardFocusOnClick)
++                control.GrabKeyboardFocus();
 +
 +            // A finger that starts on a list should scroll it, not click it. This is
 +            // the bookkeeping the key binding path does for UIClick before dispatch.
@@ -7260,7 +7272,13 @@ index 274aa2a..8bbc32d 100644
 +        if (down)
 +            _doGuiInput(control, guiArgs, (c, ev) => c.KeyBindDown(ev));
 +        else
++        {
 +            _doGuiInput(control, guiArgs, (c, ev) => c.KeyBindUp(ev));
++
++            // Mirror HandleCanFocusUp: a released tap must not leave the keyboard
++            // dispatch target on the control that was under the finger.
++            ControlFocused = null;
++        }
 +        return true;
 +    }
  }
