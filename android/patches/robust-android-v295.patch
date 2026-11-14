@@ -1574,7 +1574,7 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..0eb8596 100644
+index 73cadae..93d9ade 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 @@ -40,7 +40,12 @@ namespace Robust.Client.Graphics.Clyde
@@ -1770,12 +1770,15 @@ index 73cadae..0eb8596 100644
                  {
                      ref var lightData = ref _lightsToRenderList[i];
                      var component = lightData.Light;
-@@ -570,14 +650,17 @@ namespace Robust.Client.Graphics.Clyde
+@@ -570,14 +650,20 @@ namespace Robust.Client.Graphics.Clyde
              if (_cfg.GetCVar(CVars.LightBlur))
                  BlurRenderTarget(viewport, viewport.LightRenderTarget, viewport.LightBlurTarget, eye, 14f);
  
 -            using (_prof.Group("BlurOntoWalls"))
-+            if (!_mobileLightmap && _cfg.GetCVar(CVars.LightWallBleed))
++            // The CPU lightmap lights wall cells itself. When it just failed and the
++            // per-light quads drew instead, walls get the regular bleed treatment or
++            // they stay pitch black on Android.
++            if ((!_mobileLightmap && _cfg.GetCVar(CVars.LightWallBleed)) || _mobileLightmapLastFailed)
              {
 -                BlurOntoWalls(viewport, eye);
 -            }
@@ -1794,7 +1797,7 @@ index 73cadae..0eb8596 100644
              }
  
              BindRenderTargetFull(viewport.RenderTarget);
-@@ -601,7 +684,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -601,7 +687,7 @@ namespace Robust.Client.Graphics.Clyde
              ref var shadowCount = ref state.shadowCastingCount;
  
              // If there are too many lights, exit the query
@@ -1803,7 +1806,7 @@ index 73cadae..0eb8596 100644
                  return false;
  
              var (light, transform) = value;
-@@ -617,7 +700,9 @@ namespace Robust.Client.Graphics.Clyde
+@@ -617,7 +703,9 @@ namespace Robust.Client.Graphics.Clyde
              if (!circle.Intersects(state.worldAABB))
                  return true;
  
@@ -1814,7 +1817,7 @@ index 73cadae..0eb8596 100644
              {
                  // Shadow-casting lights embedded inside an occluder cannot work consistently.
                  // As such we just disable them! If you want light inside an occluder use non-shadow casting lights!
-@@ -662,6 +747,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -662,6 +750,20 @@ namespace Robust.Client.Graphics.Clyde
              }
          }
  
@@ -1835,7 +1838,7 @@ index 73cadae..0eb8596 100644
          private sealed class LightCapacityComparer : IComparer<LightRenderData>
          {
              public int Compare(LightRenderData x, LightRenderData y)
-@@ -680,6 +779,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -680,6 +782,14 @@ namespace Robust.Client.Graphics.Clyde
              }
          }
  
@@ -1850,7 +1853,7 @@ index 73cadae..0eb8596 100644
          private (int count, Box2 expandedBounds) GetLightsToRender(
              MapId map,
              in Box2Rotated worldBounds,
-@@ -696,7 +803,22 @@ namespace Robust.Client.Graphics.Clyde
+@@ -696,7 +806,22 @@ namespace Robust.Client.Graphics.Clyde
                  comp.Tree.QueryAabb(ref state, LightQuery, bounds);
              }
  
@@ -1874,7 +1877,7 @@ index 73cadae..0eb8596 100644
              {
                  // There are too many lights casting shadows to fit in the scene.
                  // This check must occur before occluder expansion, or else bad things happen.
-@@ -897,7 +1019,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -897,7 +1022,10 @@ namespace Robust.Client.Graphics.Clyde
              CalcScreenMatrices(viewport.Size, out var proj, out var view);
              SetProjViewBuffer(proj, view);
  
@@ -1886,7 +1889,7 @@ index 73cadae..0eb8596 100644
              shader.Use();
  
              SetupGlobalUniformsImmediate(shader, viewport.LightRenderTarget.Texture);
-@@ -958,7 +1083,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -958,7 +1086,10 @@ namespace Robust.Client.Graphics.Clyde
              CheckGlError();
              IsBlending = false;
  
@@ -1898,7 +1901,7 @@ index 73cadae..0eb8596 100644
              shader.Use();
  
              var tex = viewport.WallBleedIntermediateRenderTarget2.Texture;
-@@ -990,7 +1118,18 @@ namespace Robust.Client.Graphics.Clyde
+@@ -990,7 +1121,18 @@ namespace Robust.Client.Graphics.Clyde
  
              // Applies FOV to the final framebuffer.
  
@@ -1918,7 +1921,7 @@ index 73cadae..0eb8596 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1013,7 +1152,10 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1013,7 +1155,10 @@ namespace Robust.Client.Graphics.Clyde
          {
              // Applies FOV to the lighting framebuffer.
  
@@ -1930,7 +1933,7 @@ index 73cadae..0eb8596 100644
              fovShader.Use();
  
              SetupGlobalUniformsImmediate(fovShader, FovTexture);
-@@ -1585,6 +1727,7 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1585,6 +1730,7 @@ namespace Robust.Client.Graphics.Clyde
              _occluderRenderEntries.Clear();
              _occluderRenderVertices.Clear();
              _occluderRenderEdges.Clear();
@@ -1938,7 +1941,7 @@ index 73cadae..0eb8596 100644
              _occluderRenderSharedEdges.Clear();
  
              BuildFrameOccluderGeometry(map, expandedBounds, xforms);
-@@ -1703,46 +1846,58 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1703,46 +1849,58 @@ namespace Robust.Client.Graphics.Clyde
                              _occluderSharedBoundaryEdges,
                              _occluderBoundarySegments);
  
@@ -2029,7 +2032,7 @@ index 73cadae..0eb8596 100644
  
                  _occlusionMaskDataLength = imi;
  
-@@ -1945,6 +2100,14 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1945,6 +2103,14 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxShadowcastingLightsChanged(int newValue)
          {
@@ -2044,7 +2047,7 @@ index 73cadae..0eb8596 100644
              _maxShadowcastingLights = newValue;
              DebugTools.Assert(_maxLights >= _maxShadowcastingLights);
  
-@@ -1957,8 +2120,8 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1957,8 +2123,8 @@ namespace Robust.Client.Graphics.Clyde
                  DeleteRenderTexture(_shadowRenderTarget.Handle);
              }
  
@@ -2055,7 +2058,7 @@ index 73cadae..0eb8596 100644
                  new RenderTargetFormatParameters(
                      _hasGLFloatFramebuffers ? RenderTargetColorFormat.RG32F : RenderTargetColorFormat.Rgba8, true),
                  new TextureSampleParameters { WrapMode = TextureWrapMode.Repeat, Filter = true },
-@@ -1972,13 +2135,20 @@ namespace Robust.Client.Graphics.Clyde
+@@ -1972,13 +2138,20 @@ namespace Robust.Client.Graphics.Clyde
  
          private void MaxOccludersChanged(int value)
          {
@@ -2080,10 +2083,10 @@ index 73cadae..0eb8596 100644
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
 new file mode 100644
-index 0000000..1a4e5a2
+index 0000000..a95b98d
 --- /dev/null
 +++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
-@@ -0,0 +1,756 @@
+@@ -0,0 +1,767 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -2122,20 +2125,22 @@ index 0000000..1a4e5a2
 +        private int _mobileLightmapTextureWidth;
 +        private int _mobileLightmapTextureHeight;
 +
-+        private bool _mobileLightmapFaulted;
 +        private bool _mobileLightmapWarned;
++
++        // Set when the last frame fell back to per-light quads: the wall bleed passes
++        // run for it, because without them walls stay pitch black.
++        private bool _mobileLightmapLastFailed;
++        private long _mobileLightmapLastFaultLogMs;
 +
 +        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count, Vector2 eyePosition)
 +        {
-+            if (_mobileLightmapFaulted)
-+                return false;
-+
 +            if (_mobileLightmapShaderHandle == default ||
 +                !_loadedShaders.TryGetValue(_mobileLightmapShaderHandle, out var loadedShader))
 +            {
 +                if (!_mobileLightmapWarned)
 +                {
 +                    _mobileLightmapWarned = true;
++                    _mobileLightmapLastFailed = true;
 +                    _clydeSawmill.Warning("Mobile lightmap shader is missing, drawing lights per source instead");
 +                }
 +
@@ -2144,12 +2149,21 @@ index 0000000..1a4e5a2
 +
 +            try
 +            {
-+                return DrawMobileLightmapInner(map, expandedBounds, count, eyePosition, loadedShader);
++                var drawn = DrawMobileLightmapInner(map, expandedBounds, count, eyePosition, loadedShader);
++                _mobileLightmapLastFailed = !drawn;
++                return drawn;
 +            }
 +            catch (Exception ex)
 +            {
-+                _mobileLightmapFaulted = true;
-+                _clydeSawmill.Error($"Mobile lightmap failed, falling back to per-light lights: {ex}");
++                // No latch: the first frames can render before the entity systems are
++                // up, and a one-off GL hiccup must not kill the lightmap for the session.
++                _mobileLightmapLastFailed = true;
++                if (Environment.TickCount64 - _mobileLightmapLastFaultLogMs > 5000)
++                {
++                    _mobileLightmapLastFaultLogMs = Environment.TickCount64;
++                    _clydeSawmill.Error($"Mobile lightmap failed, falling back to per-light lights: {ex}");
++                }
++
 +                return false;
 +            }
 +        }
