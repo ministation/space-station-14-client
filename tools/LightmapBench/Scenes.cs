@@ -16,6 +16,9 @@ public sealed class Frame
     public required Box2 Bounds;
     public required Occluder[] Occluders;
     public required LightRenderData[] Lights;
+
+    // Tile lattice of the grid the camera is on: the lightmap snaps its cells to it.
+    public Vector2 AlignOrigin;
 }
 
 public struct PhaseTimes
@@ -186,6 +189,7 @@ public static class SceneBuilder
                 Bounds = bounds,
                 Lights = visible.ToArray(),
                 Occluders = frameOccluders.ToArray(),
+                AlignOrigin = mapOffset,
             };
         }
 

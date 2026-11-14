@@ -1,15 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    CPU benchmark and bit-exactness check for the Android mobile lightmap
+    CPU benchmark and behaviour checks for the Android mobile lightmap
     (Clyde.MobileLighting.cs in android/patches/robust-android-v295.patch).
     The optimized code is not copied here: the block between the
     "mobile-lightmap-cpu-core" markers is extracted from the patch on every build,
     so the benchmark always measures what ships. Baseline.cs is the frozen
-    implementation from Android 0.9.1.
+    implementation from Android 0.9.1, kept for the speed comparison.
 
-      dotnet run -c Release (project tools/LightmapBench)          verify + benchmark
-      dotnet run -c Release (project tools/LightmapBench) verify   only the bit-exactness check
+      dotnet run -c Release (project tools/LightmapBench)          checks + benchmark
+      dotnet run -c Release (project tools/LightmapBench) verify   only the behaviour checks
   -->
 
   <PropertyGroup>

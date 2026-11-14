@@ -2,7 +2,7 @@
 // robust-android-v295.patch, Clyde.MobileLighting.cs). Fields and methods are copied
 // verbatim; only the engine-bound parts (GL upload, occluder tree query) are left out,
 // and the pixel loop from DrawMobileLightmap is wrapped in FillPixels(). Do not edit:
-// it is the reference the optimized code is checked against.
+// it is the 0.9.1 reference the patched code is timed against.
 using System;
 using System.Numerics;
 

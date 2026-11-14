@@ -15,17 +15,10 @@ var scenarios = new[]
     new Scenario("zoomed out 32x24, 1 light / 8 tiles", 32, 24, 8, false, 3803),
 };
 
-// Only checked for exactness: radii below the +1 lighting height (nothing lit), around
-// a cell, and far bigger than the view, so the reach box and grid edges are hit.
-var edgeCases = new Scenario("edge radii 0.3..24, 1 light / 3 tiles", 21, 15, 3, false, 4904,
-    new[] { 0.3f, 0.9f, 1f, 1.01f, 1.5f, 2f, 12f, 17.5f, 24f });
-
 var failed = false;
 if (mode is "all" or "verify")
 {
-    if (!Verify(scenarios.Append(edgeCases).ToArray()))
-        failed = true;
-    if (!VerifyBleed(scenarios.Append(edgeCases).ToArray()))
+    if (!Checks.Run())
         failed = true;
 }
 
@@ -34,121 +27,6 @@ if (mode is "all" or "bench")
 
 return failed ? 1 : 0;
 
-static bool Verify(Scenario[] scenarios)
-{
-    Console.WriteLine("== Bit-exactness: optimized vs 0.9.1 baseline ==");
-    var ok = true;
-    foreach (var baseScenario in scenarios)
-    {
-        foreach (var aligned in new[] { false, true })
-        {
-            var scenario = baseScenario with { Aligned = aligned, Seed = baseScenario.Seed + (aligned ? 17 : 0) };
-            var frames = SceneBuilder.Build(scenario, 200);
-            foreach (var occlude in new[] { true, false })
-            {
-                // Fresh instances per pass, then reused across frames like the engine does,
-                // so grid reuse, stamps and the falloff cache are all exercised.
-                var baseline = new BaselineLightmap();
-                var optimized = new OptimizedLightmap { Bleed = false };
-                long accumDiff = 0, solidDiff = 0, pixelDiff = 0, cellsTotal = 0;
-                var times = new PhaseTimes();
-                foreach (var frame in frames)
-                {
-                    var cells = baseline.RunFrame(frame, occlude, ref times);
-                    var cells2 = optimized.RunFrame(frame, occlude, ref times);
-                    if (cells != cells2)
-                        throw new InvalidOperationException("grid size differs");
-
-                    cellsTotal += cells;
-                    for (var i = 0; i < cells * 3; i++)
-                    {
-                        if (BitConverter.SingleToInt32Bits(baseline.Accum[i]) !=
-                            BitConverter.SingleToInt32Bits(optimized.Accum[i]))
-                            accumDiff++;
-                    }
-
-                    for (var i = 0; i < cells; i++)
-                    {
-                        if (baseline.Solid[i] != optimized.Solid[i])
-                            solidDiff++;
-                        if (!baseline.Pixels[i].Equals(optimized.Pixels[i]))
-                            pixelDiff++;
-                    }
-                }
-
-                var pass = accumDiff == 0 && solidDiff == 0 && pixelDiff == 0;
-                ok &= pass;
-                Console.WriteLine(
-                    $"  {(pass ? "OK  " : "DIFF")} {scenario.Name,-38} {(aligned ? "aligned" : "offset "),-8} " +
-                    $"shadows={(occlude ? "on " : "off")}  frames={frames.Length} cells={cellsTotal:N0} " +
-                    $"accumDiff={accumDiff} solidDiff={solidDiff} pixelDiff={pixelDiff}");
-            }
-        }
-    }
-
-    Console.WriteLine(ok ? "  all identical" : "  MISMATCH");
-    Console.WriteLine();
-    return ok;
-}
-
-// Wall bleed has to light walls from the lit side and leave floors alone. A no-op
-// pass would keep the bit-exactness check green, so check the effect itself.
-static bool VerifyBleed(Scenario[] scenarios)
-{
-    Console.WriteLine("== Wall bleed: walls borrow light, floors stay untouched ==");
-    var ok = true;
-    foreach (var baseScenario in scenarios)
-    {
-        var scenario = baseScenario with { Seed = baseScenario.Seed + 31 };
-        var frames = SceneBuilder.Build(scenario, 60);
-        var plain = new OptimizedLightmap { Bleed = false };
-        var bled = new OptimizedLightmap();
-        var times = new PhaseTimes();
-        long floorDiff = 0, darker = 0, brighter = 0, litWalls = 0;
-        foreach (var frame in frames)
-        {
-            var cells = plain.RunFrame(frame, true, ref times);
-            var cells2 = bled.RunFrame(frame, true, ref times);
-            if (cells != cells2)
-                throw new InvalidOperationException("grid size differs");
-
-            for (var i = 0; i < cells; i++)
-            {
-                var baseIndex = i * 3;
-                var dr = bled.Accum[baseIndex] - plain.Accum[baseIndex];
-                var dg = bled.Accum[baseIndex + 1] - plain.Accum[baseIndex + 1];
-                var db = bled.Accum[baseIndex + 2] - plain.Accum[baseIndex + 2];
-
-                if (!plain.Solid[i])
-                {
-                    if (dr != 0f || dg != 0f || db != 0f)
-                        floorDiff++;
-                    continue;
-                }
-
-                if (dr < 0f || dg < 0f || db < 0f)
-                    darker++;
-
-                if (dr > 0f || dg > 0f || db > 0f)
-                    brighter++;
-
-                if (plain.Accum[baseIndex] <= 0f && plain.Accum[baseIndex + 1] <= 0f &&
-                    plain.Accum[baseIndex + 2] <= 0f && (dr > 0f || dg > 0f || db > 0f))
-                    litWalls++;
-            }
-        }
-
-        var pass = floorDiff == 0 && darker == 0 && litWalls > 0;
-        ok &= pass;
-        Console.WriteLine(
-            $"  {(pass ? "OK  " : "FAIL")} {scenario.Name,-38} frames={frames.Length} " +
-            $"floorDiff={floorDiff} darkerSolid={darker} brighterSolid={brighter} wallsLitFromDark={litWalls}");
-    }
-
-    Console.WriteLine(ok ? "  bleed behaves" : "  BLEED MISMATCH");
-    Console.WriteLine();
-    return ok;
-}
 
 static void Bench(Scenario[] scenarios)
 {

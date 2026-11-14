@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Numerics;
 
 namespace LightmapBench;
 
@@ -10,16 +11,20 @@ internal sealed partial class OptimizedLightmap
     public float[] Accum => _mobileLightmapAccum;
     public bool[] Solid => _mobileLightmapSolid;
     public Rgba32[] Pixels => _mobileLightmapPixels;
+    public Vector2 Min => _mobileLightmapMin;
+    public float Cell => _mobileLightmapCell;
+    public int Width => _mobileLightmapWidth;
+    public int Height => _mobileLightmapHeight;
 
-    // Wall bleed changes the pixels on purpose, so the bit-exactness check against
-    // the frozen 0.9.1 baseline runs with it off. Everything else is compared as is.
+    // Wall bleed changes the pixels on purpose, so the checks that need plain cells
+    // turn it off. The benchmark keeps it on, like the engine.
     public bool Bleed { get; set; } = Environment.GetEnvironmentVariable("LIGHTMAP_NO_BLEED") != "1";
 
     // Mirrors DrawMobileLightmap in the patch, minus the GL upload.
     public int RunFrame(Frame frame, bool occlude, ref PhaseTimes times)
     {
         var t0 = Stopwatch.GetTimestamp();
-        SetUpMobileLightmapGrid(frame.Bounds, out var cells);
+        SetUpMobileLightmapGrid(frame.Bounds, frame.AlignOrigin, out var cells);
         ClearMobileLightmap(cells);
 
         if (occlude)

@@ -1574,15 +1574,9 @@ index fbec054..2e704d2 100644
                  {
                      _postShaderEventEntries.Clear();
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-index 73cadae..f6b0e46 100644
+index 73cadae..0eb8596 100644
 --- a/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
 +++ b/Robust.Client/Graphics/Clyde/Clyde.LightRendering.cs
-@@ -1,4 +1,4 @@
--using System;
-+﻿using System;
- using System.Collections.Generic;
- using System.Buffers;
- using System.Diagnostics.Contracts;
 @@ -40,7 +40,12 @@ namespace Robust.Client.Graphics.Clyde
          private const float SharedOccluderNeighbourQueryPadding = 1f + SharedOccluderEdgeTolerance;
          // Horizontal width, in pixels, of the shadow maps used to render FOV.
@@ -1755,7 +1749,7 @@ index 73cadae..f6b0e46 100644
 +                var lightmapDrawn = false;
 +                using (_prof.Group("Draw mobile lightmap"))
 +                {
-+                    lightmapDrawn = DrawMobileLightmap(mapId, expandedBounds, count);
++                    lightmapDrawn = DrawMobileLightmap(mapId, expandedBounds, count, eye.Position.Position);
 +                }
 +
 +                // The single lightmap quad already contains every light. If the
@@ -2086,10 +2080,10 @@ index 73cadae..f6b0e46 100644
      }
 diff --git a/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
 new file mode 100644
-index 0000000..a0577fa
+index 0000000..1a4e5a2
 --- /dev/null
 +++ b/Robust.Client/Graphics/Clyde/Clyde.MobileLighting.cs
-@@ -0,0 +1,743 @@
+@@ -0,0 +1,756 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Numerics;
@@ -2109,11 +2103,13 @@ index 0000000..a0577fa
 +    // Occluders are rasterized into the grid as opaque cells, every light is flood
 +    // filled over the grid, and the result goes into the light render target with a
 +    // single additive quad. Sprite shaders still sample the same light render target.
-+    // Walls are solid cells and a floor cell touching a wall sits exactly on the
-+    // occluder edge, so it is solid too: the flood fill stops one cell before the wall
-+    // and a wall next to a lit floor would be pitch black. Stock lighting hides that
-+    // with light.wall_bleed, which Android disables, so the CPU lightmap bleeds the
-+    // neighbouring light into solid cells instead.
++    // The grid is aligned to the tile lattice of the grid the camera is on, not to
++    // whole world units: the station grid sits at a fractional world offset, so
++    // world-aligned cells would cut every wall tile in two, mark the floor around it
++    // solid and stop the light there. A cell is solid when an occluder covers part of
++    // it, so the flood fill reaches the floor next to a wall and lights the wall itself.
++    // Stock lighting fills the rest of the wall with light.wall_bleed, which Android
++    // disables, so the CPU lightmap bleeds neighbouring light into those cells.
 +    //
 +    // shortcut: light masks (PointLightComponent.Mask) are ignored here, only a
 +    // handful of content lights use them. Upgrade when a masked light must look right.
@@ -2129,7 +2125,7 @@ index 0000000..a0577fa
 +        private bool _mobileLightmapFaulted;
 +        private bool _mobileLightmapWarned;
 +
-+        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count)
++        private bool DrawMobileLightmap(MapId map, Box2 expandedBounds, int count, Vector2 eyePosition)
 +        {
 +            if (_mobileLightmapFaulted)
 +                return false;
@@ -2148,7 +2144,7 @@ index 0000000..a0577fa
 +
 +            try
 +            {
-+                return DrawMobileLightmapInner(map, expandedBounds, count, loadedShader);
++                return DrawMobileLightmapInner(map, expandedBounds, count, eyePosition, loadedShader);
 +            }
 +            catch (Exception ex)
 +            {
@@ -2159,9 +2155,16 @@ index 0000000..a0577fa
 +        }
 +
 +        private bool DrawMobileLightmapInner(MapId map, Box2 expandedBounds, int count,
-+            LoadedShader loadedShader)
++            Vector2 eyePosition, LoadedShader loadedShader)
 +        {
-+            SetUpMobileLightmapGrid(expandedBounds, out var cells);
++            // Wall occluders are tile sized boxes, so the cells have to line up with the
++            // tile lattice of the grid the camera is on: the station grid sits at a
++            // fractional world offset, and world aligned cells would cut every wall.
++            var align = Vector2.Zero;
++            if (_mapSystem.TryFindGridAt(map, eyePosition, out var gridUid, out _))
++                align = _transformSystem.GetWorldPosition(gridUid);
++
++            SetUpMobileLightmapGrid(expandedBounds, align, out var cells);
 +            ClearMobileLightmap(cells);
 +
 +            var occlude = _lightManager.DrawShadows;
@@ -2283,6 +2286,10 @@ index 0000000..a0577fa
 +        // so on phones it stays around 100x100 cells.
 +        private const int MobileLightmapMaxCells = 96 * 1024;
 +
++        // Cells that only touch an occluder with a zero area edge (shared tile borders,
++        // float noise) stay open to the flood fill.
++        private const float MobileLightmapOccluderEpsilon = 1e-4f;
++
 +        private const int MobileLightmapFalloffSteps = 256;
 +
 +        // Lights come in a handful of (curve, falloff) pairs, so the falloff table is
@@ -2313,17 +2320,15 @@ index 0000000..a0577fa
 +        private float _mobileLightmapCell = MobileLightmapCellSize;
 +        private int _mobileLightmapStamp;
 +
-+        private void SetUpMobileLightmapGrid(Box2 bounds, out int cells)
++        private void SetUpMobileLightmapGrid(Box2 bounds, Vector2 align, out int cells)
 +        {
 +            var cell = MobileLightmapCellSize;
-+            var width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
-+            var height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++            var (min, width, height) = MobileLightmapGridSize(bounds, align, cell);
 +
 +            while (width * height > MobileLightmapMaxCells)
 +            {
 +                cell *= 2f;
-+                width = Math.Max(1, (int) MathF.Ceiling(bounds.Width / cell));
-+                height = Math.Max(1, (int) MathF.Ceiling(bounds.Height / cell));
++                (min, width, height) = MobileLightmapGridSize(bounds, align, cell);
 +            }
 +
 +            // Round up to 16: the bounds follow the camera by less than a cell per
@@ -2335,7 +2340,7 @@ index 0000000..a0577fa
 +            _mobileLightmapCell = cell;
 +            _mobileLightmapWidth = width;
 +            _mobileLightmapHeight = height;
-+            _mobileLightmapMin = bounds.BottomLeft;
++            _mobileLightmapMin = min;
 +            cells = width * height;
 +
 +            if (_mobileLightmapColumnDistance.Length < width)
@@ -2354,6 +2359,20 @@ index 0000000..a0577fa
 +            _mobileLightmapQueue = new int[cells * 2];
 +            _mobileLightmapBleed = new float[cells * 3];
 +            _mobileLightmapStamp = 0;
++        }
++
++        // Whole cells counted from the tile lattice of the grid the camera is on. The
++        // station grid sits at a fractional world offset, so snapping cells to world
++        // units would slice every wall tile into two cells.
++        private static (Vector2 Min, int Width, int Height) MobileLightmapGridSize(
++            Box2 bounds, Vector2 align, float cell)
++        {
++            var min = align + new Vector2(
++                MathF.Floor((bounds.Left - align.X) / cell) * cell,
++                MathF.Floor((bounds.Bottom - align.Y) / cell) * cell);
++            var width = Math.Max(1, (int) MathF.Ceiling((bounds.Right - min.X) / cell));
++            var height = Math.Max(1, (int) MathF.Ceiling((bounds.Top - min.Y) / cell));
++            return (min, width, height);
 +        }
 +
 +        private void ClearMobileLightmap(int cells)
@@ -2503,27 +2522,23 @@ index 0000000..a0577fa
 +                return;
 +            }
 +
-+            var halfCell = cell * 0.5f;
-+            var limit = halfCell * halfCell;
-+
-+            // Walls are unrotated boxes: the distance to an axis-aligned box is a clamp per
-+            // axis, no point-in-polygon test and no per-edge projection for every cell.
++            // A cell is solid when the occluder covers part of it, so a floor cell that
++            // only touches a wall edge stays open to the flood fill.
 +            if (IsAxisAlignedBox(worldPolygon))
 +            {
 +                for (var y = y0; y <= y1; y++)
 +                {
-+                    var pointY = origin.Y + (y + 0.5f) * cell;
-+                    var outsideY = MathF.Max(MathF.Max(min.Y - pointY, pointY - max.Y), 0f);
-+                    var outsideY2 = outsideY * outsideY;
-+                    if (outsideY2 > limit)
++                    var cellMinY = origin.Y + y * cell;
++                    var overlapY = MathF.Min(cellMinY + cell, max.Y) - MathF.Max(cellMinY, min.Y);
++                    if (overlapY <= MobileLightmapOccluderEpsilon)
 +                        continue;
 +
 +                    var row = y * width;
 +                    for (var x = x0; x <= x1; x++)
 +                    {
-+                        var pointX = origin.X + (x + 0.5f) * cell;
-+                        var outsideX = MathF.Max(MathF.Max(min.X - pointX, pointX - max.X), 0f);
-+                        if (outsideX * outsideX + outsideY2 <= limit)
++                        var cellMinX = origin.X + x * cell;
++                        var overlapX = MathF.Min(cellMinX + cell, max.X) - MathF.Max(cellMinX, min.X);
++                        if (overlapX > MobileLightmapOccluderEpsilon)
 +                            solid[row + x] = true;
 +                    }
 +                }
@@ -2531,29 +2546,28 @@ index 0000000..a0577fa
 +                return;
 +            }
 +
-+            // Edge vectors once per occluder instead of once per cell and test.
-+            Span<Vector2> edges = stackalloc Vector2[worldPolygon.Length];
-+            Span<float> edgeLengths = stackalloc float[worldPolygon.Length];
++            // Rotated occluders: separating axis test between the convex polygon and the
++            // cell box, since those cannot be split per axis as cheaply.
++            Span<Vector2> normals = stackalloc Vector2[worldPolygon.Length];
 +            for (var i = 0; i < worldPolygon.Length; i++)
 +            {
 +                var next = i + 1 == worldPolygon.Length ? 0 : i + 1;
 +                var edge = worldPolygon[next] - worldPolygon[i];
-+                edges[i] = edge;
-+                edgeLengths[i] = edge.LengthSquared();
++                var length = edge.Length();
++                if (length <= 1e-8f)
++                    return;
++
++                normals[i] = new Vector2(-edge.Y, edge.X) / length;
 +            }
 +
 +            for (var y = y0; y <= y1; y++)
 +            {
++                var cellMinY = origin.Y + y * cell;
 +                for (var x = x0; x <= x1; x++)
 +                {
-+                    var point = new Vector2(origin.X + (x + 0.5f) * cell, origin.Y + (y + 0.5f) * cell);
-+                    if (!PointInConvexPolygon(worldPolygon, edges, point) &&
-+                        DistanceSquaredToPolygon(worldPolygon, edges, edgeLengths, point) > limit)
-+                    {
-+                        continue;
-+                    }
-+
-+                    solid[y * width + x] = true;
++                    var cellMinX = origin.X + x * cell;
++                    if (CellOverlapsPolygon(worldPolygon, normals, cellMinX, cellMinY, cellMinX + cell, cellMinY + cell))
++                        solid[y * width + x] = true;
 +                }
 +            }
 +        }
@@ -2571,59 +2585,52 @@ index 0000000..a0577fa
 +                   a.Y == b.Y && b.X == c.X && c.Y == d.Y && d.X == a.X;
 +        }
 +
-+        private static bool PointInConvexPolygon(ReadOnlySpan<Vector2> polygon, ReadOnlySpan<Vector2> edges, Vector2 point)
++        // Separating axis test between a convex polygon and a cell box: their projections
++        // overlap on every polygon edge normal and on both cell axes when they overlap.
++        private static bool CellOverlapsPolygon(
++            ReadOnlySpan<Vector2> polygon,
++            ReadOnlySpan<Vector2> normals,
++            float minX,
++            float minY,
++            float maxX,
++            float maxY)
 +        {
-+            var sign = 0;
-+            for (var i = 0; i < polygon.Length; i++)
++            var center = new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
++            var half = new Vector2((maxX - minX) * 0.5f, (maxY - minY) * 0.5f);
++
++            if (!ProjectionsOverlap(polygon, Vector2.UnitX, center, half) ||
++                !ProjectionsOverlap(polygon, Vector2.UnitY, center, half))
 +            {
-+                var a = polygon[i];
-+                var edge = edges[i];
-+                var cross = edge.X * (point.Y - a.Y) - edge.Y * (point.X - a.X);
-+                if (cross > 1e-5f)
-+                {
-+                    if (sign < 0)
-+                        return false;
-+                    sign = 1;
-+                }
-+                else if (cross < -1e-5f)
-+                {
-+                    if (sign > 0)
-+                        return false;
-+                    sign = -1;
-+                }
++                return false;
 +            }
 +
-+            return sign != 0;
++            for (var i = 0; i < normals.Length; i++)
++            {
++                if (!ProjectionsOverlap(polygon, normals[i], center, half))
++                    return false;
++            }
++
++            return true;
 +        }
 +
-+        private static float DistanceSquaredToPolygon(
-+            ReadOnlySpan<Vector2> polygon,
-+            ReadOnlySpan<Vector2> edges,
-+            ReadOnlySpan<float> edgeLengths,
-+            Vector2 point)
++        private static bool ProjectionsOverlap(
++            ReadOnlySpan<Vector2> polygon, Vector2 axis, Vector2 center, Vector2 half)
 +        {
-+            var best = float.MaxValue;
++            var min = float.MaxValue;
++            var max = float.MinValue;
 +            for (var i = 0; i < polygon.Length; i++)
 +            {
-+                var a = polygon[i];
-+                float distance;
-+                var lengthSquared = edgeLengths[i];
-+                if (lengthSquared <= 1e-8f)
-+                {
-+                    distance = (point - a).LengthSquared();
-+                }
-+                else
-+                {
-+                    var ab = edges[i];
-+                    var t = Math.Clamp(Vector2.Dot(point - a, ab) / lengthSquared, 0f, 1f);
-+                    distance = (point - (a + ab * t)).LengthSquared();
-+                }
-+
-+                if (distance < best)
-+                    best = distance;
++                var projected = Vector2.Dot(polygon[i], axis);
++                if (projected < min)
++                    min = projected;
++                if (projected > max)
++                    max = projected;
 +            }
 +
-+            return best;
++            var cellCenter = Vector2.Dot(center, axis);
++            var cellExtent = MathF.Abs(axis.X) * half.X + MathF.Abs(axis.Y) * half.Y;
++            return max - (cellCenter - cellExtent) > MobileLightmapOccluderEpsilon &&
++                   cellCenter + cellExtent - min > MobileLightmapOccluderEpsilon;
 +        }
 +
 +        private float[] GetMobileLightmapFalloff(float curveFactor, float falloff)
@@ -7003,7 +7010,7 @@ index 7257588..f6cab0f 100644
  
          Stylesheet = new Stylesheet(new StyleRule[]
 diff --git a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
-index 274aa2a..8bbc32d 100644
+index 274aa2a..f700e47 100644
 --- a/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 +++ b/Robust.Client/UserInterface/UserInterfaceManager.Input.cs
 @@ -46,6 +46,29 @@ internal partial class UserInterfaceManager
